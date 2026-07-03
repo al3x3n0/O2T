@@ -23,6 +23,9 @@ into a recurrence DSL and discharging soundness with Z3.
   E1–E5 evaluation experiments.
 - **[verification-flow.md](verification-flow.md)** — the pipeline diagram (paper Figure 2): input →
   frontend → parser-agnostic prover → {proved | witness | unsupported} → meta-verification.
+- **[pass-ir.md](pass-ir.md)** — design track for formalized DFG/CFG source mining: a typed Pass IR
+  the prover consumes, with compositional before/after recovery (phase-2 core implemented) and the
+  roadmap to CFG path-conditions, bitcode reconciliation, interprocedural helpers, and IR loops.
 
 ## Reproducing
 

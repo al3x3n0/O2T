@@ -565,6 +565,10 @@ if(O2T_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/proof_audit_fixture.py
     )
     add_test(
+        NAME pass_graph_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pass_graph_fixture.py
+    )
+    add_test(
         NAME symexec_real_pass_fixture
         COMMAND
             /bin/sh -c
