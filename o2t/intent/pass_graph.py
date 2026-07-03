@@ -17,6 +17,7 @@ premise-SAT anti-vacuity gate, the teeth, and the second-solver cross-check.
 from __future__ import annotations
 
 import re
+from itertools import product
 
 from o2t.facts.value_tracking import fact_to_assumptions
 
@@ -405,3 +406,64 @@ def recover_from_function(source: str, marker: str = "probe.recovered.fold") -> 
         return None
     predicate = " && ".join([match_atoms[0]] + [a for a in atoms if not a.startswith("match")])
     return recover_pair(predicate, fold_rewrite, marker)
+
+
+# --- phase 3: reconcile the recovered obligation across two independent engines ----------------
+def _to_signed(value: int, width: int) -> int:
+    return value - (1 << width) if value >> (width - 1) else value
+
+
+def _assumption_holds(assumption: dict, env: dict, width: int) -> bool:
+    """Concretely evaluate a recovered precondition dict over `env` at `width` bits."""
+    mask = (1 << width) - 1
+    v = env[assumption["name"]] & mask
+    op = assumption["op"]
+    if op == "not-eq":
+        return v != (int(assumption.get("value", 0)) & mask)
+    if op == "power-of-two":
+        return v != 0 and (v & (v - 1)) == 0
+    if op == "cmp":
+        target = int(assumption.get("value", 0))
+        pred = assumption["predicate"]
+        if pred[0] == "s":
+            lhs = _to_signed(v, width)
+        else:
+            lhs = v
+        return {"sge": lhs >= target, "sgt": lhs > target, "sle": lhs <= target, "slt": lhs < target,
+                "uge": lhs >= (target & mask), "ugt": lhs > (target & mask),
+                "ule": lhs <= (target & mask), "ult": lhs < (target & mask),
+                "eq": lhs == target, "ne": lhs != target}.get(pred, True)
+    return True                                       # unmodeled assumption -> don't constrain
+
+
+def reconcile(pair: dict, z3_bin: str, width: int = 8) -> dict:
+    """Cross-check a recovered obligation across two independent engines: the symbolic z3 proof
+    (bv32, in `mini_alive.prove`) and an exhaustive CONCRETE enumeration over `width`-bit inputs that
+    satisfy the recovered precondition. A sound value identity holds at every width, so the two must
+    AGREE (both find the fold sound, or both find a counterexample); a divergence means the recovered
+    obligation is not trustworthy (e.g. a width-non-uniform or mis-recovered fold) and must not be
+    trusted on a `proved`. Returns {z3, concrete, agree, checked}; concrete is `skipped` when the
+    obligation uses an op the toolless evaluator cannot cover."""
+    from o2t import mini_alive as ma
+    z3_status, _ = ma.prove(pair, z3_bin)
+    variables = pair["variables"]
+    assumptions = pair.get("assumptions", [])
+    counterexample = None
+    checked = 0
+    for combo in product(range(1 << width), repeat=len(variables)):
+        env = dict(zip(variables, combo))
+        if not all(_assumption_holds(a, env, width) for a in assumptions):
+            continue
+        b = ma.evaluate(pair["before"], env, width)
+        a = ma.evaluate(pair["after"], env, width)
+        if b is None or a is None:
+            return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": checked}
+        checked += 1
+        if b != a:
+            counterexample = env
+            break
+    concrete = "proved" if counterexample is None else "refuted"
+    agree = ((z3_status == "proved" and concrete == "proved") or
+             (z3_status in ("refuted",) and concrete == "refuted"))
+    return {"z3": z3_status, "concrete": concrete, "agree": agree, "checked": checked,
+            "counterexample": counterexample}

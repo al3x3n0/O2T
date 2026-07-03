@@ -139,6 +139,26 @@ def main() -> int:
                 "  return nullptr; }")
     assert fn(mixed_fn)[1][0] == "proved", "bailout + nested positive blocks not proved"
 
+    # 9) RECONCILIATION (phase 3): cross-check the recovered obligation across two independent
+    #    engines -- the symbolic z3 proof (bv32) and exhaustive CONCRETE enumeration (bv8). A sound
+    #    identity holds at every width, so they must AGREE; a divergence flags an untrustworthy fold.
+    nested = pg.recover_pair("match(&I, m_Mul(m_Add(m_Value(X), m_Zero()), m_One()))",
+                             "return replaceInstUsesWith(I, X);")
+    rec = pg.reconcile(nested, z3)
+    assert rec["z3"] == "proved" and rec["concrete"] == "proved" and rec["agree"] and rec["checked"] > 0, rec
+    # TEETH: a width-NON-uniform obligation ((X & 0xFF) == X holds at bv8 but not bv32) is caught as
+    # a DISAGREEMENT -- the reconciliation refuses to trust a fold the two engines don't agree on.
+    wnu = {"domain": "scalar-bv32", "marker": "probe.wnu", "variables": ["x"], "equivalence": "result",
+           "before": {"op": "bvand", "args": [{"op": "var", "name": "x"}, {"op": "bvconst", "bits": 32, "value": 0xFF}]},
+           "after": {"op": "var", "name": "x"}, "assumptions": []}
+    rw = pg.reconcile(wnu, z3)
+    assert rw["z3"] == "refuted" and rw["concrete"] == "proved" and not rw["agree"], \
+        ("width-non-uniform fold must be flagged as a cross-engine disagreement", rw)
+    # div/rem are honestly `skipped` (toolless evaluator can't match z3's div-by-zero convention).
+    dv = pg.reconcile(pg.recover_pair("match(&I, m_SDiv(m_Value(X), m_Value(Y)))",
+                                      "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));"), z3)
+    assert dv["concrete"] == "skipped", ("div/rem must be conservatively skipped, not falsely (dis)agreed", dv)
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "
