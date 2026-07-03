@@ -315,30 +315,91 @@ def _split_top(text: str, sep: str) -> list[str]:
     return [p for p in (p.strip() for p in parts) if p]
 
 
-def recover_from_function(source: str, marker: str = "probe.recovered.fold") -> dict | None:
-    """Reconstruct a fold's obligation from its FUNCTION source: accumulate the guards on the path to
-    the `return replaceInstUsesWith(I, <expr>)` (early-return bailouts contribute their negation, a
-    positive `if (G) return <fold>` contributes G), then recover under that full path condition.
-    Declines on any guard/return shape outside the modeled fragment (a sound bound)."""
-    atoms: list[str] = []
-    fold_rewrite: str | None = None
-    for cond, retval in _iter_if_returns(source):
-        if "replaceInstUsesWith" in retval:               # positive guard directly returning the fold
-            atoms.extend(_split_top(cond, "&&"))
-            fold_rewrite = "return " + retval + ";"
-            break
-        if retval.rstrip(";").strip() in _BAIL_RETURNS:    # early-return bailout -> add NOT(cond)
+def _balanced_brace(text: str, open_idx: int) -> tuple[str, int]:
+    depth, i = 0, open_idx
+    while i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:i], i + 1
+        i += 1
+    raise Unsupported("unbalanced braces")
+
+
+def _positive_atoms(cond: str) -> list[str]:
+    """Atoms of a positive descent guard `if (COND) { ... }` -- COND must be a `&&`-conjunction."""
+    return _split_top(_unwrap(cond), "&&")
+
+
+_KW_RE = re.compile(r"\b(if|return)\b")
+
+
+def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
+    """Walk a block's statements in order, threading the accumulated path condition, and return
+    (path_atoms, fold_rewrite) at the `return replaceInstUsesWith(...)`. Handles nested `if (G){..}`
+    blocks (descend under G), early-return bailouts (`if (B) return null;` -> path gains NOT B for
+    later siblings), and positive `if (G) return fold;`. Declines (None) on unmodeled shapes."""
+    i = 0
+    while True:
+        kw = _KW_RE.search(body, i)
+        if not kw:
+            return None
+        if kw.group(1) == "return":
+            rm = re.match(r"return\s+(.+?)\s*;", body[kw.start():], re.S)
+            if rm and "replaceInstUsesWith" in rm.group(1):
+                return path, "return " + rm.group(1).strip() + ";"
+            i = kw.end()
+            continue
+        # an `if`: parse the balanced condition, then dispatch on what follows.
+        paren = body.find("(", kw.end())
+        if paren < 0:
+            return None
+        try:
+            cond, after = _balanced(body, paren)
+        except Unsupported:
+            return None
+        rest = body[after:]
+        lead = len(rest) - len(rest.lstrip())
+        rest = rest.lstrip()
+        if rest.startswith("{"):                                  # nested block: descend under COND
+            block, blk_end = _balanced_brace(body, after + lead)
+            sub = _find_fold_path(block, path + _positive_atoms(cond))
+            if sub is not None:
+                return sub
+            i = blk_end                                            # fold not inside; keep scanning
+            continue
+        rm = re.match(r"return\s+(.+?)\s*;", rest, re.S)
+        if not rm:
+            return None
+        retval = rm.group(1).strip()
+        if "replaceInstUsesWith" in retval:                        # positive guard returning the fold
+            return path + _positive_atoms(cond), "return " + retval + ";"
+        if retval.rstrip(";").strip() in _BAIL_RETURNS:            # bailout: add NOT(cond) for siblings
             bail = _bail_atoms(cond)
             if bail is None:
                 return None
-            atoms.extend(bail)
-        else:
-            return None                                    # a non-bail, non-fold return -> unmodeled
-    if fold_rewrite is None:                                # no guarded return; look for a bare fold return
-        bm = re.search(r"\breturn\s+(replaceInstUsesWith\s*\(.+?\))\s*;", source, re.S)
-        if not bm:
-            return None
-        fold_rewrite = "return " + bm.group(1) + ";"
+            path = path + bail
+            i = after + lead + rm.end()
+            continue
+        return None                                                # non-bail, non-fold return
+
+
+def recover_from_function(source: str, marker: str = "probe.recovered.fold") -> dict | None:
+    """Reconstruct a fold's obligation from its FUNCTION source by walking the control flow to the
+    `return replaceInstUsesWith(I, <expr>)` and collecting the full path condition -- early-return
+    bailouts (negated, De Morgan) and enclosing positive `if` guards, at arbitrary nesting. Declines
+    on any guard/return shape outside the modeled fragment (a sound bound)."""
+    brace = source.find("{")
+    body = _balanced_brace(source, brace)[0] if brace >= 0 else source
+    try:
+        found = _find_fold_path(body, [])
+    except Unsupported:
+        return None
+    if found is None:
+        return None
+    atoms, fold_rewrite = found
     match_atoms = [a for a in atoms if a.startswith("match")]
     if len(match_atoms) != 1:
         return None

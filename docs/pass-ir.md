@@ -64,7 +64,7 @@ the "no silent mis-model" invariant.
 | 2-core | Compositional `before`/`after`: parse the matcher tree + rewrite DFG, lower to formal IR, prove | **Done** (`pass_graph.py`, `pass_graph_fixture`) |
 | 1 | Guard/precondition recovery: analysis-query conjuncts (`isKnownNonNegative`, ...) → the premise the equivalence is proved UNDER; unrecognised guards decline | **Done** (same module) |
 | 1+ | Function-level path condition: reconstruct the guard from a fold FUNCTION's control flow -- early-return bailouts (`if (!G) return nullptr;` -> path gains `G`, De Morgan on `!A||!B`) + positive guards (`recover_from_function`) | **Done** (same module) |
-| 1++ | Nested-brace `if { ... }` blocks and multi-return control flow beyond the flat bailout sequence | Next |
+| 1++ | Nested-brace `if (G) { ... }` blocks: fold inside enclosing positive guards at arbitrary nesting, unified with bailouts via a recursive path-finder (`_find_fold_path`) | **Done** (same module) |
 | 3 | Bitcode graph export + AST↔bitcode reconciliation (decline on mismatch) | Planned |
 | 4 | Interprocedural: inline/summarize guard + value helpers (retire "blocked helper slice") | Planned |
 | 5 | Loops over IR (`for (I : BB)`, `users()`): bounded unroll vs summarize | Planned |

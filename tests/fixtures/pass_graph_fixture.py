@@ -113,6 +113,32 @@ def main() -> int:
     # an unmodeled bail guard declines (sound bound).
     assert pg.recover_from_function(sound_fn.replace("isKnownNonNegative(X)", "someUnknownAnalysis(X)")) is None
 
+    # 8) NESTED control flow (phase 1++): the fold inside enclosing positive `if` blocks; the path
+    #    condition is the conjunction of the enclosing guards at arbitrary nesting.
+    nested_fn = ("Value *f(BinaryOperator &I){ Value *X,*Y;\n"
+                 "  if (match(&I, m_SDiv(m_Value(X), m_Value(Y)))) {\n"
+                 "    if (isKnownNonNegative(X) && isKnownNonNegative(Y)) {\n"
+                 "      return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));\n"
+                 "    }\n"
+                 "  }\n"
+                 "  return nullptr; }")
+    pair, (status, _) = fn(nested_fn)
+    assert status == "proved" and {a["name"] for a in pair["assumptions"]} == {"x", "y"}, (status, pair)
+    # removing the inner nested guard removes the precondition -> unsound.
+    bare = nested_fn.replace("    if (isKnownNonNegative(X) && isKnownNonNegative(Y)) {\n", "    {\n")
+    pair2, (status2, cex2) = fn(bare)
+    assert status2 == "refuted" and cex2 and not pair2["assumptions"], (status2, pair2["assumptions"])
+    # a bailout mixed with nested positive blocks recovers the union of guards.
+    mixed_fn = ("Value *f(BinaryOperator &I){ Value *X,*Y;\n"
+                "  if (!match(&I, m_SDiv(m_Value(X), m_Value(Y)))) return nullptr;\n"
+                "  if (isKnownNonNegative(X)) {\n"
+                "    if (isKnownNonNegative(Y)) {\n"
+                "      return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));\n"
+                "    }\n"
+                "  }\n"
+                "  return nullptr; }")
+    assert fn(mixed_fn)[1][0] == "proved", "bailout + nested positive blocks not proved"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "
