@@ -159,6 +159,28 @@ def main() -> int:
                                       "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));"), z3)
     assert dv["concrete"] == "skipped", ("div/rem must be conservatively skipped, not falsely (dis)agreed", dv)
 
+    # 10) COMPILED RECONCILIATION (phase 3b): realize the recovered fold as a symbolic_llvm.h harness,
+    #     COMPILE it, symbolically execute it through its real branches (real_pass), and require the
+    #     compiled-path verdict to match z3 -- an independent compiled oracle. Skipped without clang++.
+    clang = shutil.which("clang++") or ("/usr/bin/clang++" if Path("/usr/bin/clang++").exists() else None)
+    # the generator emits a compilable harness regardless of clang availability.
+    harness = pg.to_shim_harness(pg.recover_pair(
+        "match(&I, m_SDiv(m_Value(X), m_Value(Y))) && isKnownNonNegative(X) && isKnownNonNegative(Y)",
+        "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));"))
+    assert harness and "isKnownNonNegative(X)" in harness and "B.CreateUDiv" in harness, harness
+    if clang is not None:
+        guarded = pg.recover_pair(
+            "match(&I, m_SDiv(m_Value(X), m_Value(Y))) && isKnownNonNegative(X) && isKnownNonNegative(Y)",
+            "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));")
+        rc = pg.reconcile_compiled(guarded, z3, clang=clang)
+        assert rc["z3"] == "proved" and rc["compiled"] == "proved" and rc["agree"], ("guarded fold", rc)
+        unguarded = pg.recover_pair("match(&I, m_SDiv(m_Value(X), m_Value(Y)))",
+                                    "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));")
+        ru = pg.reconcile_compiled(unguarded, z3, clang=clang)
+        assert ru["z3"] == "refuted" and ru["compiled"] == "refuted" and ru["agree"], ("unguarded fold", ru)
+        rn = pg.reconcile_compiled(nested, z3, clang=clang)
+        assert rn["compiled"] == "proved" and rn["agree"], ("unconditional nested fold", rn)
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

@@ -467,3 +467,101 @@ def reconcile(pair: dict, z3_bin: str, width: int = 8) -> dict:
              (z3_status in ("refuted",) and concrete == "refuted"))
     return {"z3": z3_status, "concrete": concrete, "agree": agree, "checked": checked,
             "counterexample": counterexample}
+
+
+# --- phase 3b: reconcile against the COMPILED symbolic execution of a generated shim harness -----
+_SHIM_BUILDER = {"bvadd": "CreateAdd", "bvsub": "CreateSub", "bvmul": "CreateMul", "bvand": "CreateAnd",
+                 "bvor": "CreateOr", "bvxor": "CreateXor", "bvshl": "CreateShl", "bvlshr": "CreateLShr",
+                 "bvashr": "CreateAShr", "bvudiv": "CreateUDiv", "bvsdiv": "CreateSDiv",
+                 "bvurem": "CreateURem", "bvsrem": "CreateSRem"}
+
+
+def _to_smt(node: dict) -> str:
+    op = node["op"]
+    if op == "var":
+        return node["name"].upper()
+    if op == "bvconst":
+        return f"(_ bv{node['value']} 32)"
+    return "(" + op + " " + " ".join(_to_smt(a) for a in node["args"]) + ")"
+
+
+def _to_shim_expr(node: dict) -> str:
+    op = node["op"]
+    if op == "var":
+        return node["name"].upper()
+    if op == "bvconst":
+        return f'Value{{"(_ bv{node["value"]} 32)"}}'
+    if op in _SHIM_BUILDER:
+        return f"B.{_SHIM_BUILDER[op]}(" + ", ".join(_to_shim_expr(a) for a in node["args"]) + ")"
+    raise Unsupported(f"no shim builder for {op!r}")
+
+
+def _query_call(assumption: dict) -> str | None:
+    v = assumption["name"].upper()
+    op = assumption["op"]
+    if op == "power-of-two":
+        return f"isKnownToBeAPowerOfTwo({v})"
+    if op == "not-eq" and int(assumption.get("value", 0)) == 0:
+        return f"isKnownNonZero({v})"
+    if op == "cmp" and int(assumption.get("value", 0)) == 0:
+        return {"sge": f"isKnownNonNegative({v})", "slt": f"isKnownNegative({v})"}.get(assumption["predicate"])
+    return None
+
+
+def to_shim_harness(pair: dict) -> str | None:
+    """Generate a self-contained `symbolic_llvm.h` harness realizing a recovered fold, or None if any
+    part (a builder op or a guard) has no shim mapping."""
+    variables = [v.upper() for v in pair["variables"]]
+    try:
+        after_expr = _to_shim_expr(pair["after"])
+        before_smt = _to_smt(pair["before"])
+    except Unsupported:
+        return None
+    queries = []
+    for assumption in pair.get("assumptions", []):
+        call = _query_call(assumption)
+        if call is None:
+            return None
+        queries.append(call)
+    guard = " && ".join(queries)
+    body = (f"if ({guard}) return {after_expr};\n  return Value{{\"\"}};" if guard
+            else f"return {after_expr};")
+    decls = "; ".join(f'Value {v}{{"{v}"}}' for v in variables)
+    params = ", ".join(f"Value {v}" for v in variables)
+    return (f'#include "symbolic_llvm.h"\n#include <cstring>\n'
+            f'static Value foldRecovered({params}, IRBuilder &B) {{\n  {body}\n}}\n'
+            f'int main(int argc, char **argv) {{\n  cv_setup(argc, argv);\n'
+            f'  {decls}; IRBuilder B;\n  std::string input = "{before_smt}";\n'
+            f'  Value out = foldRecovered({", ".join(variables)}, B);\n'
+            f'  cv_emit(input, out.t.empty() ? nullptr : &out);\n  return 0;\n}}\n')
+
+
+def reconcile_compiled(pair: dict, z3_bin: str, clang: str = "clang++") -> dict:
+    """Reconcile a recovered obligation against the COMPILED symbolic execution of a generated shim
+    harness (`symexec/real_pass`): the recovered before/after/guard is realized as real C++, compiled,
+    and symbolically executed through its actual branches, and the per-path verdict must match the
+    direct z3 verdict. Catches lowering/prover divergence via an independent compiled oracle. Returns
+    {z3, compiled, agree, ...}; `compiled` is `skipped` when there is no shim mapping or no compiler."""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from o2t import mini_alive as ma
+    from o2t.symexec import real_pass as rp
+    src = to_shim_harness(pair)
+    if src is None:
+        return {"compiled": "skipped", "reason": "no shim mapping"}
+    if shutil.which(clang) is None and not _Path(clang).exists():
+        return {"compiled": "skipped", "reason": "no compiler"}
+    with tempfile.TemporaryDirectory() as d:
+        cpp = _Path(d) / "recovered_fold.cpp"
+        cpp.write_text(src)
+        exe = rp.compile_harness(str(cpp), clang=clang)
+        if exe is None:
+            return {"compiled": "skipped", "reason": "compile failed"}
+        v = rp.verify_fold(z3_bin, exe, "recovered")
+    compiled = ("refuted" if v["refuted"] else "proved" if v["proved"] else "unsupported")
+    z3_status, _ = ma.prove(pair, z3_bin)
+    agree = ((z3_status == "proved" and compiled == "proved") or
+             (z3_status == "refuted" and compiled == "refuted"))
+    return {"z3": z3_status, "compiled": compiled, "agree": agree,
+            "paths": v["paths"], "rewriting_paths": v["rewriting_paths"]}

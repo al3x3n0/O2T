@@ -66,8 +66,8 @@ the "no silent mis-model" invariant.
 | 1+ | Function-level path condition: reconstruct the guard from a fold FUNCTION's control flow -- early-return bailouts (`if (!G) return nullptr;` -> path gains `G`, De Morgan on `!A||!B`) + positive guards (`recover_from_function`) | **Done** (same module) |
 | 1++ | Nested-brace `if (G) { ... }` blocks: fold inside enclosing positive guards at arbitrary nesting, unified with bailouts via a recursive path-finder (`_find_fold_path`) | **Done** (same module) |
 | 3a | Reconciliation, always-available half: cross-check the recovered obligation across two independent engines -- symbolic z3 (bv32) vs exhaustive CONCRETE enumeration (bv8, precondition-aware). Agreement required; a divergence (e.g. width-non-uniform) is flagged untrustworthy (`reconcile`) | **Done** (same module) |
-| 3b | Reconciliation, compiled half: lower a recovered fold to a `symbolic_llvm.h` shim harness, compile + symbolically execute it (`symexec/real_pass`), require the compiled-path verdict to match -- catches source-parse-level mis-recovery the shared-parse concrete check cannot | Next |
-| 3 | Bitcode graph export + AST↔bitcode reconciliation (decline on mismatch) | Planned |
+| 3b | Reconciliation, compiled half: `to_shim_harness` realizes a recovered fold as a `symbolic_llvm.h` harness, compiles it, and symbolically executes it through its real branches (`symexec/real_pass`); the compiled-path verdict must match z3 -- an independent compiled oracle (`reconcile_compiled`, graceful skip without clang++) | **Done** (same module) |
+| 3c | Full source-parse independence: generate the shim harness directly from the C++ source (not the recovered pair), so a front-end parse bug diverges | Next |
 | 4 | Interprocedural: inline/summarize guard + value helpers (retire "blocked helper slice") | Planned |
 | 5 | Loops over IR (`for (I : BB)`, `users()`): bounded unroll vs summarize | Planned |
 
