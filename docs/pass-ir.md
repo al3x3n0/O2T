@@ -68,7 +68,7 @@ the "no silent mis-model" invariant.
 | 3a | Reconciliation, always-available half: cross-check the recovered obligation across two independent engines -- symbolic z3 (bv32) vs exhaustive CONCRETE enumeration (bv8, precondition-aware). Agreement required; a divergence (e.g. width-non-uniform) is flagged untrustworthy (`reconcile`) | **Done** (same module) |
 | 3b | Reconciliation, compiled half: `to_shim_harness` realizes a recovered fold as a `symbolic_llvm.h` harness, compiles it, and symbolically executes it through its real branches (`symexec/real_pass`); the compiled-path verdict must match z3 -- an independent compiled oracle (`reconcile_compiled`, graceful skip without clang++) | **Done** (same module) |
 | 3c | Full source-parse independence: generate the shim harness directly from the C++ source (not the recovered pair), so a front-end parse bug diverges | Next |
-| 4 | Interprocedural: inline/summarize guard + value helpers (retire "blocked helper slice") | Planned |
+| 4 | Interprocedural: single-return guard + value helpers (incl. chained) inlined before recovery, retiring the "blocked helper slice"; multi-statement helpers decline (`_parse_helpers`/`_inline_calls`) | **Done** (same module) |
 | 5 | Loops over IR (`for (I : BB)`, `users()`): bounded unroll vs summarize | Planned |
 
 ### What phase 2-core already buys

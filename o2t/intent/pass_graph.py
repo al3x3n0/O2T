@@ -216,7 +216,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     try:
         binds: set[str] = set()
         before = lower_matcher(_parse(matcher_src), binds)
-        after = lower_rewrite(_parse(rm.group(1)), binds)
+        after = lower_rewrite(_parse(_unwrap(rm.group(1))), binds)   # unwrap inlined-helper parens
     except Unsupported:
         return None
     if not binds:
@@ -292,7 +292,8 @@ def _bail_atoms(cond: str) -> list[str] | None:
     for disjunct in _split_top(_unwrap(cond), "||"):
         disjunct = _unwrap(disjunct.strip())
         if disjunct.startswith("!"):
-            atoms.append(_unwrap(disjunct[1:].strip()))
+            # `!A` -> A ; an inlined helper guard `!(A && B)` -> A, B (each conjunct a positive fact).
+            atoms.extend(_split_top(_unwrap(disjunct[1:].strip()), "&&"))
         else:
             return None                       # a positive disjunct in a bail -> unmodeled
     return atoms
@@ -387,13 +388,98 @@ def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
         return None                                                # non-bail, non-fold return
 
 
-def recover_from_function(source: str, marker: str = "probe.recovered.fold") -> dict | None:
+# --- phase 4: interprocedural helper inlining ---------------------------------------------------
+_NON_CALL = {"if", "for", "while", "switch", "return", "sizeof", "match", "replaceInstUsesWith"}
+
+
+def _fold_body(source: str) -> str:
+    """The body of the function that performs the rewrite (contains `replaceInstUsesWith`), so a
+    helper defined BEFORE the fold in the same source is not mistaken for the fold body."""
+    i = 0
+    while i < len(source):
+        if source[i] == "{":
+            block, end = _balanced_brace(source, i)
+            if "replaceInstUsesWith" in block:
+                return block
+            i = end
+        else:
+            i += 1
+    return source
+
+
+def _parse_helpers(source: str) -> dict[str, tuple[list[str], str]]:
+    """Collect single-return helper definitions `TYPE name(params) { return EXPR; }` -> name ->
+    (param_names, return_expr). Multi-statement functions (incl. the fold itself) are not helpers."""
+    helpers: dict[str, tuple[list[str], str]] = {}
+    for m in re.finditer(r"\b(\w+)\s*\(", source):
+        name = m.group(1)
+        if name in _NON_CALL:
+            continue
+        try:
+            params_str, after = _balanced(source, m.end() - 1)
+        except Unsupported:
+            continue
+        rest = source[after:]
+        lead = len(rest) - len(rest.lstrip())
+        if not rest.lstrip().startswith("{"):
+            continue
+        try:
+            body, _ = _balanced_brace(source, after + lead)
+        except Unsupported:
+            continue
+        bm = re.fullmatch(r"\s*return\s+(.+?)\s*;\s*", body, re.S)
+        if not bm:
+            continue
+        params = [p.strip().split()[-1].lstrip("*&") for p in params_str.split(",") if p.strip()]
+        if all(re.fullmatch(r"\w+", p) for p in params):
+            helpers[name] = (params, bm.group(1).strip())
+    return helpers
+
+
+def _inline_calls(text: str, helpers: dict[str, tuple[list[str], str]], depth: int = 4) -> str:
+    """Replace `helper(args)` with its return expression (parenthesised), binding params to args, to
+    a bounded recursion depth. Retires the 'blocked helper slice': a guard/value in a called helper
+    is resolved into the fold before recovery."""
+    if depth <= 0:
+        return text
+    for name, (params, expr) in helpers.items():
+        out, i, changed = text, 0, False
+        while True:
+            m = re.search(r"\b" + re.escape(name) + r"\s*\(", out[i:])
+            if not m:
+                break
+            popen = i + m.end() - 1
+            try:
+                args_str, after = _balanced(out, popen)
+            except Unsupported:
+                i = i + m.end()
+                continue
+            args = _split_top(args_str, ",")
+            if len(args) != len(params):
+                i = after
+                continue
+            sub = expr
+            for p, a in zip(params, args):
+                sub = re.sub(r"\b" + re.escape(p) + r"\b", a.strip().replace("\\", r"\\"), sub)
+            out = out[:i + m.start()] + "(" + sub + ")" + out[after:]
+            changed = True
+            i = i + m.start() + len(sub) + 2
+        if changed:
+            return _inline_calls(out, helpers, depth - 1)
+    return text
+
+
+def recover_from_function(source: str, marker: str = "probe.recovered.fold",
+                          helpers_source: str = "") -> dict | None:
     """Reconstruct a fold's obligation from its FUNCTION source by walking the control flow to the
     `return replaceInstUsesWith(I, <expr>)` and collecting the full path condition -- early-return
-    bailouts (negated, De Morgan) and enclosing positive `if` guards, at arbitrary nesting. Declines
-    on any guard/return shape outside the modeled fragment (a sound bound)."""
-    brace = source.find("{")
-    body = _balanced_brace(source, brace)[0] if brace >= 0 else source
+    bailouts (negated, De Morgan) and enclosing positive `if` guards, at arbitrary nesting. Single-
+    return helper calls in guards/rewrites are inlined first (interprocedural). Declines on any
+    guard/return shape outside the modeled fragment (a sound bound)."""
+    helpers = _parse_helpers(source + "\n" + helpers_source)
+    body = _fold_body(source)                          # the function body that performs the rewrite
+    if helpers:
+        body = _inline_calls(body, helpers)
     try:
         found = _find_fold_path(body, [])
     except Unsupported:

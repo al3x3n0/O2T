@@ -181,6 +181,45 @@ def main() -> int:
         rn = pg.reconcile_compiled(nested, z3, clang=clang)
         assert rn["compiled"] == "proved" and rn["agree"], ("unconditional nested fold", rn)
 
+    # 11) INTERPROCEDURAL helpers (phase 4): legality/value in a called helper is inlined before
+    #     recovery, retiring the 'blocked helper slice'. Single-return guard/value helpers (incl.
+    #     chained) resolve; multi-statement helpers decline (sound).
+    def fnh(src, helpers=""):
+        pair = pg.recover_from_function(src, helpers_source=helpers)
+        assert pair is not None, ("helper recovery declined", src)
+        return pair, ma.prove(pair, z3)
+
+    guard_helper = ("static bool bothNonNeg(Value X, Value Y) { return isKnownNonNegative(X) && isKnownNonNegative(Y); }\n"
+                    "Value *f(BinaryOperator &I){ Value *X,*Y;\n"
+                    "  if (!match(&I, m_SDiv(m_Value(X), m_Value(Y)))) return nullptr;\n"
+                    "  if (!bothNonNeg(X, Y)) return nullptr;\n"
+                    "  return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y)); }")
+    pair, (status, _) = fnh(guard_helper)                                 # guard helper inlined
+    assert status == "proved" and {a["name"] for a in pair["assumptions"]} == {"x", "y"}, (status, pair)
+    # dropping the helper guard removes the precondition -> unsound.
+    _, (status, cex) = fnh(guard_helper.replace("  if (!bothNonNeg(X, Y)) return nullptr;\n", ""))
+    assert status == "refuted" and cex, ("dropping the helper guard must refute", status)
+    # VALUE helper building the rewrite is inlined.
+    value_helper = ("static Value mkUDiv(Value X, Value Y, IRBuilder B) { return B.CreateUDiv(X, Y); }\n" + guard_helper.replace(
+        "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));",
+        "return replaceInstUsesWith(I, mkUDiv(X, Y, Builder));"))
+    assert fnh(value_helper)[1][0] == "proved", "value helper not inlined/proved"
+    # CHAINED helper (helper calls helper) resolves recursively.
+    chained = ("static bool nn(Value V) { return isKnownNonNegative(V); }\n"
+               "static bool bothNN(Value X, Value Y) { return nn(X) && nn(Y); }\n"
+               "Value *f(BinaryOperator &I){ Value *X,*Y;\n"
+               "  if (!match(&I, m_SDiv(m_Value(X), m_Value(Y)))) return nullptr;\n"
+               "  if (!bothNN(X, Y)) return nullptr;\n"
+               "  return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y)); }")
+    assert fnh(chained)[1][0] == "proved", "chained helper not resolved"
+    # a MULTI-statement helper is not inlinable -> the guard is unresolved -> decline (sound).
+    multi = ("static bool cx(Value X) { int t = 0; return isKnownNonNegative(X); }\n"
+             "Value *f(BinaryOperator &I){ Value *X,*Y;\n"
+             "  if (!match(&I, m_SDiv(m_Value(X), m_Value(Y)))) return nullptr;\n"
+             "  if (!cx(X)) return nullptr;\n"
+             "  return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y)); }")
+    assert pg.recover_from_function(multi) is None, "multi-statement helper must decline"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "
