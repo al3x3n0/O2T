@@ -1,0 +1,103 @@
+[
+  {"family": "reassociate", "name": "add-assoc", "rewrite": "(a+b)+c == a+(b+c)",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b", "c"], "poison_variables": ["a", "b", "c"],
+     "before": {"op": "bvadd", "args": [{"op": "bvadd", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]}, {"op": "var", "name": "c"}]},
+     "after": {"op": "bvadd", "args": [{"op": "var", "name": "a"}, {"op": "bvadd", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "c"}]}]}}},
+
+  {"family": "reassociate", "name": "mul-assoc", "rewrite": "(a*b)*c == a*(b*c)",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b", "c"], "poison_variables": ["a", "b", "c"],
+     "before": {"op": "bvmul", "args": [{"op": "bvmul", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]}, {"op": "var", "name": "c"}]},
+     "after": {"op": "bvmul", "args": [{"op": "var", "name": "a"}, {"op": "bvmul", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "c"}]}]}}},
+
+  {"family": "reassociate", "name": "and-assoc", "rewrite": "(a&b)&c == a&(b&c)",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b", "c"], "poison_variables": ["a", "b", "c"],
+     "before": {"op": "bvand", "args": [{"op": "bvand", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]}, {"op": "var", "name": "c"}]},
+     "after": {"op": "bvand", "args": [{"op": "var", "name": "a"}, {"op": "bvand", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "c"}]}]}}},
+
+  {"family": "reassociate", "name": "or-assoc", "rewrite": "(a|b)|c == a|(b|c)",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b", "c"], "poison_variables": ["a", "b", "c"],
+     "before": {"op": "bvor", "args": [{"op": "bvor", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]}, {"op": "var", "name": "c"}]},
+     "after": {"op": "bvor", "args": [{"op": "var", "name": "a"}, {"op": "bvor", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "c"}]}]}}},
+
+  {"family": "reassociate", "name": "xor-assoc", "rewrite": "(a^b)^c == a^(b^c)",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b", "c"], "poison_variables": ["a", "b", "c"],
+     "before": {"op": "bvxor", "args": [{"op": "bvxor", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]}, {"op": "var", "name": "c"}]},
+     "after": {"op": "bvxor", "args": [{"op": "var", "name": "a"}, {"op": "bvxor", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "c"}]}]}}},
+
+  {"family": "reassociate", "name": "add-comm", "rewrite": "a+b == b+a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b"], "poison_variables": ["a", "b"],
+     "before": {"op": "bvadd", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]},
+     "after": {"op": "bvadd", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "a"}]}}},
+
+  {"family": "reassociate", "name": "mul-comm", "rewrite": "a*b == b*a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a", "b"], "poison_variables": ["a", "b"],
+     "before": {"op": "bvmul", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]},
+     "after": {"op": "bvmul", "args": [{"op": "var", "name": "b"}, {"op": "var", "name": "a"}]}}},
+
+  {"family": "instsimplify", "name": "and-zero", "rewrite": "a & 0 == 0",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvand", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+     "after": {"op": "bvconst", "bits": 32, "value": 0}}},
+
+  {"family": "instsimplify", "name": "or-allones", "rewrite": "a | -1 == -1",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvor", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 4294967295}]},
+     "after": {"op": "bvconst", "bits": 32, "value": 4294967295}}},
+
+  {"family": "instsimplify", "name": "mul-zero", "rewrite": "a * 0 == 0",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvmul", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+     "after": {"op": "bvconst", "bits": 32, "value": 0}}},
+
+  {"family": "instsimplify", "name": "xor-zero", "rewrite": "a ^ 0 == a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvxor", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+     "after": {"op": "var", "name": "a"}}},
+
+  {"family": "instsimplify", "name": "and-self", "rewrite": "a & a == a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvand", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "a"}]},
+     "after": {"op": "var", "name": "a"}}},
+
+  {"family": "instsimplify", "name": "or-self", "rewrite": "a | a == a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvor", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "a"}]},
+     "after": {"op": "var", "name": "a"}}},
+
+  {"family": "instsimplify", "name": "sub-self-zero", "rewrite": "a - a == 0",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvsub", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "a"}]},
+     "after": {"op": "bvconst", "bits": 32, "value": 0}}},
+
+  {"family": "shift", "name": "shl-zero", "rewrite": "a << 0 == a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvshl", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+     "after": {"op": "var", "name": "a"}}},
+
+  {"family": "shift", "name": "lshr-zero", "rewrite": "a >>u 0 == a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvlshr", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+     "after": {"op": "var", "name": "a"}}},
+
+  {"family": "shift", "name": "ashr-zero", "rewrite": "a >>s 0 == a",
+   "formal": {"domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+     "variables": ["a"], "poison_variables": ["a"],
+     "before": {"op": "bvashr", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+     "after": {"op": "var", "name": "a"}}}
+]

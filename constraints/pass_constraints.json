@@ -1,0 +1,837 @@
+[
+  {
+    "marker": "probe.instcombine.add-zero",
+    "pass": "instcombine",
+    "predicate_kind": "matcher",
+    "source_patterns": [
+      "m_Zero("
+    ],
+    "constraints": {
+      "instruction.opcode": "add",
+      "rhs.kind": "constant",
+      "rhs.value": 0
+    }
+  },
+  {
+    "marker": "probe.instcombine.mul-one",
+    "pass": "instcombine",
+    "predicate_kind": "matcher",
+    "source_patterns": [
+      "m_One("
+    ],
+    "constraints": {
+      "instruction.opcode": "mul",
+      "rhs.kind": "constant",
+      "rhs.value": 1
+    }
+  },
+  {
+    "marker": "probe.instcombine.xor-self",
+    "pass": "instcombine",
+    "predicate_kind": "equality",
+    "source_patterns": [
+      "Op0 == Op1",
+      "LHS == RHS",
+      "m_c_Xor(",
+      "m_Xor("
+    ],
+    "constraints": {
+      "instruction.opcode": "xor",
+      "lhs": "same-value",
+      "rhs": "same-value"
+    }
+  },
+  {
+    "marker": "probe.instcombine.sub-zero",
+    "pass": "instcombine",
+    "predicate_kind": "matcher",
+    "source_patterns": [
+      "m_Sub(",
+      "m_Zero("
+    ],
+    "constraints": {
+      "instruction.opcode": "sub",
+      "rhs.kind": "constant",
+      "rhs.value": 0
+    }
+  },
+  {
+    "marker": "probe.instcombine.or-zero",
+    "pass": "instcombine",
+    "predicate_kind": "matcher",
+    "source_patterns": [
+      "m_Or(",
+      "m_Zero("
+    ],
+    "constraints": {
+      "instruction.opcode": "or",
+      "rhs.kind": "constant",
+      "rhs.value": 0
+    }
+  },
+  {
+    "marker": "probe.instcombine.and-allones",
+    "pass": "instcombine",
+    "predicate_kind": "matcher",
+    "source_patterns": [
+      "m_And(",
+      "m_AllOnes("
+    ],
+    "constraints": {
+      "instruction.opcode": "and",
+      "rhs.kind": "constant",
+      "rhs.value": -1
+    }
+  },
+  {
+    "marker": "probe.instcombine.and-self",
+    "pass": "instcombine",
+    "predicate_kind": "equality",
+    "source_patterns": [
+      "m_And(",
+      "m_Deferred(",
+      "Op0 == Op1",
+      "LHS == RHS"
+    ],
+    "constraints": {
+      "instruction.opcode": "and",
+      "lhs": "same-value",
+      "rhs": "same-value"
+    }
+  },
+  {
+    "marker": "probe.dce.dead-instruction",
+    "pass": "dce",
+    "predicate_kind": "legality",
+    "source_patterns": [
+      "isInstructionTriviallyDead("
+    ],
+    "constraints": {
+      "instruction.is_dead": true
+    },
+    "ast_mining": {
+      "bind": "dead-inst",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isInstructionTriviallyDead"
+      ]
+    }
+  },
+  {
+    "marker": "probe.globalopt.dead-initializer",
+    "pass": "globalopt",
+    "predicate_kind": "legality",
+    "source_patterns": [
+      "isGlobalInitializerDead("
+    ],
+    "constraints": {
+      "global.initializer_dead": true,
+      "global.observable": false
+    },
+    "ast_mining": {
+      "bind": "dead-global-init",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isGlobalInitializerDead"
+      ]
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.unreachable-block",
+    "pass": "simplifycfg",
+    "predicate_kind": "terminator",
+    "source_patterns": [
+      "UnreachableInst",
+      "unreachable"
+    ],
+    "constraints": {
+      "block.reachable": false
+    },
+    "ast_mining": {
+      "bind": "unreachable",
+      "matcher_kind": "type-name",
+      "matcher_names": [
+        "UnreachableInst"
+      ]
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.diamond",
+    "pass": "simplifycfg",
+    "predicate_kind": "cfg",
+    "source_patterns": [
+      "getSinglePredecessor(",
+      "getSingleSuccessor("
+    ],
+    "constraints": {
+      "cfg.shape": "diamond"
+    },
+    "ast_mining": {
+      "bind": "diamond",
+      "matcher_kind": "member-call",
+      "matcher_names": [
+        "getSinglePredecessor"
+      ]
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.nested-branch",
+    "pass": "simplifycfg",
+    "predicate_kind": "cfg",
+    "source_patterns": [
+      "NestedBranch",
+      "nested branch"
+    ],
+    "constraints": {
+      "cfg.shape": "nested-branch"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.branch-chain",
+    "pass": "simplifycfg",
+    "predicate_kind": "cfg",
+    "source_patterns": [
+      "SwitchInst",
+      "switch"
+    ],
+    "constraints": {
+      "cfg.shape": "switch-like-chain"
+    },
+    "ast_mining": {
+      "bind": "branch-chain",
+      "matcher_kind": "type-name",
+      "matcher_names": [
+        "SwitchInst"
+      ]
+    }
+  },
+  {
+    "marker": "probe.mem2reg.promotable-alloca",
+    "pass": "mem2reg",
+    "predicate_kind": "memory",
+    "source_patterns": [
+      "isAllocaPromotable(",
+      "PromoteMemToReg"
+    ],
+    "constraints": {
+      "memory.alloca": "promotable"
+    },
+    "ast_mining": {
+      "bind": "promotable-alloca",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isAllocaPromotable"
+      ]
+    }
+  },
+  {
+    "marker": "probe.mem2reg.store-load-forward",
+    "pass": "mem2reg",
+    "predicate_kind": "memory",
+    "source_patterns": [
+      "OnlyUsedInOneBlock",
+      "rewriteSingleStoreAlloca"
+    ],
+    "constraints": {
+      "memory.store_load_forward": true
+    },
+    "ast_mining": {
+      "bind": "store-load-forward",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "rewriteSingleStoreAlloca"
+      ]
+    }
+  },
+  {
+    "marker": "probe.dse.dead-store",
+    "pass": "dse",
+    "predicate_kind": "memory",
+    "source_patterns": [
+      "isRemovable",
+      "DeadStore"
+    ],
+    "constraints": {
+      "memory.store": "dead"
+    },
+    "ast_mining": {
+      "bind": "dead-store",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isRemovable"
+      ]
+    }
+  },
+  {
+    "marker": "probe.dse.overwritten-store",
+    "pass": "dse",
+    "predicate_kind": "memory",
+    "source_patterns": [
+      "getLocForWrite",
+      "isOverwrite"
+    ],
+    "constraints": {
+      "memory.store": "overwritten"
+    },
+    "ast_mining": {
+      "bind": "overwritten-store",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isOverwrite"
+      ]
+    }
+  },
+  {
+    "marker": "probe.instcombine.redundant-load",
+    "pass": "instcombine",
+    "predicate_kind": "memory",
+    "source_patterns": [
+      "LoadInst",
+      "FindAvailableLoadedValue"
+    ],
+    "constraints": {
+      "memory.load": "redundant"
+    },
+    "ast_mining": {
+      "bind": "redundant-load",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "FindAvailableLoadedValue"
+      ]
+    }
+  },
+  {
+    "marker": "probe.cleanup.unused-alloca",
+    "pass": "cleanup",
+    "predicate_kind": "memory",
+    "source_patterns": [
+      "use_empty",
+      "user_empty",
+      "hasNUses(0)",
+      "users().empty",
+      "hasNUsesOrMore(1)"
+    ],
+    "constraints": {
+      "memory.alloca": "unused"
+    },
+    "ast_mining": {
+      "bind": "unused-alloca",
+      "matcher_kind": "member-call",
+      "matcher_names": [
+        "use_empty",
+        "user_empty"
+      ]
+    }
+  },
+  {
+    "marker": "probe.loop.canonical-header",
+    "pass": "loop-simplify",
+    "predicate_kind": "loop",
+    "source_patterns": [
+      "getHeader(",
+      "LoopSimplify"
+    ],
+    "constraints": {
+      "loop.shape": "canonical"
+    },
+    "ast_mining": {
+      "bind": "loop-header",
+      "matcher_kind": "member-call",
+      "matcher_names": [
+        "getHeader"
+      ]
+    }
+  },
+  {
+    "marker": "probe.loop.induction-phi",
+    "pass": "indvars",
+    "predicate_kind": "loop",
+    "source_patterns": [
+      "PHINode",
+      "InductionDescriptor"
+    ],
+    "constraints": {
+      "loop.induction": "phi"
+    },
+    "ast_mining": {
+      "bind": "induction-phi",
+      "matcher_kind": "type-name",
+      "matcher_names": [
+        "PHINode"
+      ]
+    }
+  },
+  {
+    "marker": "probe.loop.simple-trip-count",
+    "pass": "scalar-evolution",
+    "predicate_kind": "loop",
+    "source_patterns": [
+      "getSmallConstantTripCount",
+      "ScalarEvolution"
+    ],
+    "constraints": {
+      "loop.trip_count": "simple"
+    },
+    "ast_mining": {
+      "bind": "simple-trip-count",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "getSmallConstantTripCount"
+      ]
+    }
+  },
+  {
+    "marker": "probe.licm.invariant-op",
+    "pass": "licm",
+    "predicate_kind": "loop",
+    "source_patterns": [
+      "isLoopInvariant",
+      "makeLoopInvariant"
+    ],
+    "constraints": {
+      "loop.invariant": true
+    },
+    "ast_mining": {
+      "bind": "invariant-op",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isLoopInvariant",
+        "makeLoopInvariant"
+      ]
+    }
+  },
+  {
+    "marker": "probe.dce.dead-loop-instruction",
+    "pass": "dce",
+    "predicate_kind": "loop",
+    "source_patterns": [
+      "isDeadLoopInstruction",
+      "LoopInfo"
+    ],
+    "constraints": {
+      "loop.body_instruction": "dead"
+    },
+    "ast_mining": {
+      "bind": "dead-loop-inst",
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "isDeadLoopInstruction"
+      ]
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.loop-exit",
+    "pass": "simplifycfg",
+    "predicate_kind": "loop",
+    "source_patterns": [
+      "getExitBlock",
+      "exiting block"
+    ],
+    "constraints": {
+      "loop.exit": "early"
+    },
+    "ast_mining": {
+      "bind": "loop-exit",
+      "matcher_kind": "member-call",
+      "matcher_names": [
+        "getExitBlock"
+      ]
+    }
+  },
+  {
+    "marker": "probe.vector.add-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "m_SplatOrPoison(m_Zero",
+      "vector add zero",
+      "VectorAddZero"
+    ],
+    "constraints": {
+      "vector.opcode": "add",
+      "vector.rhs": "zero-splat"
+    }
+  },
+  {
+    "marker": "probe.vector.mul-one",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "m_SplatOrPoison(m_One",
+      "vector mul one",
+      "VectorMulOne"
+    ],
+    "constraints": {
+      "vector.opcode": "mul",
+      "vector.rhs": "one-splat"
+    }
+  },
+  {
+    "marker": "probe.vector.xor-self",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "VectorXorSelf",
+      "Vec0 == Vec1"
+    ],
+    "constraints": {
+      "vector.opcode": "xor",
+      "vector.operands": "same-value"
+    }
+  },
+  {
+    "marker": "probe.vector.shuffle-identity",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "isIdentityMask",
+      "isIdentityWithExtract"
+    ],
+    "constraints": {
+      "vector.shuffle": "identity",
+      "vector.shuffle.mask": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  },
+  {
+    "marker": "probe.vector.shuffle-splat",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "isSplatMask"
+    ],
+    "constraints": {
+      "vector.shuffle": "splat",
+      "vector.shuffle.mask": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "vector.shuffle.splat_lane": 2
+    }
+  },
+  {
+    "marker": "probe.vector.extract-insert",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "extract insert same lane",
+      "sameLaneExtractInsert"
+    ],
+    "constraints": {
+      "vector.extract_insert": "same-lane",
+      "vector.extract_insert.lane": 1
+    }
+  },
+  {
+    "marker": "probe.vector.reduction-add-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "vector_reduce_add",
+      "CreateAddReduce",
+      "ReductionAddZero"
+    ],
+    "constraints": {
+      "vector.reduction": "add-zero"
+    },
+    "ast_mining": {
+      "matcher_kind": "function-call",
+      "matcher_names": [
+        "ReductionAddZero",
+        "CreateAddReduce",
+        "vector_reduce_add"
+      ]
+    }
+  },
+  {
+    "marker": "probe.vector.sub-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "VectorSubZero",
+      "vector sub zero"
+    ],
+    "constraints": {
+      "vector.opcode": "sub",
+      "vector.rhs": "zero-splat"
+    }
+  },
+  {
+    "marker": "probe.vector.or-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "VectorOrZero",
+      "vector or zero"
+    ],
+    "constraints": {
+      "vector.opcode": "or",
+      "vector.rhs": "zero-splat"
+    }
+  },
+  {
+    "marker": "probe.vector.and-allones",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "VectorAndAllOnes",
+      "vector and allones"
+    ],
+    "constraints": {
+      "vector.opcode": "and",
+      "vector.rhs": "allones-splat"
+    }
+  },
+  {
+    "marker": "probe.vector.smin",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "CreateSMin",
+      "smin",
+      "VectorSMin"
+    ],
+    "constraints": {
+      "vector.opcode": "smin"
+    }
+  },
+  {
+    "marker": "probe.vector.smax",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "CreateSMax",
+      "smax",
+      "VectorSMax"
+    ],
+    "constraints": {
+      "vector.opcode": "smax"
+    }
+  },
+  {
+    "marker": "probe.vector.umin",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "CreateUMin",
+      "umin",
+      "VectorUMin"
+    ],
+    "constraints": {
+      "vector.opcode": "umin"
+    }
+  },
+  {
+    "marker": "probe.vector.umax",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "CreateUMax",
+      "umax",
+      "VectorUMax"
+    ],
+    "constraints": {
+      "vector.opcode": "umax"
+    }
+  },
+  {
+    "marker": "probe.vector.abs",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "CreateAbs",
+      "abs",
+      "VectorAbs"
+    ],
+    "constraints": {
+      "vector.opcode": "abs"
+    }
+  },
+  {
+    "marker": "probe.vector.insert-extract-identity",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "insert extract identity",
+      "insertExtractIdentity"
+    ],
+    "constraints": {
+      "vector.insert_extract": "identity",
+      "vector.insert_extract.lane": 1
+    }
+  },
+  {
+    "marker": "probe.vector.reduction-add-single-lane",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ReductionAddSingleLane",
+      "vector reduce add single lane"
+    ],
+    "constraints": {
+      "vector.reduction": "add-single-lane",
+      "vector.reduction.lane": 0
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.add-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableVectorAddZero",
+      "scalable vector add zero"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.opcode": "add",
+      "vector.rhs": "zero-splat"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.mul-one",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableVectorMulOne",
+      "scalable vector mul one"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.opcode": "mul",
+      "vector.rhs": "one-splat"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.xor-self",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableVectorXorSelf",
+      "scalable vector xor self"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.opcode": "xor",
+      "vector.operands": "same-value"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.sub-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableVectorSubZero",
+      "scalable vector sub zero"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.opcode": "sub",
+      "vector.rhs": "zero-splat"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.or-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableVectorOrZero",
+      "scalable vector or zero"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.opcode": "or",
+      "vector.rhs": "zero-splat"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.and-allones",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableVectorAndAllOnes",
+      "scalable vector and allones"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.opcode": "and",
+      "vector.rhs": "allones-splat"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.reduction-add-zero",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "source_patterns": [
+      "ScalableReductionAddZero",
+      "scalable reduction add zero"
+    ],
+    "constraints": {
+      "vector.scalable": true,
+      "vector.reduction": "add-zero"
+    },
+    "ast_mining": {
+      "registration": "text-fallback"
+    }
+  },
+  {
+    "marker": "probe.slp.vectorize-binop",
+    "pass": "slp-vectorizer",
+    "predicate_kind": "transaction",
+    "source_patterns": [
+      "CreateAdd",
+      "CreateSub",
+      "CreateMul",
+      "CreateXor",
+      "CreateOr",
+      "CreateAnd",
+      "CreateBinOp"
+    ],
+    "constraints": {
+      "transaction.kind": "slp-vectorize-binop"
+    }
+  },
+  {
+    "marker": "probe.slp.vectorize-reduction",
+    "pass": "slp-vectorizer",
+    "predicate_kind": "transaction",
+    "source_patterns": [
+      "CreateAddReduce",
+      "CreateMulReduce",
+      "CreateAndReduce",
+      "CreateOrReduce",
+      "CreateXorReduce",
+      "CreateSMinReduce",
+      "CreateSMaxReduce",
+      "CreateUMinReduce",
+      "CreateUMaxReduce",
+      "vector_reduce_"
+    ],
+    "constraints": {
+      "transaction.kind": "slp-vectorize-reduction"
+    }
+  }
+]

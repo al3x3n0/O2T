@@ -1,0 +1,104 @@
+{
+  "model": "lift-rules-v1",
+  "comment": "Declarative intent->formal lift rules. Each rule carries a before/after DSL template with typed holes (var/const/binop/unop/ite). Holes resolve through the unified vocabulary: binop via BV_OP_FOR_OPERATION (llvm_idioms.json), const via CONSTANT_FOR_IDENTITY. Adding an algebraic identity is a JSON edit -- no Python -- and cv-lift-rules.py proves every rule sound with z3.",
+  "rules": [
+    {
+      "name": "add-zero",
+      "match": { "operation": "add", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "add", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "mul-one",
+      "match": { "operation": "mul", "identity": "one", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "mul", "args": [{ "var": "a" }, { "const": "one" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "sub-zero",
+      "match": { "operation": "sub", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "sub", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "or-zero",
+      "match": { "operation": "or", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "or", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "and-allones",
+      "match": { "operation": "and", "identity": "allones", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "and", "args": [{ "var": "a" }, { "const": "allones" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "xor-self",
+      "match": { "operation": "xor", "identity": "same-value", "rewrite": "replace-with-zero" },
+      "variables": ["a"],
+      "before": { "binop": "xor", "args": [{ "var": "a" }, { "var": "a" }] },
+      "after": { "const": "zero" }
+    },
+    {
+      "name": "and-self",
+      "match": { "operation": "and", "identity": "same-value", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "and", "args": [{ "var": "a" }, { "var": "a" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "or-self",
+      "match": { "operation": "or", "identity": "same-value", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "or", "args": [{ "var": "a" }, { "var": "a" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "sub-self",
+      "match": { "operation": "sub", "identity": "same-value", "rewrite": "replace-with-zero" },
+      "variables": ["a"],
+      "before": { "binop": "sub", "args": [{ "var": "a" }, { "var": "a" }] },
+      "after": { "const": "zero" }
+    },
+    {
+      "name": "mul-zero",
+      "match": { "operation": "mul", "identity": "zero", "rewrite": "replace-with-zero" },
+      "variables": ["a"],
+      "before": { "binop": "mul", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "const": "zero" }
+    },
+    {
+      "name": "shl-zero",
+      "match": { "operation": "shl", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "shl", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "ashr-zero",
+      "match": { "operation": "ashr", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "ashr", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "xor-zero",
+      "match": { "operation": "xor", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "xor", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    },
+    {
+      "name": "lshr-zero",
+      "match": { "operation": "lshr", "identity": "zero", "rewrite": "replace-with-lhs" },
+      "variables": ["a"],
+      "before": { "binop": "lshr", "args": [{ "var": "a" }, { "const": "zero" }] },
+      "after": { "var": "a" }
+    }
+  ]
+}

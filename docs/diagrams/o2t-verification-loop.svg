@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="620" viewBox="0 0 1320 620">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#384152"/>
+</marker>
+</defs>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="36" y="44" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700">O2T Verification Loop</text>
+<line x1="297" y1="165" x2="365" y2="152" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="331" y="150" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">AST facts</text>
+<line x1="297" y1="165" x2="365" y2="332" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="331" y="240" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">debug slice</text>
+<line x1="610" y1="152" x2="680" y2="225" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="645" y="180" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">semantic intent</text>
+<line x1="610" y1="332" x2="680" y2="225" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="645" y="270" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">implementation evidence</text>
+<line x1="935" y1="225" x2="1000" y2="162" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="967" y="185" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">obligations</text>
+<line x1="1245" y1="162" x2="1000" y2="392" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="1122" y="269" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">gaps</text>
+<line x1="1122" y1="450" x2="179" y2="110" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="650" y="272" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">next target</text>
+<rect x="62" y="110" width="235" height="110" rx="8" fill="#dbeafe" stroke="#384152" stroke-width="1.6"/>
+<text x="179.5" y="147" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Detect Optimization Site</text>
+<text x="179.5" y="165" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">marker, matcher, rewrite</text>
+<text x="179.5" y="183" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">region</text>
+<rect x="365" y="85" width="245" height="135" rx="8" fill="#dcfce7" stroke="#384152" stroke-width="1.6"/>
+<text x="487.5" y="125" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Model Intent</text>
+<text x="487.5" y="143" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">source-derived</text>
+<text x="487.5" y="161" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">before/after,</text>
+<text x="487.5" y="179" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">guards, replacement binding</text>
+<rect x="365" y="275" width="245" height="115" rx="8" fill="#e0f2fe" stroke="#384152" stroke-width="1.6"/>
+<text x="487.5" y="314" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Mine Pass Implementation</text>
+<text x="487.5" y="332" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">calls, operands, SSA/call</text>
+<text x="487.5" y="350" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">edges</text>
+<rect x="680" y="155" width="255" height="140" rx="8" fill="#fef9c3" stroke="#384152" stroke-width="1.6"/>
+<text x="807.5" y="207" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Check Consistency</text>
+<text x="807.5" y="225" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">source graph vs intent</text>
+<text x="807.5" y="243" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">impl-IR evidence vs rewrite</text>
+<rect x="1000" y="95" width="245" height="135" rx="8" fill="#fce7f3" stroke="#384152" stroke-width="1.6"/>
+<text x="1122.5" y="135" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Prove or Classify</text>
+<text x="1122.5" y="153" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">proved, mismatch, partial,</text>
+<text x="1122.5" y="171" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">unsupported, source-</text>
+<text x="1122.5" y="189" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">incomplete</text>
+<rect x="1000" y="335" width="245" height="115" rx="8" fill="#ede9fe" stroke="#384152" stroke-width="1.6"/>
+<text x="1122.5" y="374" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Improve Coverage</text>
+<text x="1122.5" y="392" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">new fixtures, budgets,</text>
+<text x="1122.5" y="410" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">ledger updates</text>
+</svg>

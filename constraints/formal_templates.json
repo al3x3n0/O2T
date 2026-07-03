@@ -1,0 +1,197 @@
+{
+  "model": "formal-templates-v1",
+  "templates": [
+    {
+      "marker": "probe.vector.add-zero",
+      "kind": "fixed-vector-algebraic-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (bvadd a #x00000000) (bvadd b #x00000000) (bvadd a #x00000000) (bvadd b #x00000000))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.mul-one",
+      "kind": "fixed-vector-algebraic-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (bvmul a #x00000001) (bvmul b #x00000001) (bvmul a #x00000001) (bvmul b #x00000001))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.xor-self",
+      "kind": "fixed-vector-algebraic-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (bvxor a a) (bvxor b b) (bvxor a a) (bvxor b b))",
+      "smt_after": "(concat #x00000000 #x00000000 #x00000000 #x00000000)"
+    },
+    {
+      "marker": "probe.vector.shuffle-identity",
+      "kind": "fixed-vector-structural-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat a b a b)",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.shuffle-splat",
+      "kind": "fixed-vector-structural-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat a a a a)",
+      "smt_after": "(concat a a a a)"
+    },
+    {
+      "marker": "probe.vector.extract-insert",
+      "kind": "fixed-vector-structural-identity",
+      "domain": "scalar-bv32",
+      "result_bits": 32,
+      "smt_before": "{const_a}",
+      "smt_after": "{const_a}"
+    },
+    {
+      "marker": "probe.vector.reduction-add-zero",
+      "kind": "fixed-vector-reduction-identity",
+      "domain": "scalar-bv32",
+      "result_bits": 32,
+      "smt_before": "#x00000000",
+      "smt_after": "#x00000000"
+    },
+    {
+      "marker": "probe.vector.sub-zero",
+      "kind": "fixed-vector-algebraic-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (bvsub a #x00000000) (bvsub b #x00000000) (bvsub a #x00000000) (bvsub b #x00000000))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.or-zero",
+      "kind": "fixed-vector-algebraic-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (bvor a #x00000000) (bvor b #x00000000) (bvor a #x00000000) (bvor b #x00000000))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.and-allones",
+      "kind": "fixed-vector-algebraic-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (bvand a #xffffffff) (bvand b #xffffffff) (bvand a #xffffffff) (bvand b #xffffffff))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.insert-extract-identity",
+      "kind": "fixed-vector-structural-identity",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat a b a b)",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.reduction-add-single-lane",
+      "kind": "fixed-vector-reduction-identity",
+      "domain": "scalar-bv32",
+      "result_bits": 32,
+      "smt_before": "a",
+      "smt_after": "a"
+    },
+    {
+      "marker": "probe.vector.smin",
+      "kind": "fixed-vector-minmax",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (ite (bvslt a b) a b) (ite (bvslt b a) b a) (ite (bvslt a b) a b) (ite (bvslt b a) b a))",
+      "smt_after": "(concat (ite (bvslt a b) a b) (ite (bvslt b a) b a) (ite (bvslt a b) a b) (ite (bvslt b a) b a))"
+    },
+    {
+      "marker": "probe.vector.smax",
+      "kind": "fixed-vector-minmax",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (ite (bvsgt a b) a b) (ite (bvsgt b a) b a) (ite (bvsgt a b) a b) (ite (bvsgt b a) b a))",
+      "smt_after": "(concat (ite (bvsgt a b) a b) (ite (bvsgt b a) b a) (ite (bvsgt a b) a b) (ite (bvsgt b a) b a))"
+    },
+    {
+      "marker": "probe.vector.umin",
+      "kind": "fixed-vector-minmax",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (ite (bvult a b) a b) (ite (bvult b a) b a) (ite (bvult a b) a b) (ite (bvult b a) b a))",
+      "smt_after": "(concat (ite (bvult a b) a b) (ite (bvult b a) b a) (ite (bvult a b) a b) (ite (bvult b a) b a))"
+    },
+    {
+      "marker": "probe.vector.umax",
+      "kind": "fixed-vector-minmax",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (ite (bvugt a b) a b) (ite (bvugt b a) b a) (ite (bvugt a b) a b) (ite (bvugt b a) b a))",
+      "smt_after": "(concat (ite (bvugt a b) a b) (ite (bvugt b a) b a) (ite (bvugt a b) a b) (ite (bvugt b a) b a))"
+    },
+    {
+      "marker": "probe.vector.abs",
+      "kind": "fixed-vector-abs",
+      "domain": "vector-bv32x4",
+      "result_bits": 128,
+      "smt_before": "(concat (ite (bvslt a #x00000000) (bvsub #x00000000 a) a) (ite (bvslt b #x00000000) (bvsub #x00000000 b) b) (ite (bvslt a #x00000000) (bvsub #x00000000 a) a) (ite (bvslt b #x00000000) (bvsub #x00000000 b) b))",
+      "smt_after": "(concat (ite (bvslt a #x00000000) (bvsub #x00000000 a) a) (ite (bvslt b #x00000000) (bvsub #x00000000 b) b) (ite (bvslt a #x00000000) (bvsub #x00000000 a) a) (ite (bvslt b #x00000000) (bvsub #x00000000 b) b))"
+    },
+    {
+      "marker": "probe.vector.scalable.add-zero",
+      "kind": "scalable-vector-algebraic-identity",
+      "domain": "scalable-vector-bv32",
+      "result_bits": 128,
+      "smt_before": "(concat (bvadd a #x00000000) (bvadd b #x00000000) (bvadd a #x00000000) (bvadd b #x00000000))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.scalable.mul-one",
+      "kind": "scalable-vector-algebraic-identity",
+      "domain": "scalable-vector-bv32",
+      "result_bits": 128,
+      "smt_before": "(concat (bvmul a #x00000001) (bvmul b #x00000001) (bvmul a #x00000001) (bvmul b #x00000001))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.scalable.xor-self",
+      "kind": "scalable-vector-algebraic-identity",
+      "domain": "scalable-vector-bv32",
+      "result_bits": 128,
+      "smt_before": "(concat (bvxor a a) (bvxor b b) (bvxor a a) (bvxor b b))",
+      "smt_after": "(concat #x00000000 #x00000000 #x00000000 #x00000000)"
+    },
+    {
+      "marker": "probe.vector.scalable.sub-zero",
+      "kind": "scalable-vector-algebraic-identity",
+      "domain": "scalable-vector-bv32",
+      "result_bits": 128,
+      "smt_before": "(concat (bvsub a #x00000000) (bvsub b #x00000000) (bvsub a #x00000000) (bvsub b #x00000000))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.scalable.or-zero",
+      "kind": "scalable-vector-algebraic-identity",
+      "domain": "scalable-vector-bv32",
+      "result_bits": 128,
+      "smt_before": "(concat (bvor a #x00000000) (bvor b #x00000000) (bvor a #x00000000) (bvor b #x00000000))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.scalable.and-allones",
+      "kind": "scalable-vector-algebraic-identity",
+      "domain": "scalable-vector-bv32",
+      "result_bits": 128,
+      "smt_before": "(concat (bvand a #xffffffff) (bvand b #xffffffff) (bvand a #xffffffff) (bvand b #xffffffff))",
+      "smt_after": "(concat a b a b)"
+    },
+    {
+      "marker": "probe.vector.scalable.reduction-add-zero",
+      "kind": "scalable-vector-reduction-identity",
+      "domain": "scalar-bv32",
+      "result_bits": 32,
+      "smt_before": "#x00000000",
+      "smt_after": "#x00000000"
+    }
+  ]
+}

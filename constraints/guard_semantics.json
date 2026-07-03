@@ -1,0 +1,167 @@
+[
+  {
+    "kind": "known-nonzero",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subject-nonzero",
+    "formal_effect": "not-eq-zero-assumption",
+    "formal_effect_args": {
+      "assumption": {
+        "op": "not-eq",
+        "value": 0
+      }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\bisKnownNonZero\\s*\\(\\s*(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\b"],
+      "subject_group": "subject",
+      "ast_callee": "isKnownNonZero"
+    }
+  },
+  {
+    "kind": "guaranteed-not-poison",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subject-not-poison",
+    "formal_effect": "not-poison-assumption",
+    "formal_effect_args": {
+      "assumption": {
+        "op": "not-poison",
+        "requires_poison_variable": true
+      }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\bisGuaranteedNotToBePoison\\s*\\(\\s*(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\s*\\)"],
+      "subject_group": "subject",
+      "ast_callee": "isGuaranteedNotToBePoison"
+    }
+  },
+  {
+    "kind": "known-positive",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subject-positive",
+    "formal_effect": "cmp-assumption",
+    "formal_effect_args": {
+      "assumption": {
+        "op": "cmp",
+        "predicate": "sgt",
+        "value": 0
+      }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\bisKnownPositive\\s*\\(\\s*(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\b"],
+      "subject_group": "subject",
+      "ast_callee": "isKnownPositive"
+    }
+  },
+  {
+    "kind": "known-nonnegative",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subject-nonnegative",
+    "formal_effect": "cmp-assumption",
+    "formal_effect_args": {
+      "assumption": {
+        "op": "cmp",
+        "predicate": "sge",
+        "value": 0
+      }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\bisKnownNonNegative\\s*\\(\\s*(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\b"],
+      "subject_group": "subject",
+      "ast_callee": "isKnownNonNegative"
+    }
+  },
+  {
+    "kind": "one-use",
+    "role": "modeled-side-condition",
+    "proof_effect": "structural-precondition-no-smt-effect",
+    "formal_effect": "structural-only",
+    "formal_effect_args": {
+      "structural": true
+    },
+    "audit_category": "structural",
+    "recognizers": {
+      "text_patterns": ["\\b(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\s*(?:->|\\.)\\s*hasOneUse\\s*\\("],
+      "subject_group": "subject",
+      "ast_callee": "hasOneUse"
+    }
+  },
+  {
+    "kind": "masked-value-is-zero",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subject-known-zero-mask",
+    "formal_effect": "known-bits-assumption",
+    "formal_effect_args": {
+      "assumption": {
+        "op": "known-bits",
+        "zero_mask": 0
+      }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\bMaskedValueIsZero\\s*\\(\\s*(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*(?P<zero_mask>0x[0-9A-Fa-f]+|[0-9]+)\\s*\\)"],
+      "subject_group": "subject",
+      "ast_callee": "MaskedValueIsZero"
+    }
+  },
+  {
+    "kind": "known-power-of-two",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subject-power-of-two",
+    "formal_effect": "power-of-two-assumption",
+    "formal_effect_args": {
+      "assumption": {
+        "op": "power-of-two",
+        "nonzero": true
+      }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\b(?:isKnownPowerOf2|isKnownToBeAPowerOfTwo)\\s*\\(\\s*(?P<subject>[A-Za-z_][A-Za-z0-9_]*)\\b"],
+      "subject_group": "subject",
+      "ast_callee": "isKnownPowerOf2"
+    }
+  },
+  {
+    "kind": "no-poison-generating-flags",
+    "role": "modeled-side-condition",
+    "proof_effect": "uses-unflagged-op-semantics",
+    "formal_effect": "semantic-side-condition",
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["!\\s*hasPoisonGeneratingFlags\\s*\\(", "\\bhasNoPoisonGeneratingFlags\\s*\\("]
+    }
+  },
+  {
+    "kind": "profitability",
+    "role": "profitability",
+    "proof_effect": "evidence-only-no-smt-effect",
+    "formal_effect": "none",
+    "audit_category": "profitability"
+  },
+  {
+    "kind": "known-nonequal",
+    "role": "modeled-side-condition",
+    "proof_effect": "assumes-subjects-distinct",
+    "formal_effect": "relation-assumption",
+    "formal_effect_args": {
+      "assumption": { "op": "rel", "predicate": "ne" }
+    },
+    "audit_category": "modeled",
+    "recognizers": {
+      "text_patterns": ["\\bisKnownNonEqual\\s*\\(\\s*(?P<left>[A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*(?P<right>[A-Za-z_][A-Za-z0-9_]*)\\b"],
+      "left_group": "left",
+      "right_group": "right",
+      "ast_callee": "isKnownNonEqual"
+    }
+  },
+  {
+    "kind": "unknown",
+    "role": "unmodeled-side-condition",
+    "proof_effect": "unmodeled",
+    "formal_effect": "none",
+    "audit_category": "unsupported"
+  }
+]

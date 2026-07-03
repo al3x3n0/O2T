@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+title: "O2T — Optimizer Testing Toolkit"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - alias: al3x3n0
+repository-code: "https://github.com/al3x3n0/O2T"
+abstract: >-
+  O2T is a framework for testing and formally verifying LLVM optimization
+  passes: it mines optimization intent from real pass source and proves
+  soundness with Z3, locally translation-validates rewrites against real
+  opt, and hunts miscompiles by differential and mutation testing.
+license: Apache-2.0
+keywords:
+  - LLVM
+  - compiler testing
+  - translation validation
+  - formal verification
+  - fuzzing

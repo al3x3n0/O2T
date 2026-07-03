@@ -1,0 +1,237 @@
+{
+  "model": "llvm-idioms-v1",
+  "operations": [
+    {
+      "operation": "add",
+      "matchers": ["m_Add", "m_c_Add"],
+      "builders": ["CreateAdd"],
+      "smt": "bvadd",
+      "commutative": true
+    },
+    {
+      "operation": "sub",
+      "matchers": ["m_Sub"],
+      "builders": ["CreateSub"],
+      "smt": "bvsub",
+      "commutative": false
+    },
+    {
+      "operation": "mul",
+      "matchers": ["m_Mul", "m_c_Mul"],
+      "builders": ["CreateMul"],
+      "smt": "bvmul",
+      "commutative": true
+    },
+    {
+      "operation": "xor",
+      "matchers": ["m_Xor"],
+      "builders": ["CreateXor"],
+      "smt": "bvxor",
+      "commutative": true
+    },
+    {
+      "operation": "or",
+      "matchers": ["m_Or", "m_c_Or"],
+      "builders": ["CreateOr"],
+      "smt": "bvor",
+      "commutative": true
+    },
+    {
+      "operation": "and",
+      "matchers": ["m_And", "m_c_And"],
+      "builders": ["CreateAnd"],
+      "smt": "bvand",
+      "commutative": true
+    },
+    {
+      "operation": "shl",
+      "matchers": ["m_Shl"],
+      "builders": ["CreateShl"],
+      "smt": "bvshl",
+      "commutative": false
+    },
+    {
+      "operation": "lshr",
+      "matchers": ["m_LShr"],
+      "builders": ["CreateLShr"],
+      "smt": "bvlshr",
+      "commutative": false
+    },
+    {
+      "operation": "ashr",
+      "matchers": ["m_AShr"],
+      "builders": ["CreateAShr"],
+      "smt": "bvashr",
+      "commutative": false
+    },
+    {
+      "operation": "udiv",
+      "matchers": ["m_UDiv"],
+      "builders": ["CreateUDiv"],
+      "smt": "bvudiv",
+      "commutative": false
+    },
+    {
+      "operation": "urem",
+      "matchers": ["m_URem"],
+      "builders": ["CreateURem"],
+      "smt": "bvurem",
+      "commutative": false
+    },
+    {
+      "operation": "sdiv",
+      "matchers": ["m_SDiv"],
+      "builders": ["CreateSDiv"],
+      "smt": "bvsdiv",
+      "commutative": false
+    },
+    {
+      "operation": "srem",
+      "matchers": ["m_SRem"],
+      "builders": ["CreateSRem"],
+      "smt": "bvsrem",
+      "commutative": false
+    }
+  ],
+  "constants": [
+    {
+      "identity": "zero",
+      "matchers": ["m_Zero"],
+      "formal_value": 0
+    },
+    {
+      "identity": "one",
+      "matchers": ["m_One"],
+      "formal_value": 1
+    },
+    {
+      "identity": "allones",
+      "matchers": ["m_AllOnes"],
+      "formal_value": 4294967295
+    },
+    {
+      "identity": "same-value",
+      "matchers": ["m_Specific", "m_Deferred"],
+      "formal_value": null
+    }
+  ],
+  "rewrites": [
+    {
+      "rewrite": "replace-uses",
+      "apis": ["replaceInstUsesWith", "ReplaceInstWithValue"],
+      "action": "replace-result",
+      "subject_arg": 0,
+      "replacement_arg": -1
+    },
+    {
+      "rewrite": "replace-inst",
+      "apis": ["ReplaceInstWithInst"],
+      "action": "replace-instruction",
+      "subject_arg": 0,
+      "replacement_arg": -1
+    },
+    {
+      "rewrite": "erase",
+      "apis": ["eraseFromParent"],
+      "action": "erase-instruction",
+      "subject_arg": 0
+    },
+    {
+      "rewrite": "erase-global-initializer",
+      "apis": ["setInitializer"],
+      "action": "remove-global-initializer-if-dead-v1",
+      "subject_arg": 0,
+      "replacement_arg": 0
+    }
+  ],
+  "reductions": [
+    {
+      "operation": "fadd",
+      "tokens": ["CreateFAddReduce", "vector_reduce_fadd"]
+    },
+    {
+      "operation": "fmul",
+      "tokens": ["CreateFMulReduce", "vector_reduce_fmul"]
+    },
+    {
+      "operation": "add",
+      "tokens": ["CreateAddReduce", "vector_reduce_add"]
+    },
+    {
+      "operation": "mul",
+      "tokens": ["CreateMulReduce", "vector_reduce_mul"]
+    },
+    {
+      "operation": "and",
+      "tokens": ["CreateAndReduce", "vector_reduce_and"]
+    },
+    {
+      "operation": "or",
+      "tokens": ["CreateOrReduce", "vector_reduce_or"]
+    },
+    {
+      "operation": "xor",
+      "tokens": ["CreateXorReduce", "vector_reduce_xor"]
+    },
+    {
+      "operation": "smin",
+      "tokens": ["CreateSMinReduce", "vector_reduce_smin"]
+    },
+    {
+      "operation": "smax",
+      "tokens": ["CreateSMaxReduce", "vector_reduce_smax"]
+    },
+    {
+      "operation": "umin",
+      "tokens": ["CreateUMinReduce", "vector_reduce_umin"]
+    },
+    {
+      "operation": "umax",
+      "tokens": ["CreateUMaxReduce", "vector_reduce_umax"]
+    }
+  ],
+  "vector_builders": [
+    {
+      "operation": "smin",
+      "tokens": ["CreateSMin", "ICMP_SLT", "icmp_slt", "icmpslt"]
+    },
+    {
+      "operation": "smax",
+      "tokens": ["CreateSMax", "ICMP_SGT", "icmp_sgt", "icmpsgt"]
+    },
+    {
+      "operation": "umin",
+      "tokens": ["CreateUMin", "ICMP_ULT", "icmp_ult", "icmpult"]
+    },
+    {
+      "operation": "umax",
+      "tokens": ["CreateUMax", "ICMP_UGT", "icmp_ugt", "icmpugt"]
+    },
+    {
+      "operation": "binop",
+      "tokens": ["CreateBinOp"]
+    },
+    {
+      "operation": "select",
+      "tokens": ["CreateSelect"]
+    }
+  ],
+  "guards": [
+    {
+      "api": "hasLocalLinkage",
+      "fact": "local-linkage"
+    },
+    {
+      "api": "use_empty",
+      "fact": "no-uses"
+    },
+    {
+      "api": "isInstructionTriviallyDead",
+      "fact": "dead-instruction"
+    },
+    {
+      "api": "hasOneUse",
+      "fact": "one-use"
+    }
+  ]
+}

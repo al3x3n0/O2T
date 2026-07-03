@@ -1,0 +1,72 @@
+[
+  {
+    "marker": "negative.add-one-is-identity",
+    "rewrite": "replace (add x, 1) with x  -- UNSOUND (off by one)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a"], "poison_variables": ["a"],
+      "before": {"op": "bvadd", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 1}]},
+      "after": {"op": "var", "name": "a"}
+    }
+  },
+  {
+    "marker": "negative.mul-zero-is-identity",
+    "rewrite": "replace (mul x, 0) with x  -- UNSOUND (result is 0)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a"], "poison_variables": ["a"],
+      "before": {"op": "bvmul", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+      "after": {"op": "var", "name": "a"}
+    }
+  },
+  {
+    "marker": "negative.sub-self-is-identity",
+    "rewrite": "replace (sub x, x) with x  -- UNSOUND (result is 0)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a"], "poison_variables": ["a"],
+      "before": {"op": "bvsub", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "a"}]},
+      "after": {"op": "var", "name": "a"}
+    }
+  },
+  {
+    "marker": "negative.xor-self-is-identity",
+    "rewrite": "replace (xor x, x) with x  -- UNSOUND (result is 0)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a"], "poison_variables": ["a"],
+      "before": {"op": "bvxor", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "a"}]},
+      "after": {"op": "var", "name": "a"}
+    }
+  },
+  {
+    "marker": "negative.and-self-is-zero",
+    "rewrite": "replace (and x, x) with 0  -- UNSOUND (result is x)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a"], "poison_variables": ["a"],
+      "before": {"op": "bvand", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "a"}]},
+      "after": {"op": "bvconst", "bits": 32, "value": 0}
+    }
+  },
+  {
+    "marker": "negative.or-zero-is-allones",
+    "rewrite": "replace (or x, 0) with -1  -- UNSOUND (result is x)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a"], "poison_variables": ["a"],
+      "before": {"op": "bvor", "args": [{"op": "var", "name": "a"}, {"op": "bvconst", "bits": 32, "value": 0}]},
+      "after": {"op": "bvconst", "bits": 32, "value": 4294967295}
+    }
+  },
+  {
+    "marker": "negative.add-commutes-to-wrong-var",
+    "rewrite": "replace (add x, y) with x  -- UNSOUND (drops y)",
+    "formal": {
+      "domain": "scalar-bv32", "equivalence": "result", "refinement": "refinement",
+      "variables": ["a", "b"], "poison_variables": ["a", "b"],
+      "before": {"op": "bvadd", "args": [{"op": "var", "name": "a"}, {"op": "var", "name": "b"}]},
+      "after": {"op": "var", "name": "a"}
+    }
+  }
+]

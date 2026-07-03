@@ -1,0 +1,29 @@
+{
+  "model": "vector-inference-templates-v1",
+  "templates": [
+    {"marker": "probe.vector.scalable.add-zero", "builder": "scalable-binop-identity", "op": "add", "formal_op": "svadd", "constant": 0, "text_tokens": ["ScalableVectorAddZero"], "constraints_any": [{"key": "vector.opcode", "value": "add"}]},
+    {"marker": "probe.vector.scalable.mul-one", "builder": "scalable-binop-identity", "op": "mul", "formal_op": "svmul", "constant": 1, "text_tokens": ["ScalableVectorMulOne"], "constraints_any": [{"key": "vector.opcode", "value": "mul"}]},
+    {"marker": "probe.vector.scalable.xor-self", "builder": "scalable-binop-self-zero", "op": "xor", "formal_op": "svxor", "text_tokens": ["ScalableVectorXorSelf"], "constraints_any": [{"key": "vector.opcode", "value": "xor"}]},
+    {"marker": "probe.vector.scalable.sub-zero", "builder": "scalable-binop-identity", "op": "sub", "formal_op": "svsub", "constant": 0, "text_tokens": ["ScalableVectorSubZero"], "constraints_any": [{"key": "vector.opcode", "value": "sub"}]},
+    {"marker": "probe.vector.scalable.or-zero", "builder": "scalable-binop-identity", "op": "or", "formal_op": "svor", "constant": 0, "text_tokens": ["ScalableVectorOrZero"], "constraints_any": [{"key": "vector.opcode", "value": "or"}]},
+    {"marker": "probe.vector.scalable.and-allones", "builder": "scalable-binop-identity", "op": "and", "formal_op": "svand", "constant": 4294967295, "text_tokens": ["ScalableVectorAndAllOnes"], "constraints_any": [{"key": "vector.opcode", "value": "and"}]},
+    {"marker": "probe.vector.scalable.reduction-add-zero", "builder": "scalable-reduction-add-zero", "text_tokens": ["ScalableReductionAddZero"], "constraints_any": [{"key": "vector.reduction", "value": "add-zero"}]},
+    {"marker": "probe.vector.add-zero", "builder": "fixed-binop-identity", "op": "add", "formal_op": "vadd", "constant": 0, "text_tokens": ["m_SplatOrPoison(m_Zero"], "constraints_any": [{"key": "vector.rhs", "value": "zero-splat"}, {"key": "vector.opcode", "value": "add"}]},
+    {"marker": "probe.vector.mul-one", "builder": "fixed-binop-identity", "op": "mul", "formal_op": "vmul", "constant": 1, "text_tokens": ["m_SplatOrPoison(m_One"], "constraints_any": [{"key": "vector.rhs", "value": "one-splat"}, {"key": "vector.opcode", "value": "mul"}]},
+    {"marker": "probe.vector.xor-self", "builder": "fixed-binop-self-zero", "op": "xor", "formal_op": "vxor", "text_tokens": ["VectorXorSelf", "Vec0 == Vec1"], "constraints_any": [{"key": "vector.operands", "value": "same-value"}]},
+    {"marker": "probe.vector.shuffle-identity", "builder": "shuffle-identity", "text_tokens": ["isIdentityMask", "isIdentityWithExtract"], "constraints_any": [{"key": "vector.shuffle", "value": "identity"}]},
+    {"marker": "probe.vector.shuffle-splat", "builder": "shuffle-splat", "text_tokens": ["isSplatMask"], "constraints_any": [{"key": "vector.shuffle", "value": "splat"}]},
+    {"marker": "probe.vector.extract-insert", "builder": "extract-insert", "text_tokens": ["sameLaneExtractInsert", "extract insert same lane"], "constraints_any": [{"key": "vector.extract_insert", "value": "same-lane"}]},
+    {"marker": "probe.vector.reduction-add-zero", "builder": "reduction-add-zero", "text_tokens": ["ReductionAddZero"], "constraints_any": [{"key": "vector.reduction", "value": "add-zero"}]},
+    {"marker": "probe.vector.sub-zero", "builder": "fixed-binop-identity", "op": "sub", "formal_op": "vsub", "constant": 0, "text_tokens": ["VectorSubZero"], "constraints_any": [{"key": "vector.rhs", "value": "zero-splat"}, {"key": "vector.opcode", "value": "sub"}]},
+    {"marker": "probe.vector.or-zero", "builder": "fixed-binop-identity", "op": "or", "formal_op": "vor", "constant": 0, "text_tokens": ["VectorOrZero"], "constraints_any": [{"key": "vector.rhs", "value": "zero-splat"}, {"key": "vector.opcode", "value": "or"}]},
+    {"marker": "probe.vector.and-allones", "builder": "fixed-binop-identity", "op": "and", "formal_op": "vand", "constant": 4294967295, "text_tokens": ["VectorAndAllOnes"], "constraints_any": [{"key": "vector.rhs", "value": "allones-splat"}, {"key": "vector.opcode", "value": "and"}]},
+    {"marker": "probe.vector.insert-extract-identity", "builder": "insert-extract-identity", "text_tokens": ["insertExtractIdentity", "insert extract identity"], "constraints_any": [{"key": "vector.insert_extract", "value": "identity"}]},
+    {"marker": "probe.vector.reduction-add-single-lane", "builder": "reduction-add-single-lane", "text_tokens": ["ReductionAddSingleLane"], "constraints_any": [{"key": "vector.reduction", "value": "add-single-lane"}]},
+    {"marker": "probe.vector.smin", "builder": "minmax", "formal_op": "vsmin", "expected": "smin", "text_tokens": ["smin"], "constraints_any": [{"key": "vector.opcode", "value": "smin"}]},
+    {"marker": "probe.vector.smax", "builder": "minmax", "formal_op": "vsmax", "expected": "smax", "text_tokens": ["smax"], "constraints_any": [{"key": "vector.opcode", "value": "smax"}]},
+    {"marker": "probe.vector.umin", "builder": "minmax", "formal_op": "vumin", "expected": "umin", "text_tokens": ["umin"], "constraints_any": [{"key": "vector.opcode", "value": "umin"}]},
+    {"marker": "probe.vector.umax", "builder": "minmax", "formal_op": "vumax", "expected": "umax", "text_tokens": ["umax"], "constraints_any": [{"key": "vector.opcode", "value": "umax"}]},
+    {"marker": "probe.vector.abs", "builder": "abs", "text_tokens": ["VectorAbs", "CreateAbs"], "constraints_any": [{"key": "vector.opcode", "value": "abs"}]}
+  ]
+}

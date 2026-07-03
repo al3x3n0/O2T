@@ -1,0 +1,27 @@
+ktest file : 'test000002.ktest'
+args       : ['instcombine_harness.linked.bc']
+num objects: 8
+object 0: name: b'arith_opcode'
+object 0: size: 1
+object 0: data: b'\x02'
+object 1: name: b'rhs_mode'
+object 1: size: 1
+object 1: data: b'\x01'
+object 2: name: b'extra_opcode'
+object 2: size: 1
+object 2: data: b'\x02'
+object 3: name: b'predicate'
+object 3: size: 1
+object 3: data: b'\x03'
+object 4: name: b'shape'
+object 4: size: 1
+object 4: data: b'\x01'
+object 5: name: b'feature_bits'
+object 5: size: 1
+object 5: data: b'\x02'
+object 6: name: b'const_a'
+object 6: size: 4
+object 6: data: b'\x08\x00\x00\x00'
+object 7: name: b'const_b'
+object 7: size: 4
+object 7: data: b'\xff\xff\xff\xff'

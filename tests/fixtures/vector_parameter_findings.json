@@ -1,0 +1,49 @@
+[
+  {
+    "file": "tests/fixtures/vector_pass_snippet.cpp",
+    "line": 53,
+    "marker": "probe.vector.shuffle-splat",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "matched_pattern": "isSplatMask",
+    "predicate_source": "if (isSplatMask(I)) {",
+    "rewrite_source": "return;",
+    "constraints": {
+      "vector.shuffle": "splat",
+      "vector.shuffle.mask": [3, 3, 3, 3],
+      "vector.shuffle.splat_lane": 3
+    },
+    "semantic_facts": {
+      "model": "optimization-semantic-v1",
+      "shape": "fixed-vector",
+      "operation": "shuffle",
+      "identity": "splat-mask",
+      "rewrite": "replace-with-lane-splat",
+      "result": "vector"
+    },
+    "finding_source": "fixture"
+  },
+  {
+    "file": "tests/fixtures/vector_pass_snippet.cpp",
+    "line": 56,
+    "marker": "probe.vector.extract-insert",
+    "pass": "instcombine",
+    "predicate_kind": "vector",
+    "matched_pattern": "sameLaneExtractInsert",
+    "predicate_source": "if (sameLaneExtractInsert(I)) {",
+    "rewrite_source": "return;",
+    "constraints": {
+      "vector.extract_insert": "same-lane",
+      "vector.extract_insert.lane": 3
+    },
+    "semantic_facts": {
+      "model": "optimization-semantic-v1",
+      "shape": "fixed-vector",
+      "operation": "extract-insert",
+      "identity": "same-lane",
+      "rewrite": "replace-with-inserted-scalar",
+      "result": "scalar"
+    },
+    "finding_source": "fixture"
+  }
+]

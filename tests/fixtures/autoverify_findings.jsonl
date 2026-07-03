@@ -1,0 +1,4 @@
+{"marker":"probe.instcombine.add-zero","predicate_source":"match(Op1, m_Zero())","rewrite_source":"return replaceInstUsesWith(I, Op0)"}
+{"marker":"probe.instcombine.and-allones","predicate_source":"match(Op1, m_AllOnes())","rewrite_source":"return replaceInstUsesWith(I, Op0)"}
+{"marker":"probe.instcombine.xor-self","predicate_source":"Op0 == Op1","rewrite_source":"return replaceInstUsesWith(I, Constant::getNullValue(0))"}
+{"marker":"probe.instcombine.mul-one","predicate_source":"match(Op1, m_Zero())","rewrite_source":"return replaceInstUsesWith(I, Op0)"}

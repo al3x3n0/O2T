@@ -1,0 +1,563 @@
+[
+  {
+    "marker": "probe.instcombine.add-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "add",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.instcombine.mul-one",
+    "semantic_facts": {
+      "identity": "one",
+      "model": "optimization-semantic-v1",
+      "operation": "mul",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.instcombine.xor-self",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "xor",
+      "result": "scalar",
+      "rewrite": "replace-with-zero",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.instcombine.sub-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "sub",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.instcombine.or-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "or",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.instcombine.and-allones",
+    "semantic_facts": {
+      "identity": "allones",
+      "model": "optimization-semantic-v1",
+      "operation": "and",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.instcombine.and-self",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "and",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.dce.dead-instruction",
+    "semantic_facts": {
+      "identity": "dead",
+      "model": "optimization-semantic-v1",
+      "operation": "erase",
+      "result": "scalar",
+      "rewrite": "remove-dead-instruction",
+      "shape": "scalar"
+    }
+  },
+  {
+    "marker": "probe.globalopt.dead-initializer",
+    "semantic_facts": {
+      "identity": "dead",
+      "model": "optimization-semantic-v1",
+      "operation": "erase",
+      "result": "observable-result",
+      "rewrite": "remove-global-initializer-if-dead-v1",
+      "shape": "global"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.unreachable-block",
+    "semantic_facts": {
+      "identity": "unreachable-block",
+      "model": "optimization-semantic-v1",
+      "operation": "remove-unreachable",
+      "result": "reachable-result",
+      "rewrite": "remove-block",
+      "shape": "cfg"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.diamond",
+    "semantic_facts": {
+      "identity": "diamond",
+      "model": "optimization-semantic-v1",
+      "operation": "simplify-branch",
+      "result": "reachable-result",
+      "rewrite": "collapse-diamond",
+      "shape": "cfg"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.nested-branch",
+    "semantic_facts": {
+      "identity": "nested-branch",
+      "model": "optimization-semantic-v1",
+      "operation": "simplify-branch",
+      "result": "reachable-result",
+      "rewrite": "collapse-nested-branch",
+      "shape": "cfg"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.branch-chain",
+    "semantic_facts": {
+      "identity": "switch-like-chain",
+      "model": "optimization-semantic-v1",
+      "operation": "simplify-branch",
+      "result": "reachable-result",
+      "rewrite": "collapse-branch-chain",
+      "shape": "cfg"
+    }
+  },
+  {
+    "marker": "probe.mem2reg.promotable-alloca",
+    "semantic_facts": {
+      "identity": "promotable-alloca",
+      "model": "optimization-semantic-v1",
+      "operation": "promote-alloca",
+      "result": "loaded-value",
+      "rewrite": "promote-to-register",
+      "shape": "memory"
+    }
+  },
+  {
+    "marker": "probe.mem2reg.store-load-forward",
+    "semantic_facts": {
+      "identity": "single-store",
+      "model": "optimization-semantic-v1",
+      "operation": "forward-store",
+      "result": "loaded-value",
+      "rewrite": "replace-load-with-stored-value",
+      "shape": "memory"
+    }
+  },
+  {
+    "marker": "probe.dse.dead-store",
+    "semantic_facts": {
+      "identity": "dead-store",
+      "model": "optimization-semantic-v1",
+      "operation": "remove-store",
+      "result": "observable-result",
+      "rewrite": "remove-dead-store",
+      "shape": "memory"
+    }
+  },
+  {
+    "marker": "probe.dse.overwritten-store",
+    "semantic_facts": {
+      "identity": "overwritten-store",
+      "model": "optimization-semantic-v1",
+      "operation": "remove-store",
+      "result": "loaded-value",
+      "rewrite": "remove-overwritten-store",
+      "shape": "memory"
+    }
+  },
+  {
+    "marker": "probe.instcombine.redundant-load",
+    "semantic_facts": {
+      "identity": "redundant-load",
+      "model": "optimization-semantic-v1",
+      "operation": "remove-load",
+      "result": "loaded-value",
+      "rewrite": "reuse-available-value",
+      "shape": "memory"
+    }
+  },
+  {
+    "marker": "probe.cleanup.unused-alloca",
+    "semantic_facts": {
+      "identity": "unused-alloca",
+      "model": "optimization-semantic-v1",
+      "operation": "remove-alloca",
+      "result": "observable-result",
+      "rewrite": "remove-unused-alloca",
+      "shape": "memory"
+    }
+  },
+  {
+    "marker": "probe.loop.canonical-header",
+    "semantic_facts": {
+      "identity": "noncanonical-header",
+      "model": "optimization-semantic-v1",
+      "operation": "canonicalize-loop",
+      "result": "loop-result",
+      "rewrite": "canonicalize-header",
+      "shape": "loop"
+    }
+  },
+  {
+    "marker": "probe.loop.induction-phi",
+    "semantic_facts": {
+      "identity": "induction-phi",
+      "model": "optimization-semantic-v1",
+      "operation": "recognize-induction",
+      "result": "loop-result",
+      "rewrite": "preserve-induction-result",
+      "shape": "loop"
+    }
+  },
+  {
+    "marker": "probe.loop.simple-trip-count",
+    "semantic_facts": {
+      "identity": "simple-trip-count",
+      "model": "optimization-semantic-v1",
+      "operation": "derive-trip-count",
+      "result": "loop-result",
+      "rewrite": "preserve-trip-count-result",
+      "shape": "loop"
+    }
+  },
+  {
+    "marker": "probe.licm.invariant-op",
+    "semantic_facts": {
+      "identity": "loop-invariant",
+      "model": "optimization-semantic-v1",
+      "operation": "hoist-invariant",
+      "result": "loop-result",
+      "rewrite": "hoist-invariant-op",
+      "shape": "loop"
+    }
+  },
+  {
+    "marker": "probe.dce.dead-loop-instruction",
+    "semantic_facts": {
+      "identity": "dead-loop-instruction",
+      "model": "optimization-semantic-v1",
+      "operation": "erase",
+      "result": "loop-result",
+      "rewrite": "remove-dead-loop-instruction",
+      "shape": "loop"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.loop-exit",
+    "semantic_facts": {
+      "identity": "early-exit",
+      "model": "optimization-semantic-v1",
+      "operation": "simplify-loop-exit",
+      "result": "loop-result",
+      "rewrite": "preserve-loop-exit-result",
+      "shape": "loop"
+    }
+  },
+  {
+    "marker": "probe.vector.add-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "add",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.mul-one",
+    "semantic_facts": {
+      "identity": "one",
+      "model": "optimization-semantic-v1",
+      "operation": "mul",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.xor-self",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "xor",
+      "result": "vector",
+      "rewrite": "replace-with-zero",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.shuffle-identity",
+    "semantic_facts": {
+      "identity": "identity-mask",
+      "model": "optimization-semantic-v1",
+      "operation": "shuffle",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.shuffle-splat",
+    "semantic_facts": {
+      "identity": "splat-mask",
+      "model": "optimization-semantic-v1",
+      "operation": "shuffle",
+      "result": "vector",
+      "rewrite": "replace-with-lane-splat",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.extract-insert",
+    "semantic_facts": {
+      "identity": "same-lane",
+      "model": "optimization-semantic-v1",
+      "operation": "extract-insert",
+      "result": "scalar",
+      "rewrite": "replace-with-inserted-scalar",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.reduction-add-zero",
+    "semantic_facts": {
+      "identity": "zero-vector",
+      "model": "optimization-semantic-v1",
+      "operation": "reduction-add",
+      "result": "scalar",
+      "rewrite": "reduce-to-zero",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.sub-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "sub",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.or-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "or",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.and-allones",
+    "semantic_facts": {
+      "identity": "allones",
+      "model": "optimization-semantic-v1",
+      "operation": "and",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.smin",
+    "semantic_facts": {
+      "identity": "signed-min",
+      "model": "optimization-semantic-v1",
+      "operation": "min",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.smax",
+    "semantic_facts": {
+      "identity": "signed-max",
+      "model": "optimization-semantic-v1",
+      "operation": "max",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.umin",
+    "semantic_facts": {
+      "identity": "unsigned-min",
+      "model": "optimization-semantic-v1",
+      "operation": "min",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.umax",
+    "semantic_facts": {
+      "identity": "unsigned-max",
+      "model": "optimization-semantic-v1",
+      "operation": "max",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.abs",
+    "semantic_facts": {
+      "identity": "absolute-value",
+      "model": "optimization-semantic-v1",
+      "operation": "abs",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.insert-extract-identity",
+    "semantic_facts": {
+      "identity": "same-lane",
+      "model": "optimization-semantic-v1",
+      "operation": "insert-extract",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.reduction-add-single-lane",
+    "semantic_facts": {
+      "identity": "single-live-lane",
+      "model": "optimization-semantic-v1",
+      "operation": "reduction-add",
+      "result": "scalar",
+      "rewrite": "replace-with-lane",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.add-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "add",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.mul-one",
+    "semantic_facts": {
+      "identity": "one",
+      "model": "optimization-semantic-v1",
+      "operation": "mul",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.xor-self",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "xor",
+      "result": "vector",
+      "rewrite": "replace-with-zero",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.sub-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "sub",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.or-zero",
+    "semantic_facts": {
+      "identity": "zero",
+      "model": "optimization-semantic-v1",
+      "operation": "or",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.and-allones",
+    "semantic_facts": {
+      "identity": "allones",
+      "model": "optimization-semantic-v1",
+      "operation": "and",
+      "result": "vector",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.reduction-add-zero",
+    "semantic_facts": {
+      "identity": "zero-vector",
+      "model": "optimization-semantic-v1",
+      "operation": "reduction-add",
+      "result": "vector",
+      "rewrite": "reduce-to-zero-splat",
+      "shape": "scalable-vector"
+    }
+  },
+  {
+    "marker": "probe.slp.vectorize-binop",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "add",
+      "result": "vector",
+      "rewrite": "preserve-vector",
+      "shape": "fixed-vector"
+    }
+  },
+  {
+    "marker": "probe.slp.vectorize-reduction",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "reduction",
+      "result": "scalar",
+      "rewrite": "preserve-reduction-result",
+      "shape": "fixed-vector"
+    }
+  }
+]

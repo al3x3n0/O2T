@@ -1,0 +1,10 @@
+[
+  {
+    "marker": "probe.instcombine.add-zero",
+    "category": "scalar",
+    "precondition": "instruction.opcode == add && rhs == 0",
+    "rewrite": "test-only bad rewrite to the unrelated second argument",
+    "intent": "result-equivalence",
+    "smt_after": "b"
+  }
+]

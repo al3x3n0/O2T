@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "o2t"
+version = "0.1.0"
+description = "O2T (Optimizer Testing Toolkit) loop-verification core: frontend / mine / synth / prove."
+requires-python = ">=3.9"
+
+# The loop-verification cluster is now a proper package:
+#   o2t.frontend  -- .ll / .cpp ingestion (SCEV via opt, Clang AST, regex legacy)
+#   o2t.mine      -- transform miners + relational drivers
+#   o2t.synth     -- invariant / relational synthesis (polynomial, coupled, pairing)
+#   o2t.prove     -- the Z-discharge provers (induction, cond/geom, memory)
+# The tools/cv-*.py files remain as thin CLI shims (so the CMake/gate fixtures are unchanged);
+# each bootstraps sys.path and calls the package module's main(). Editable install is optional:
+#   pip install -e .
+# Legacy underscore helpers (cv_formal_ir, ...) still live in tools/ until a later migration
+# pass. The compatibility package remains included so old imports continue to resolve.
+
+[tool.setuptools.packages.find]
+include = ["o2t*", "compilerverif*"]

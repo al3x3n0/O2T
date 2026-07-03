@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="620" viewBox="0 0 1320 620">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#384152"/>
+</marker>
+</defs>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="36" y="44" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700">O2T End-to-End Flow</text>
+<line x1="277" y1="160" x2="345" y2="145" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="311" y="144" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">pass source</text>
+<line x1="277" y1="160" x2="345" y2="315" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="311" y="229" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">compiled pass</text>
+<line x1="590" y1="145" x2="655" y2="210" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="622" y="169" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">source_intent_graph</text>
+<line x1="590" y1="315" x2="655" y2="210" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="622" y="254" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">IR evidence</text>
+<line x1="900" y1="210" x2="965" y2="145" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="932" y="169" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">formal obligations</text>
+<line x1="900" y1="210" x2="965" y2="315" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="932" y="254" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">candidate evidence</text>
+<line x1="1210" y1="315" x2="965" y2="477" stroke="#384152" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="1087" y="388" text-anchor="middle" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="13">coverage + deltas</text>
+<rect x="42" y="105" width="235" height="110" rx="8" fill="#dbeafe" stroke="#384152" stroke-width="1.6"/>
+<text x="159.5" y="133" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Inputs</text>
+<text x="159.5" y="151" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">LLVM pass source,</text>
+<text x="159.5" y="169" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">compile_commands.json,</text>
+<text x="159.5" y="187" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">constraints, seeds</text>
+<rect x="345" y="80" width="245" height="130" rx="8" fill="#e0f2fe" stroke="#384152" stroke-width="1.6"/>
+<text x="467.5" y="118" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Source Mining</text>
+<text x="467.5" y="136" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">cv-mine-pass-source-ast</text>
+<text x="467.5" y="154" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">markers, predicates,</text>
+<text x="467.5" y="172" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">rewrites, guards</text>
+<rect x="345" y="250" width="245" height="130" rx="8" fill="#e0f2fe" stroke="#384152" stroke-width="1.6"/>
+<text x="467.5" y="297" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Implementation IR Mining</text>
+<text x="467.5" y="315" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">cv-mine-pass-impl-ir</text>
+<text x="467.5" y="333" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">CFG, DFG, calls, operands</text>
+<rect x="655" y="145" width="245" height="130" rx="8" fill="#dcfce7" stroke="#384152" stroke-width="1.6"/>
+<text x="777.5" y="183" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Intent Inference</text>
+<text x="777.5" y="201" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">cv-infer-optimization-</text>
+<text x="777.5" y="219" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">intent.py</text>
+<text x="777.5" y="237" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">formal before/after model</text>
+<rect x="965" y="80" width="245" height="130" rx="8" fill="#fef9c3" stroke="#384152" stroke-width="1.6"/>
+<text x="1087.5" y="118" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Validation</text>
+<text x="1087.5" y="136" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">SMT/Alive2-compatible</text>
+<text x="1087.5" y="154" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">checks</text>
+<text x="1087.5" y="172" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">proved, failed, unsupported</text>
+<rect x="965" y="250" width="245" height="130" rx="8" fill="#fce7f3" stroke="#384152" stroke-width="1.6"/>
+<text x="1087.5" y="288" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Audit Reports</text>
+<text x="1087.5" y="306" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">findings.json, run-</text>
+<text x="1087.5" y="324" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">summary.json, real-pass-</text>
+<text x="1087.5" y="342" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">readiness</text>
+<rect x="965" y="430" width="245" height="95" rx="8" fill="#ede9fe" stroke="#384152" stroke-width="1.6"/>
+<text x="1087.5" y="459" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">Production Gate</text>
+<text x="1087.5" y="477" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">budgets, baselines,</text>
+<text x="1087.5" y="495" text-anchor="middle" dominant-baseline="middle" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="400">regressions</text>
+</svg>

@@ -1,0 +1,1857 @@
+[
+  {
+    "marker": "probe.instcombine.add-zero",
+    "category": "scalar",
+    "precondition": "instruction.opcode == add && rhs == 0",
+    "rewrite": "replace (add x, 0) with x",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "poison_variables": [
+        "a"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "bvconst",
+            "value": 0,
+            "bits": 32
+          }
+        ]
+      },
+      "after": {
+        "op": "var",
+        "name": "a"
+      },
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.instcombine.mul-one",
+    "category": "scalar",
+    "precondition": "instruction.opcode == mul && rhs == 1",
+    "rewrite": "replace (mul x, 1) with x",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "poison_variables": [
+        "a"
+      ],
+      "before": {
+        "op": "bvmul",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "bvconst",
+            "value": 1,
+            "bits": 32
+          }
+        ]
+      },
+      "after": {
+        "op": "var",
+        "name": "a"
+      },
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.instcombine.xor-self",
+    "category": "scalar",
+    "precondition": "instruction.opcode == xor && operands are the same value",
+    "rewrite": "replace (xor x, x) with 0",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "poison_variables": [
+        "a"
+      ],
+      "before": {
+        "op": "bvxor",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "a"
+          }
+        ]
+      },
+      "after": {
+        "op": "bvconst",
+        "value": 0,
+        "bits": 32
+      },
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.instcombine.sub-zero",
+    "category": "scalar",
+    "precondition": "instruction.opcode == sub && rhs == 0",
+    "rewrite": "replace (sub x, 0) with x",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a", "b"],
+      "poison_variables": ["a"],
+      "before": {
+        "op": "bvsub",
+        "args": [
+          {"op": "var", "name": "a"},
+          {"op": "bvconst", "value": 0, "bits": 32}
+        ]
+      },
+      "after": {"op": "var", "name": "a"},
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.instcombine.or-zero",
+    "category": "scalar",
+    "precondition": "instruction.opcode == or && rhs == 0",
+    "rewrite": "replace (or x, 0) with x",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a", "b"],
+      "poison_variables": ["a"],
+      "before": {
+        "op": "bvor",
+        "args": [
+          {"op": "var", "name": "a"},
+          {"op": "bvconst", "value": 0, "bits": 32}
+        ]
+      },
+      "after": {"op": "var", "name": "a"},
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.instcombine.and-allones",
+    "category": "scalar",
+    "precondition": "instruction.opcode == and && rhs == -1",
+    "rewrite": "replace (and x, -1) with x",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a", "b"],
+      "poison_variables": ["a"],
+      "before": {
+        "op": "bvand",
+        "args": [
+          {"op": "var", "name": "a"},
+          {"op": "bvconst", "value": 4294967295, "bits": 32}
+        ]
+      },
+      "after": {"op": "var", "name": "a"},
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.instcombine.and-self",
+    "category": "scalar",
+    "precondition": "instruction.opcode == and && operands are the same value",
+    "rewrite": "replace (and x, x) with x",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a", "b"],
+      "poison_variables": ["a"],
+      "before": {
+        "op": "bvand",
+        "args": [
+          {"op": "var", "name": "a"},
+          {"op": "var", "name": "a"}
+        ]
+      },
+      "after": {"op": "var", "name": "a"},
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.dce.dead-instruction",
+    "category": "scalar",
+    "precondition": "instruction is dead and has no observable effect",
+    "rewrite": "remove the dead instruction",
+    "intent": "observable-result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "before": {
+        "op": "var",
+        "name": "a"
+      },
+      "after": {
+        "op": "var",
+        "name": "a"
+      },
+      "equivalence": "result"
+    }
+  },
+  {
+    "marker": "probe.globalopt.dead-initializer",
+    "category": "global",
+    "precondition": "global initializer is proven unobservable",
+    "rewrite": "replace the global initializer with a default null initializer",
+    "intent": "global-initializer-observable-equivalence",
+    "formal": {
+      "domain": "global-initializer-observable-v1",
+      "contract": "remove-global-initializer-if-dead-v1",
+      "observability_model": "local-unobservable-initializer-v1",
+      "required_safety_facts": [
+        "initializer-dead",
+        "local-linkage",
+        "no-uses"
+      ],
+      "predicate_provenance": {
+        "model": "predicate-provenance-contract-v1",
+        "provenance_sources": [
+          "global.initializer.safety_provenance",
+          "facts"
+        ],
+        "facts": [
+          {
+            "fact": "initializer-dead",
+            "predicate_family": "isGlobalInitializerDead"
+          },
+          {
+            "fact": "local-linkage",
+            "predicate_family": "hasLocalLinkage"
+          },
+          {
+            "fact": "no-uses",
+            "predicate_family": "use_empty"
+          }
+        ]
+      },
+      "rewrite_api": "setInitializer",
+      "replacement_kind": "default-null-initializer",
+      "witness_model": "global-initializer-default-null-family-v1",
+      "required_witness_cases": [
+        "i32",
+        "ptr",
+        "array"
+      ],
+      "equivalence": "observable-result"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.unreachable-block",
+    "category": "cfg",
+    "precondition": "block is unreachable from entry",
+    "rewrite": "remove the unreachable block",
+    "intent": "reachable-result-equivalence",
+    "formal": {
+      "domain": "cfg-bv32",
+      "variables": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "b"
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "b"
+          }
+        ]
+      },
+      "equivalence": "reachable-result"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.diamond",
+    "category": "cfg",
+    "precondition": "single branch diamond with a merge value",
+    "rewrite": "fold the diamond to an equivalent selected value",
+    "intent": "reachable-result-equivalence",
+    "formal": {
+      "domain": "cfg-bv32",
+      "variables": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "before": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          },
+          {
+            "op": "bvsub",
+            "args": [
+              {
+                "op": "var",
+                "name": "b"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          },
+          {
+            "op": "bvsub",
+            "args": [
+              {
+                "op": "var",
+                "name": "b"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          }
+        ]
+      },
+      "equivalence": "reachable-result"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.nested-branch",
+    "category": "cfg",
+    "precondition": "nested branch shape with a merge value",
+    "rewrite": "fold nested branches while preserving selected value",
+    "intent": "reachable-result-equivalence",
+    "formal": {
+      "domain": "cfg-bv32",
+      "variables": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "before": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "ne",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "ite",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "a"
+                  },
+                  {
+                    "op": "var",
+                    "name": "c"
+                  }
+                ]
+              },
+              {
+                "op": "bvxor",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "a"
+                  },
+                  {
+                    "op": "var",
+                    "name": "d"
+                  }
+                ]
+              },
+              {
+                "op": "bvmul",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "b"
+                  },
+                  {
+                    "op": "var",
+                    "name": "d"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "b"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "ne",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "ite",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "a"
+                  },
+                  {
+                    "op": "var",
+                    "name": "c"
+                  }
+                ]
+              },
+              {
+                "op": "bvxor",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "a"
+                  },
+                  {
+                    "op": "var",
+                    "name": "d"
+                  }
+                ]
+              },
+              {
+                "op": "bvmul",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "b"
+                  },
+                  {
+                    "op": "var",
+                    "name": "d"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "b"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          }
+        ]
+      },
+      "equivalence": "reachable-result"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.branch-chain",
+    "category": "cfg",
+    "precondition": "switch-like branch chain with equivalent case values",
+    "rewrite": "fold branch chain while preserving selected value",
+    "intent": "reachable-result-equivalence",
+    "formal": {
+      "domain": "cfg-bv32",
+      "variables": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "before": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "d"
+              }
+            ]
+          },
+          {
+            "op": "ite",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "b"
+                  },
+                  {
+                    "op": "var",
+                    "name": "c"
+                  }
+                ]
+              },
+              {
+                "op": "bvsub",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "b"
+                  },
+                  {
+                    "op": "var",
+                    "name": "d"
+                  }
+                ]
+              },
+              {
+                "op": "bvxor",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "a"
+                  },
+                  {
+                    "op": "var",
+                    "name": "b"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "c"
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "d"
+              }
+            ]
+          },
+          {
+            "op": "ite",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "b"
+                  },
+                  {
+                    "op": "var",
+                    "name": "c"
+                  }
+                ]
+              },
+              {
+                "op": "bvsub",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "b"
+                  },
+                  {
+                    "op": "var",
+                    "name": "d"
+                  }
+                ]
+              },
+              {
+                "op": "bvxor",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "a"
+                  },
+                  {
+                    "op": "var",
+                    "name": "b"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "equivalence": "reachable-result"
+    }
+  },
+  {
+    "marker": "probe.mem2reg.promotable-alloca",
+    "category": "memory",
+    "precondition": "alloca has bounded local uses and can be promoted",
+    "rewrite": "replace stack slot traffic with SSA values",
+    "intent": "loaded-value-equivalence",
+    "formal": {
+      "domain": "memory-bv32",
+      "variables": [
+        "a",
+        "b",
+        "c"
+      ],
+      "before": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "c"
+          }
+        ]
+      },
+      "after": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "c"
+          }
+        ]
+      },
+      "equivalence": "loaded-value"
+    }
+  },
+  {
+    "marker": "probe.mem2reg.store-load-forward",
+    "category": "memory",
+    "precondition": "load reads a dominating store to the same slot",
+    "rewrite": "replace load with the stored value",
+    "intent": "loaded-value-equivalence",
+    "formal": {
+      "domain": "memory-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "before": {
+        "op": "var",
+        "name": "a"
+      },
+      "after": {
+        "op": "var",
+        "name": "a"
+      },
+      "equivalence": "loaded-value"
+    }
+  },
+  {
+    "marker": "probe.dse.dead-store",
+    "category": "memory",
+    "precondition": "store is never read before function exit",
+    "rewrite": "remove the store",
+    "intent": "observable-result-equivalence",
+    "formal": {
+      "domain": "memory-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "before": {
+        "op": "var",
+        "name": "a"
+      },
+      "after": {
+        "op": "var",
+        "name": "a"
+      },
+      "equivalence": "observable-result"
+    }
+  },
+  {
+    "marker": "probe.dse.overwritten-store",
+    "category": "memory",
+    "precondition": "store is overwritten before any read",
+    "rewrite": "remove the overwritten store",
+    "intent": "loaded-value-equivalence",
+    "formal": {
+      "domain": "memory-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "b"
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "b"
+          }
+        ]
+      },
+      "equivalence": "loaded-value"
+    }
+  },
+  {
+    "marker": "probe.instcombine.redundant-load",
+    "category": "memory",
+    "precondition": "two loads read the same unchanged slot",
+    "rewrite": "reuse the first loaded value",
+    "intent": "loaded-value-equivalence",
+    "formal": {
+      "domain": "memory-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "a"
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "a"
+          }
+        ]
+      },
+      "equivalence": "loaded-value"
+    }
+  },
+  {
+    "marker": "probe.cleanup.unused-alloca",
+    "category": "memory",
+    "precondition": "alloca has no loads or stores",
+    "rewrite": "remove the unused alloca",
+    "intent": "observable-result-equivalence",
+    "formal": {
+      "domain": "memory-bv32",
+      "variables": [
+        "a",
+        "b"
+      ],
+      "before": {
+        "op": "var",
+        "name": "a"
+      },
+      "after": {
+        "op": "var",
+        "name": "a"
+      },
+      "equivalence": "observable-result"
+    }
+  },
+  {
+    "marker": "probe.loop.canonical-header",
+    "category": "loop",
+    "precondition": "bounded loop has a header and latch",
+    "rewrite": "canonicalize loop header structure",
+    "intent": "loop-result-equivalence",
+    "formal": {
+      "domain": "loop-bv32",
+      "variables": [
+        "a",
+        "b",
+        "i0",
+        "i1",
+        "i2"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "i0"
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "i1"
+              },
+              {
+                "op": "var",
+                "name": "i2"
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "i0"
+              }
+            ]
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "i1"
+              },
+              {
+                "op": "var",
+                "name": "i2"
+              }
+            ]
+          }
+        ]
+      },
+      "equivalence": "loop-result"
+    }
+  },
+  {
+    "marker": "probe.loop.induction-phi",
+    "category": "loop",
+    "precondition": "loop induction value is represented by a phi",
+    "rewrite": "normalize induction representation",
+    "intent": "loop-result-equivalence",
+    "formal": {
+      "domain": "loop-bv32",
+      "variables": [
+        "a",
+        "start",
+        "step",
+        "n"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "start"
+              },
+              {
+                "op": "bvmul",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "step"
+                  },
+                  {
+                    "op": "var",
+                    "name": "n"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "start"
+              },
+              {
+                "op": "bvmul",
+                "args": [
+                  {
+                    "op": "var",
+                    "name": "step"
+                  },
+                  {
+                    "op": "var",
+                    "name": "n"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "equivalence": "loop-result"
+    }
+  },
+  {
+    "marker": "probe.loop.simple-trip-count",
+    "category": "loop",
+    "precondition": "loop has a bounded simple trip count",
+    "rewrite": "use the equivalent canonical trip count",
+    "intent": "loop-result-equivalence",
+    "formal": {
+      "domain": "loop-bv32",
+      "variables": [
+        "a",
+        "body",
+        "trip"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "bvmul",
+            "args": [
+              {
+                "op": "var",
+                "name": "body"
+              },
+              {
+                "op": "var",
+                "name": "trip"
+              }
+            ]
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "bvmul",
+            "args": [
+              {
+                "op": "var",
+                "name": "body"
+              },
+              {
+                "op": "var",
+                "name": "trip"
+              }
+            ]
+          }
+        ]
+      },
+      "equivalence": "loop-result"
+    }
+  },
+  {
+    "marker": "probe.licm.invariant-op",
+    "category": "loop",
+    "precondition": "operation is loop invariant",
+    "rewrite": "hoist operation out of the loop",
+    "intent": "loop-result-equivalence",
+    "formal": {
+      "domain": "loop-bv32",
+      "variables": [
+        "a",
+        "b",
+        "trip"
+      ],
+      "before": {
+        "op": "bvmul",
+        "args": [
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "var",
+            "name": "trip"
+          }
+        ]
+      },
+      "after": {
+        "op": "bvmul",
+        "args": [
+          {
+            "op": "bvadd",
+            "args": [
+              {
+                "op": "var",
+                "name": "a"
+              },
+              {
+                "op": "var",
+                "name": "b"
+              }
+            ]
+          },
+          {
+            "op": "var",
+            "name": "trip"
+          }
+        ]
+      },
+      "equivalence": "loop-result"
+    }
+  },
+  {
+    "marker": "probe.dce.dead-loop-instruction",
+    "category": "loop",
+    "precondition": "loop body instruction has no observable use",
+    "rewrite": "remove the dead loop-body instruction",
+    "intent": "loop-result-equivalence",
+    "formal": {
+      "domain": "loop-bv32",
+      "variables": [
+        "a",
+        "live",
+        "dead"
+      ],
+      "before": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "live"
+          }
+        ]
+      },
+      "after": {
+        "op": "bvadd",
+        "args": [
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "live"
+          }
+        ]
+      },
+      "equivalence": "loop-result"
+    }
+  },
+  {
+    "marker": "probe.simplifycfg.loop-exit",
+    "category": "loop",
+    "precondition": "loop has an explicit bounded exit edge",
+    "rewrite": "simplify equivalent loop exit structure",
+    "intent": "loop-result-equivalence",
+    "formal": {
+      "domain": "loop-bv32",
+      "variables": [
+        "a",
+        "exit",
+        "fallback"
+      ],
+      "before": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "exit"
+              },
+              {
+                "op": "bvconst",
+                "value": 0,
+                "bits": 32
+              }
+            ]
+          },
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "fallback"
+          }
+        ]
+      },
+      "after": {
+        "op": "ite",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "op": "var",
+                "name": "exit"
+              },
+              {
+                "op": "bvconst",
+                "value": 0,
+                "bits": 32
+              }
+            ]
+          },
+          {
+            "op": "var",
+            "name": "a"
+          },
+          {
+            "op": "var",
+            "name": "fallback"
+          }
+        ]
+      },
+      "equivalence": "loop-result"
+    }
+  },
+  {
+    "marker": "probe.slp.vectorize-binop",
+    "category": "vector",
+    "precondition": "SLP tree contains same-opcode scalar binary operations with legal vector element type",
+    "rewrite": "pack scalar operands, emit vector binary operation, and replace scalar users with lanes",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "transaction-template-v1",
+      "model": "optimization-transaction-template-v1",
+      "transactions": [
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "add", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateAdd"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "scalar_lane_pairs": [{"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}, {"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "sub", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateSub"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "scalar_lane_pairs": [{"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}, {"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "mul", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateMul"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "scalar_lane_pairs": [{"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}, {"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "xor", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateXor"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "scalar_lane_pairs": [{"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}, {"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "or", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateOr"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "scalar_lane_pairs": [{"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}, {"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "and", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateAnd"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "scalar_lane_pairs": [{"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}, {"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "add", "lanes": 4, "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateAdd"}], "lane_mapping": {"kind": "permutation", "map": [2, 0, 3, 1], "inverse_map": [1, 3, 0, 2]}, "result_lane_mapping": {"kind": "permutation", "map": [2, 0, 3, 1], "inverse_map": [1, 3, 0, 2]}, "scalar_lane_pairs": [{"result": "r2", "lhs": "a2", "rhs": "b2"}, {"result": "r0", "lhs": "a0", "rhs": "b0"}, {"result": "r3", "lhs": "a3", "rhs": "b3"}, {"result": "r1", "lhs": "a1", "rhs": "b1"}]},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "add", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateAdd"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "sub", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateSub"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "mul", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateMul"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "xor", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateXor"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "or", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateOr"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "and", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateAnd"}], "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "result_lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-binop", "opcode": "add", "scalable": true, "base_lanes": 4, "lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "opcode_sources": [{"function": "vectorizeTree", "source": "CreateAdd"}], "lane_mapping": {"kind": "permutation", "map": [2, 0, 3, 1], "inverse_map": [1, 3, 0, 2]}, "result_lane_mapping": {"kind": "permutation", "map": [2, 0, 3, 1], "inverse_map": [1, 3, 0, 2]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","lanes":4,"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"mul","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"c"}]}],"operands":[{"name":"a"},{"name":"b"},{"name":"c"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","lanes":4,"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"shuffle","opcode":"shuffle","mask":[1,0,3,2],"base_mask":[1,0,3,2],"operands":[{"kind":"node","id":"n0"}]},{"id":"n2","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n1"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"a"},{"name":"b"}],"outputs":[{"node":"n2"}],"edges":[{"from":"n0","to":"n1","operand":0},{"from":"n1","to":"n2","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"xor","lanes":4,"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"shuffle","opcode":"shuffle","mask":[0,5,2,7],"base_mask":[0,5,2,7],"operands":[{"kind":"pack","name":"a"},{"kind":"pack","name":"c"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"a"},{"name":"b"},{"name":"c"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"permutation","lanes":4,"map":[2,0,3,1],"inverse_map":[1,3,0,2]},"result_lane_mapping":{"kind":"permutation","lanes":4,"map":[2,0,3,1],"inverse_map":[1,3,0,2]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"shuffle","opcode":"shuffle","mask":[1,0,3,2],"base_mask":[1,0,3,2],"operands":[{"kind":"node","id":"n0"}]},{"id":"n2","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n1"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"a"},{"name":"b"}],"outputs":[{"node":"n2"}],"edges":[{"from":"n0","to":"n1","operand":0},{"from":"n1","to":"n2","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"xor","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"shuffle","opcode":"shuffle","mask":[0,5,2,7],"base_mask":[0,5,2,7],"operands":[{"kind":"pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"a"},{"name":"b"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","lanes":4,"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"memory-pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"b"},{"name":"a","kind":"memory-pack","base":"A","address_order":[0,1,2,3],"load_order":[0,1,2,3],"address_terms":[{"base":"A","kind":"static","index":0,"lane":0},{"base":"A","kind":"static","index":1,"lane":1},{"base":"A","kind":"static","index":2,"lane":2},{"base":"A","kind":"static","index":3,"lane":3}],"memory_contract":"contiguous-load-pack-v1","memory_safety_status":"complete"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"memory-pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"b"},{"name":"a","kind":"memory-pack","base":"A","address_order":[0,1,2,3],"load_order":[0,1,2,3],"address_terms":[{"base":"A","kind":"static","index":0,"lane":0},{"base":"A","kind":"static","index":1,"lane":1},{"base":"A","kind":"static","index":2,"lane":2},{"base":"A","kind":"static","index":3,"lane":3}],"memory_contract":"contiguous-load-pack-v1","memory_safety_status":"complete"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"memory-pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"b"},{"name":"a","kind":"memory-pack","base":"A","address_order":[0,2,4,6],"load_order":[0,2,4,6],"address_terms":[{"base":"A","kind":"static","index":0,"lane":0},{"base":"A","kind":"static","index":2,"lane":1},{"base":"A","kind":"static","index":4,"lane":2},{"base":"A","kind":"static","index":6,"lane":3}],"memory_contract":"static-gather-pack-v1","memory_safety_status":"complete"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"memory-pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"b"},{"name":"a","kind":"memory-pack","base":"A","address_order":[0,2,4,6],"load_order":[0,2,4,6],"address_terms":[{"base":"A","kind":"static","index":0,"lane":0},{"base":"A","kind":"static","index":2,"lane":1},{"base":"A","kind":"static","index":4,"lane":2},{"base":"A","kind":"static","index":6,"lane":3}],"memory_contract":"masked-static-gather-pack-v1","memory_safety_status":"complete","masked":true,"mask_operand":"Mask","mask_order":[0,1,2,3],"passthru_operand":"Passthru","passthru_order":[0,1,2,3],"masked_lane_policy":"passthru"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"memory-pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"b"},{"name":"a","kind":"memory-pack","base":"In","address_order":[0,1,2,3],"load_order":[0,1,2,3],"address_terms":[{"base":"In","kind":"static","index":0,"lane":0},{"base":"In","kind":"static","index":1,"lane":1},{"base":"In","kind":"static","index":2,"lane":2},{"base":"In","kind":"static","index":3,"lane":3}],"memory_contract":"contiguous-load-pack-v1","memory_safety_status":"complete"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}],"memory_alias_conditions":[{"left_base":"In","right_base":"Out","relation":"noalias","status":"complete"}],"store_sinks":[{"kind":"memory-store","node":"n1","base":"Out","store_safety_status":"complete","store_contract":"contiguous-store-pack-v1","address_order":[0,1,2,3],"store_order":[0,1,2,3],"store_address_terms":[{"base":"Out","kind":"static","index":0,"lane":0},{"base":"Out","kind":"static","index":1,"lane":1},{"base":"Out","kind":"static","index":2,"lane":2},{"base":"Out","kind":"static","index":3,"lane":3}]}]}},
+        {"model":"optimization-transaction-v1","kind":"slp-vectorize-binop","opcode":"add","scalable":true,"base_lanes":4,"lanes":4,"vscale_values":[1,2,4],"consistency":"ok","lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"result_lane_mapping":{"kind":"identity","lanes":4,"map":[0,1,2,3],"inverse_map":[0,1,2,3]},"transaction_graph":{"model":"optimization-transaction-graph-v1","kind":"slp-binop-chain","lanes":4,"nodes":[{"id":"n0","kind":"binop","opcode":"add","operands":[{"kind":"memory-pack","name":"a"},{"kind":"pack","name":"b"}]},{"id":"n1","kind":"binop","opcode":"xor","operands":[{"kind":"node","id":"n0"},{"kind":"pack","name":"b"}]}],"operands":[{"name":"b"},{"name":"a","kind":"memory-pack","base":"In","address_order":[0,1,2,3],"load_order":[0,1,2,3],"address_terms":[{"base":"In","kind":"static","index":0,"lane":0},{"base":"In","kind":"static","index":1,"lane":1},{"base":"In","kind":"static","index":2,"lane":2},{"base":"In","kind":"static","index":3,"lane":3}],"memory_contract":"contiguous-load-pack-v1","memory_safety_status":"complete"}],"outputs":[{"node":"n1"}],"edges":[{"from":"n0","to":"n1","operand":0}],"memory_alias_conditions":[{"left_base":"In","right_base":"Out","relation":"noalias","status":"complete"}],"store_sinks":[{"kind":"memory-store","node":"n1","base":"Out","store_safety_status":"complete","store_contract":"masked-contiguous-store-pack-v1","address_order":[0,1,2,3],"store_order":[0,1,2,3],"store_address_terms":[{"base":"Out","kind":"static","index":0,"lane":0},{"base":"Out","kind":"static","index":1,"lane":1},{"base":"Out","kind":"static","index":2,"lane":2},{"base":"Out","kind":"static","index":3,"lane":3}],"masked":true,"mask_operand":"Mask","mask_order":[0,1,2,3],"masked_lane_policy":"preserve-old-memory"}]}}
+      ],
+      "predicate_provenance": {
+        "model": "predicate-provenance-contract-v1",
+        "provenance_sources": [
+          "evidence.optimization_transaction.predicate_provenance"
+        ],
+        "facts": [
+          {
+            "fact": "candidate-tree",
+            "predicate_family": "slp-role:candidate-tree"
+          },
+          {
+            "fact": "legality",
+            "predicate_family": "slp-role:legality"
+          },
+          {
+            "fact": "vector-emission",
+            "predicate_family": "slp-role:vector-emission"
+          },
+          {
+            "fact": "scalar-replacement",
+            "predicate_family": "slp-role:scalar-replacement"
+          },
+          {
+            "fact": "lane-mapping",
+            "predicate_family": "slp-contract:lane-map-bound-to-emitter"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "marker": "probe.slp.vectorize-reduction",
+    "category": "vector",
+    "precondition": "SLP tree contains scalar reduction lanes with legal vector element type",
+    "rewrite": "pack scalar lanes, emit vector reduction operation, and replace scalar reduction result",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "transaction-template-v1",
+      "model": "optimization-transaction-template-v1",
+      "transactions": [
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "add", "reduction_opcode": "add", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateAddReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "mul", "reduction_opcode": "mul", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateMulReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "and", "reduction_opcode": "and", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateAndReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "or", "reduction_opcode": "or", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateOrReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "xor", "reduction_opcode": "xor", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateXorReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "smin", "reduction_opcode": "smin", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateSMinReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "smax", "reduction_opcode": "smax", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateSMaxReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "umin", "reduction_opcode": "umin", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateUMinReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "umax", "reduction_opcode": "umax", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateUMaxReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "add", "reduction_opcode": "add", "lanes": 8, "reduction_lanes": 8, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3, 4, 5, 6, 7], "inverse_map": [0, 1, 2, 3, 4, 5, 6, 7]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateAddReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "fadd", "reduction_opcode": "fadd", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateFAddReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "fmul", "reduction_opcode": "fmul", "lanes": 4, "reduction_lanes": 4, "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateFMulReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "add", "reduction_opcode": "add", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateAddReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "mul", "reduction_opcode": "mul", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateMulReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "and", "reduction_opcode": "and", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateAndReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "or", "reduction_opcode": "or", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateOrReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "xor", "reduction_opcode": "xor", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateXorReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "smin", "reduction_opcode": "smin", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateSMinReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "smax", "reduction_opcode": "smax", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateSMaxReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "umin", "reduction_opcode": "umin", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateUMinReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "umax", "reduction_opcode": "umax", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateUMaxReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "fadd", "reduction_opcode": "fadd", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateFAddReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}},
+        {"model": "optimization-transaction-v1", "kind": "slp-vectorize-reduction", "opcode": "fmul", "reduction_opcode": "fmul", "scalable": true, "base_lanes": 4, "lanes": 4, "reduction_lanes": 4, "vscale_values": [1, 2, 4], "consistency": "ok", "lane_mapping": {"kind": "identity", "map": [0, 1, 2, 3], "inverse_map": [0, 1, 2, 3]}, "reduction_sources": [{"function": "vectorizeTree", "source": "CreateFMulReduce"}], "reduction_result": {"kind": "scalar-reduction-result", "source": "Reduced"}}
+      ],
+      "predicate_provenance": {
+        "model": "predicate-provenance-contract-v1",
+        "provenance_sources": [
+          "evidence.optimization_transaction.predicate_provenance"
+        ],
+        "facts": [
+          {
+            "fact": "candidate-tree",
+            "predicate_family": "slp-role:candidate-tree"
+          },
+          {
+            "fact": "legality",
+            "predicate_family": "slp-role:legality"
+          },
+          {
+            "fact": "vector-emission",
+            "predicate_family": "slp-role:vector-emission"
+          },
+          {
+            "fact": "scalar-replacement",
+            "predicate_family": "slp-role:scalar-replacement"
+          },
+          {
+            "fact": "lane-mapping",
+            "predicate_family": "slp-contract:lane-map-bound-to-emitter"
+          },
+          {
+            "fact": "reduction-source",
+            "predicate_family": "slp-reduction:source"
+          },
+          {
+            "fact": "reduction-result",
+            "predicate_family": "slp-reduction:result"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "marker": "probe.vector.add-zero",
+    "category": "vector",
+    "precondition": "vector add has a zero splat operand",
+    "rewrite": "replace vector add with the non-zero vector operand",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vadd",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}
+        ]
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.mul-one",
+    "category": "vector",
+    "precondition": "vector multiply has a one splat operand",
+    "rewrite": "replace vector multiply with the non-one vector operand",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vmul",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vsplat", "args": [{"op": "bvconst", "value": 1, "bits": 32}]}
+        ]
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.xor-self",
+    "category": "vector",
+    "precondition": "vector xor operands are the same value",
+    "rewrite": "replace vector xor-self with a zero vector",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vxor",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}
+        ]
+      },
+      "after": {"op": "vsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.shuffle-identity",
+    "category": "vector",
+    "precondition": "shuffle mask preserves lane order",
+    "rewrite": "replace identity shuffle with the source vector",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vshuffle",
+        "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}],
+        "mask": [0, 1, 2, 3]
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.shuffle-splat",
+    "category": "vector",
+    "precondition": "shuffle mask selects the same lane for every result lane",
+    "rewrite": "replace splat shuffle with a splat of the selected lane",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vshuffle",
+        "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}],
+        "mask": [2, 2, 2, 2]
+      },
+      "after": {
+        "op": "vsplat",
+        "args": [{"op": "vextract", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}], "index": 2}]
+      },
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.extract-insert",
+    "category": "vector",
+    "precondition": "extract reads the same lane that was just inserted",
+    "rewrite": "replace extract(insert vector, value, lane) from the same lane with value",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a0", "a1", "a2", "a3", "x"],
+      "poison_variables": ["a0", "a1", "a2", "a3", "x"],
+      "before": {
+        "op": "vextract",
+        "args": [
+          {
+            "op": "vinsert",
+            "args": [
+              {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+              {"op": "var", "name": "x"}
+            ],
+            "index": 1
+          }
+        ],
+        "index": 1
+      },
+      "after": {"op": "var", "name": "x"},
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.reduction-add-zero",
+    "category": "vector",
+    "precondition": "add-reduction input is a zero vector",
+    "rewrite": "replace reduction add of zero vector with zero",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a"],
+      "before": {"op": "vreduce_add", "args": [{"op": "vsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}]},
+      "after": {"op": "bvconst", "value": 0, "bits": 32},
+      "equivalence": "result"
+    }
+  },
+  {
+    "marker": "probe.vector.sub-zero",
+    "category": "vector",
+    "precondition": "vector subtract has a zero splat rhs",
+    "rewrite": "replace vector subtract by zero with the lhs vector",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vsub",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}
+        ]
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.or-zero",
+    "category": "vector",
+    "precondition": "vector or has a zero splat operand",
+    "rewrite": "replace vector or with the non-zero vector operand",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vor",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}
+        ]
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.and-allones",
+    "category": "vector",
+    "precondition": "vector and has an all-ones splat operand",
+    "rewrite": "replace vector and with the non-all-ones vector operand",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vand",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vsplat", "args": [{"op": "bvconst", "value": 4294967295, "bits": 32}]}
+        ]
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.smin",
+    "category": "vector",
+    "precondition": "vector signed min compares lanes pairwise",
+    "rewrite": "preserve the lane-wise signed minimum result",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "vector-bv32x4", "variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "poison_variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "before": {"op": "vsmin", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "after": {"op": "vsmin", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.smax",
+    "category": "vector",
+    "precondition": "vector signed max compares lanes pairwise",
+    "rewrite": "preserve the lane-wise signed maximum result",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "vector-bv32x4", "variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "poison_variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "before": {"op": "vsmax", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "after": {"op": "vsmax", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.umin",
+    "category": "vector",
+    "precondition": "vector unsigned min compares lanes pairwise",
+    "rewrite": "preserve the lane-wise unsigned minimum result",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "vector-bv32x4", "variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "poison_variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "before": {"op": "vumin", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "after": {"op": "vumin", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.umax",
+    "category": "vector",
+    "precondition": "vector unsigned max compares lanes pairwise",
+    "rewrite": "preserve the lane-wise unsigned maximum result",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "vector-bv32x4", "variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "poison_variables": ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"], "before": {"op": "vumax", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "after": {"op": "vumax", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}, {"op": "vec", "args": [{"op": "var", "name": "b0"}, {"op": "var", "name": "b1"}, {"op": "var", "name": "b2"}, {"op": "var", "name": "b3"}]}]}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.abs",
+    "category": "vector",
+    "precondition": "vector absolute value negates negative lanes",
+    "rewrite": "preserve the lane-wise absolute value result",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "vector-bv32x4", "variables": ["a0", "a1", "a2", "a3"], "poison_variables": ["a0", "a1", "a2", "a3"], "before": {"op": "vabs", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}]}, "after": {"op": "vabs", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}]}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.insert-extract-identity",
+    "category": "vector",
+    "precondition": "insert writes back the value extracted from the same vector lane",
+    "rewrite": "replace same-lane extract/insert round trip with the original vector",
+    "intent": "vector-result-equivalence",
+    "formal": {
+      "domain": "vector-bv32x4",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vinsert",
+        "args": [
+          {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+          {"op": "vextract", "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]}], "index": 1}
+        ],
+        "index": 1
+      },
+      "after": {"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "var", "name": "a1"}, {"op": "var", "name": "a2"}, {"op": "var", "name": "a3"}]},
+      "equivalence": "vector-result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.reduction-add-single-lane",
+    "category": "vector",
+    "precondition": "add-reduction input has one live lane and zero elsewhere",
+    "rewrite": "replace reduction add with the live lane",
+    "intent": "result-equivalence",
+    "formal": {
+      "domain": "scalar-bv32",
+      "variables": ["a0", "a1", "a2", "a3"],
+      "poison_variables": ["a0", "a1", "a2", "a3"],
+      "before": {
+        "op": "vreduce_add",
+        "args": [{"op": "vec", "args": [{"op": "var", "name": "a0"}, {"op": "bvconst", "value": 0, "bits": 32}, {"op": "bvconst", "value": 0, "bits": 32}, {"op": "bvconst", "value": 0, "bits": 32}]}]
+      },
+      "after": {"op": "var", "name": "a0"},
+      "equivalence": "result",
+      "refinement": "refinement"
+    }
+  },
+  {
+    "marker": "probe.vector.scalable.add-zero",
+    "category": "vector",
+    "precondition": "scalable vector add has a zero splat operand",
+    "rewrite": "replace scalable vector add with the non-zero operand",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "poison_variables": ["a"], "before": {"op": "svadd", "args": [{"op": "svar", "name": "a"}, {"op": "svsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}]}, "after": {"op": "svar", "name": "a"}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.scalable.mul-one",
+    "category": "vector",
+    "precondition": "scalable vector multiply has a one splat operand",
+    "rewrite": "replace scalable vector multiply with the non-one operand",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "poison_variables": ["a"], "before": {"op": "svmul", "args": [{"op": "svar", "name": "a"}, {"op": "svsplat", "args": [{"op": "bvconst", "value": 1, "bits": 32}]}]}, "after": {"op": "svar", "name": "a"}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.scalable.xor-self",
+    "category": "vector",
+    "precondition": "scalable vector xor operands are the same value",
+    "rewrite": "replace scalable vector xor-self with a zero vector",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "poison_variables": ["a"], "before": {"op": "svxor", "args": [{"op": "svar", "name": "a"}, {"op": "svar", "name": "a"}]}, "after": {"op": "svsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.scalable.sub-zero",
+    "category": "vector",
+    "precondition": "scalable vector subtract has a zero splat rhs",
+    "rewrite": "replace scalable vector subtract by zero with the lhs",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "poison_variables": ["a"], "before": {"op": "svsub", "args": [{"op": "svar", "name": "a"}, {"op": "svsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}]}, "after": {"op": "svar", "name": "a"}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.scalable.or-zero",
+    "category": "vector",
+    "precondition": "scalable vector or has a zero splat operand",
+    "rewrite": "replace scalable vector or with the non-zero operand",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "poison_variables": ["a"], "before": {"op": "svor", "args": [{"op": "svar", "name": "a"}, {"op": "svsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}]}, "after": {"op": "svar", "name": "a"}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.scalable.and-allones",
+    "category": "vector",
+    "precondition": "scalable vector and has an all-ones splat operand",
+    "rewrite": "replace scalable vector and with the non-all-ones operand",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "poison_variables": ["a"], "before": {"op": "svand", "args": [{"op": "svar", "name": "a"}, {"op": "svsplat", "args": [{"op": "bvconst", "value": 4294967295, "bits": 32}]}]}, "after": {"op": "svar", "name": "a"}, "equivalence": "vector-result", "refinement": "refinement"}
+  },
+  {
+    "marker": "probe.vector.scalable.reduction-add-zero",
+    "category": "vector",
+    "precondition": "scalable add-reduction input is a zero vector",
+    "rewrite": "replace scalable reduction add of zero vector with zero",
+    "intent": "vector-result-equivalence",
+    "formal": {"domain": "scalable-vector-bv32", "base_lanes": 4, "vscale_values": [1, 2, 4], "variables": ["a"], "before": {"op": "svsplat", "args": [{"op": "svreduce_add", "args": [{"op": "svsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}]}]}, "after": {"op": "svsplat", "args": [{"op": "bvconst", "value": 0, "bits": 32}]}, "equivalence": "vector-result"}
+  }
+]
