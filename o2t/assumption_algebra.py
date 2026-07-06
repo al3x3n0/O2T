@@ -20,7 +20,9 @@ def _key(assumption: dict[str, Any]) -> tuple[Any, ...]:
         return (op, name, assumption.get("value"))
     if op == "power-of-two":
         return (op, name, assumption.get("nonzero"))
-    if op == "addr-diseq":
+    if op in ("addr-diseq", "mask-pair"):
+        # Symmetric two-operand facts: order-normalize so `X&Y==0` and `Y&X==0` share one key
+        # (else distinct pairs would all collide on `(op, None)` and be wrongly deduped).
         left = assumption.get("left")
         right = assumption.get("right")
         if isinstance(left, str) and isinstance(right, str) and right < left:

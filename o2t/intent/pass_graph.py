@@ -224,9 +224,15 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     assumptions = []
     for fact in facts:
         fact = dict(fact)
-        fact["name"] = str(fact.get("name", "")).lower()
-        if fact["name"] not in binds:                    # guard on a value the matcher never bound
-            return None
+        if fact.get("op") == "mask-pair":                # two-operand disjointness (X & Y) == 0
+            fact["left"] = str(fact.get("left", "")).lower()
+            fact["right"] = str(fact.get("right", "")).lower()
+            if fact["left"] not in binds or fact["right"] not in binds:
+                return None                              # guard on a value the matcher never bound
+        else:
+            fact["name"] = str(fact.get("name", "")).lower()
+            if fact["name"] not in binds:                # guard on a value the matcher never bound
+                return None
         assumptions.append(fact)
     return {
         "domain": "scalar-bv32",
@@ -533,8 +539,10 @@ def _to_signed(value: int, width: int) -> int:
 def _assumption_holds(assumption: dict, env: dict, width: int) -> bool:
     """Concretely evaluate a recovered precondition dict over `env` at `width` bits."""
     mask = (1 << width) - 1
-    v = env[assumption["name"]] & mask
     op = assumption["op"]
+    if op == "mask-pair":                                 # (X & Y) == 0 -- operands share no set bits
+        return ((env[assumption["left"]] & env[assumption["right"]]) & mask) == 0
+    v = env[assumption["name"]] & mask
     if op == "not-eq":
         return v != (int(assumption.get("value", 0)) & mask)
     if op == "power-of-two":
@@ -614,8 +622,10 @@ def _to_shim_expr(node: dict) -> str:
 
 
 def _query_call(assumption: dict) -> str | None:
-    v = assumption["name"].upper()
     op = assumption["op"]
+    if op == "mask-pair":                                 # (X & Y) == 0 disjointness query
+        return f"haveNoCommonBitsSet({assumption['left'].upper()}, {assumption['right'].upper()})"
+    v = assumption["name"].upper()
     if op == "power-of-two":
         return f"isKnownToBeAPowerOfTwo({v})"
     if op == "not-eq" and int(assumption.get("value", 0)) == 0:

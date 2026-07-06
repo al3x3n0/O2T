@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 from o2t.assumption_algebra import normalize_assumptions
-from o2t.facts.value_tracking import scalar_assumption_smt
+from o2t.facts.value_tracking import mask_pair_smt, scalar_assumption_smt
 
 
 class FormalIrError(ValueError):
@@ -1148,8 +1148,20 @@ def pair_instances_for_formal(formal: Any) -> list[tuple[int | None, FormalPair]
         if not isinstance(assumption, dict):
             raise FormalIrError("formal assumption must be an object")
         op = assumption.get("op")
-        if op not in {"not-poison", "not-eq", "cmp", "known-bits", "power-of-two", "addr-diseq", "rel"}:
+        if op not in {"not-poison", "not-eq", "cmp", "known-bits", "power-of-two", "addr-diseq", "rel",
+                      "mask-pair"}:
             raise FormalIrError("unsupported formal assumption")
+        if op == "mask-pair":
+            # Two-operand disjointness `(X & Y) == 0` (haveNoCommonBitsSet / MaskedValueIsZero with an
+            # SSA mask). Encoding owned by o2t.facts.value_tracking, shared with the symexec cascade
+            # discharge, so the two provers cannot drift.
+            left = assumption.get("left")
+            right = assumption.get("right")
+            if not isinstance(left, str) or not isinstance(right, str):
+                raise FormalIrError("formal mask-pair assumption requires left and right")
+            if left not in variable_set or right not in variable_set:
+                raise FormalIrError("formal mask-pair assumption variable is undeclared")
+            return mask_pair_smt(left, right)
         if op == "addr-diseq":
             left = assumption.get("left")
             right = assumption.get("right")

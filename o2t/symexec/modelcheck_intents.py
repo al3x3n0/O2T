@@ -239,6 +239,14 @@ def assumption_cpp(assumption: Any, variables: set[str], variable_widths: dict[s
         if variable_widths[right] != width:
             raise UnsupportedIntent("unsupported-rel-assumption-width")
         return predicate_cpp(assumption.get("predicate"), f"{safe_ident(left)}.bits", f"{safe_ident(right)}.bits", width)
+    if op == "mask-pair":
+        # Two-operand disjointness `(X & Y) == 0` (haveNoCommonBitsSet / MaskedValueIsZero); kept in
+        # step with the formal-IR and symexec-guard encoders so the three provers cannot drift.
+        left = assumption.get("left")
+        right = assumption.get("right")
+        if not isinstance(left, str) or not isinstance(right, str) or left not in variables or right not in variables:
+            raise UnsupportedIntent("unsupported-mask-pair-assumption")
+        return f"(({safe_ident(left)}.bits & {safe_ident(right)}.bits) == 0U)"
     raise UnsupportedIntent(f"unsupported-assumption:{op or 'unset'}")
 
 

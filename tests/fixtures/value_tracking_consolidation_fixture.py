@@ -75,6 +75,20 @@ def main() -> int:
     disjoint = analysis_fact_clauses("haveNoCommonBitsSet(X, Y)")
     assert disjoint == [{"op": "smt", "text": "(= (bvand X Y) #x00000000)", "vars": ["X", "Y"]}], disjoint
 
+    # 5. The two-operand disjointness fact `mask-pair` is now lowered by BOTH provers through the same
+    #    shared encoder, so it cannot drift either: the symexec guard, the formal-IR assumption SMT,
+    #    and the raw symexec leaf are byte-identical.
+    assert vt.mask_pair_smt("X", "Y") == "(= (bvand X Y) #x00000000)"
+    guard_smt, guard_vars = vt.assumption_guard_smt({"op": "mask-pair", "left": "X", "right": "Y"})
+    assert guard_smt == disjoint[0]["text"] and guard_vars == ["X", "Y"], (guard_smt, guard_vars)
+    formal_masked = formal_ir.pair_for_formal({
+        "domain": "scalar-bv32", "marker": "vt.maskpair", "variables": ["x", "y"], "equivalence": "result",
+        "before": {"op": "bvadd", "args": [{"op": "var", "name": "x"}, {"op": "var", "name": "y"}]},
+        "after": {"op": "bvor", "args": [{"op": "var", "name": "x"}, {"op": "var", "name": "y"}]},
+        "assumptions": [{"op": "mask-pair", "left": "x", "right": "y"}],
+    })
+    assert "(= (bvand x y) #x00000000)" in formal_masked.assumptions, formal_masked.assumptions
+
     print("value_tracking consolidation OK: one encoder, both provers locked")
     return 0
 

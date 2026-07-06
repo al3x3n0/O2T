@@ -248,6 +248,39 @@ def main() -> int:
                    "  return nullptr; }")
     assert fn(inline_loop)[1][0] == "proved", "loop + nested-identity statement rewrite not proved"
 
+    # 13) RELATIONAL PRECONDITIONS (phase 6): a guard relating TWO bound operands -- disjointness
+    #     `haveNoCommonBitsSet(X, Y)` / `MaskedValueIsZero`. `add X,Y -> or X,Y` is UNSOUND in general
+    #     but sound when the operands share no set bits. This closes a prover-drift gap: the two-operand
+    #     `mask-pair` fact was lowered by the symexec guard path but NOT by the formal-IR prover.
+    add = "match(&I, m_Add(m_Value(X), m_Value(Y)))"
+    to_or = "return replaceInstUsesWith(I, Builder.CreateOr(X, Y));"
+    _, (status, cex) = prove(add, to_or)                                  # no guard -> unsound
+    assert status == "refuted" and cex, ("unguarded add->or must refute", status)
+    pair, (status, _) = prove(add + " && haveNoCommonBitsSet(X, Y)", to_or)
+    assert status == "proved", ("disjoint add->or must prove", status)
+    assert pair["assumptions"] == [{"op": "mask-pair", "left": "x", "right": "y"}], pair["assumptions"]
+    # the two-operand precondition is load-bearing on BOTH operands: a guard naming an UNBOUND value
+    # (never matched) must decline, never silently drop the premise.
+    assert pg.recover_pair(add + " && haveNoCommonBitsSet(X, Z)", to_or) is None
+    # reconciliation: the disjointness-guarded fold agrees across the z3 and concrete engines.
+    rec = pg.reconcile(pair, z3)
+    assert rec["z3"] == "proved" and rec["concrete"] == "proved" and rec["agree"] and rec["checked"] > 0, rec
+    # function form: a loop with a De Morgan'd `if (!haveNoCommonBitsSet(X,Y)) continue;` bail recovers
+    # the same relational precondition and proves under it.
+    disjoint_fn = ("Value *f(BasicBlock &BB){\n"
+                   "  for (Instruction &I : BB) {\n"
+                   "    Value *X, *Y;\n"
+                   "    if (!match(&I, m_Add(m_Value(X), m_Value(Y)))) continue;\n"
+                   "    if (!haveNoCommonBitsSet(X, Y)) continue;\n"
+                   "    replaceInstUsesWith(I, Builder.CreateOr(X, Y));\n"
+                   "  }\n"
+                   "  return nullptr; }")
+    pair, (status, _) = fn(disjoint_fn)
+    assert status == "proved" and pair["assumptions"] == [{"op": "mask-pair", "left": "x", "right": "y"}], (status, pair)
+    # dropping the disjointness guard removes the precondition -> unsound.
+    _, (status, cex) = fn(disjoint_fn.replace("    if (!haveNoCommonBitsSet(X, Y)) continue;\n", ""))
+    assert status == "refuted" and cex, ("add->or without disjointness must refute", status)
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

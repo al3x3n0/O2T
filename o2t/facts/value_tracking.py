@@ -55,6 +55,13 @@ def _hexlit(value: int) -> str:
     return f"#x{value & MASK32:08x}"
 
 
+def mask_pair_smt(left: str, right: str) -> str:
+    """SMT for a two-operand disjointness fact `(X & Y) == 0` (`haveNoCommonBitsSet` /
+    `MaskedValueIsZero` with an SSA mask). Owned here so the formal-IR prover and the symexec
+    guard path share ONE encoding and cannot drift, exactly like the scalar facts above."""
+    return f"(= (bvand {left} {right}) #x00000000)"
+
+
 def _smt_and(clauses: list[str]) -> str:
     """Match formal_ir.smt_and's shape so delegated SMT is byte-identical."""
     if not clauses:
@@ -148,7 +155,7 @@ def assumption_guard_smt(assumption: dict[str, Any]) -> tuple[str, list[str]] | 
     if assumption.get("op") == "mask-pair":
         left, right = assumption["left"], assumption["right"]
         # (X & Y) == 0 -- the two operands share no set bits.
-        return f"(= (bvand {left} {right}) #x00000000)", [left, right]
+        return mask_pair_smt(left, right), [left, right]
     name = assumption.get("name")
     if not isinstance(name, str):
         return None
