@@ -220,6 +220,34 @@ def main() -> int:
              "  return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y)); }")
     assert pg.recover_from_function(multi) is None, "multi-statement helper must decline"
 
+    # 12) LOOPS OVER IR (phase 5): a `for (Instruction &I : BB)` fold applies the rewrite to every
+    #     matching instruction -- an independent per-instruction obligation, so the loop is a
+    #     universal quantifier (no value precondition) and the statement-form rewrite under its
+    #     guards is recovered. Handles the common `if (!match) continue; ... replaceInstUsesWith(I,X);`.
+    loop_fold = ("Value *f(BasicBlock &BB){\n"
+                 "  for (Instruction &I : BB) {\n"
+                 "    Value *X, *Y;\n"
+                 "    if (!match(&I, m_SDiv(m_Value(X), m_Value(Y)))) continue;\n"
+                 "    if (!isKnownNonNegative(X) || !isKnownNonNegative(Y)) continue;\n"
+                 "    replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));\n"
+                 "  }\n"
+                 "  return nullptr; }")
+    pair, (status, _) = fn(loop_fold)
+    assert status == "proved" and {a["name"] for a in pair["assumptions"]} == {"x", "y"}, (status, pair)
+    # dropping the loop-body guard removes the precondition -> unsound.
+    _, (status, cex) = fn(loop_fold.replace(
+        "    if (!isKnownNonNegative(X) || !isKnownNonNegative(Y)) continue;\n", ""))
+    assert status == "refuted" and cex, ("loop fold without guard must refute", status)
+    # statement-form rewrite guarded inline in the loop `if (match && guards) replaceInstUsesWith(...)`.
+    inline_loop = ("Value *f(BasicBlock &BB){\n"
+                   "  for (Instruction &I : BB) {\n"
+                   "    Value *X;\n"
+                   "    if (match(&I, m_Mul(m_Add(m_Value(X), m_Zero()), m_One())))\n"
+                   "      replaceInstUsesWith(I, X);\n"
+                   "  }\n"
+                   "  return nullptr; }")
+    assert fn(inline_loop)[1][0] == "proved", "loop + nested-identity statement rewrite not proved"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

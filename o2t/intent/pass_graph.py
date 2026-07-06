@@ -335,7 +335,8 @@ def _positive_atoms(cond: str) -> list[str]:
     return _split_top(_unwrap(cond), "&&")
 
 
-_KW_RE = re.compile(r"\b(if|return)\b")
+_KW_RE = re.compile(r"\b(if|return|for|while|replaceInstUsesWith)\b")
+_RIUW_STMT_RE = re.compile(r"(replaceInstUsesWith\s*\(.+?\)\s*;)", re.S)
 
 
 def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
@@ -354,6 +355,25 @@ def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
                 return path, "return " + rm.group(1).strip() + ";"
             i = kw.end()
             continue
+        if kw.group(1) == "replaceInstUsesWith":              # a bare (unguarded) statement rewrite
+            sm = _RIUW_STMT_RE.match(body[kw.start():])
+            if sm:
+                return path, "return " + sm.group(1).rstrip(";").strip() + ";"
+            i = kw.end()
+            continue
+        if kw.group(1) in ("for", "while"):
+            # phase 5: a loop over IR (`for (Instruction &I : BB)`) is a universal quantifier over
+            # instructions -- each iteration is an independent per-instruction obligation, so the loop
+            # header adds NO value precondition. Skip it and recover the body fold.
+            paren = body.find("(", kw.end())
+            if paren < 0:
+                return None
+            try:
+                _, after = _balanced(body, paren)
+            except Unsupported:
+                return None
+            i = after                                          # scan the body statements transparently
+            continue
         # an `if`: parse the balanced condition, then dispatch on what follows.
         paren = body.find("(", kw.end())
         if paren < 0:
@@ -371,6 +391,17 @@ def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
             if sub is not None:
                 return sub
             i = blk_end                                            # fold not inside; keep scanning
+            continue
+        sm = _RIUW_STMT_RE.match(rest)                             # `if (COND) replaceInstUsesWith(...);`
+        if sm:
+            return path + _positive_atoms(cond), "return " + sm.group(1).rstrip(";").strip() + ";"
+        cb = re.match(r"(?:continue|break)\s*;", rest)             # per-iteration bailout in a loop
+        if cb:
+            bail = _bail_atoms(cond)
+            if bail is None:
+                return None
+            path = path + bail
+            i = after + lead + cb.end()
             continue
         rm = re.match(r"return\s+(.+?)\s*;", rest, re.S)
         if not rm:
