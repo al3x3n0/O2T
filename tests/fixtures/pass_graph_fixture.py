@@ -513,6 +513,29 @@ def main() -> int:
                "  return replaceInstUsesWith(I, Builder.CreateAdd(X, Y)); }")
     assert fn(flag_fn)[1][0] == "proved", "function-form nsw drop not proved"
 
+    # 21) GENERIC INTRINSIC MATCHER (phase 14): the `m_Intrinsic<Intrinsic::ID>(...)` template form is
+    #     parsed (the tokenizer/parser now carry the `<...>` template id) and dispatched to a model.
+    #     min/max route to the phase-10 semantics; abs is a new unary intrinsic `x <s 0 ? -x : x`.
+    assert prove("match(&I, m_Intrinsic<Intrinsic::smin>(m_Value(X), m_Deferred(X)))",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "generic smin(X,X) -> X"
+    # a min-select canonicalizes into the generic intrinsic builder just as with CreateSMin.
+    assert prove("match(&I, m_Select(m_SpecificICmp(ICmpInst::ICMP_SLT, m_Value(X), m_Value(Y)), "
+                 "m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateBinaryIntrinsic(Intrinsic::smin, X, Y));")[1][0] \
+        == "proved", "min-select -> generic smin intrinsic"
+    # ABS: `abs(abs(X)) -> abs(X)` is idempotent (the int-min-poison flag is conservatively ignored).
+    pair, (status, _) = prove(
+        "match(&I, m_Intrinsic<Intrinsic::abs>(m_Intrinsic<Intrinsic::abs>(m_Value(X), m_Zero()), m_Zero()))",
+        "return replaceInstUsesWith(I, Builder.CreateBinaryIntrinsic(Intrinsic::abs, X, false));")
+    assert status == "proved" and pair["before"]["op"] == "ite", (status, pair["before"])
+    # TEETH: `abs(X) -> X` is wrong (negative inputs) -> refuted with a witness.
+    _, (status, cex) = prove("match(&I, m_Intrinsic<Intrinsic::abs>(m_Value(X), m_Zero()))",
+                             "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("abs(X) -> X must refute", status)
+    # SOUND boundary: an intrinsic with no model (ctpop) parses now but still declines semantically.
+    assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)))",
+                           "return replaceInstUsesWith(I, X);") is None
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

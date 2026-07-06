@@ -86,7 +86,7 @@ class Unsupported(Exception):
 
 
 def _tokenize(text: str) -> list[str]:
-    return [t for t in re.findall(r"[A-Za-z_]\w*|\(|\)|,|-?\d+|::|&|~", text) if t.strip()]
+    return [t for t in re.findall(r"[A-Za-z_]\w*|\(|\)|,|-?\d+|::|&|~|<|>", text) if t.strip()]
 
 
 class _Parser:
@@ -120,6 +120,18 @@ class _Parser:
         while self.peek() in (".", "::") or (self.peek() == ":" and True):
             self.eat()
             name = self.eat()
+        template = None
+        if self.peek() == "<":                               # a template arg, e.g. m_Intrinsic<Intrinsic::abs>
+            self.eat("<")
+            depth = 1
+            while depth > 0 and self.peek() is not None:
+                tok = self.eat()
+                if tok == "<":
+                    depth += 1
+                elif tok == ">":
+                    depth -= 1
+                elif re.fullmatch(r"[A-Za-z_]\w*", tok):
+                    template = tok                           # keep the LAST id (the intrinsic name)
         if self.peek() == "(":
             self.eat("(")
             args = []
@@ -129,7 +141,7 @@ class _Parser:
                     self.eat(",")
                     args.append(self.parse_call())
             self.eat(")")
-            return {"kind": "call", "name": name, "args": args}
+            return {"kind": "call", "name": name, "template": template, "args": args}
         return {"kind": "name", "name": name}
 
 
@@ -183,6 +195,13 @@ def _minmax(kind: str, a: dict, b: dict) -> dict:
 
 def _flag_binop(op: str, flag: str, a: dict, b: dict) -> dict:
     return {"op": op, "args": [a, b], "flags": [flag]}
+
+
+def _abs(x: dict) -> dict:
+    """Signed absolute value `x <s 0 ? -x : x`. The `@llvm.abs` int-min-poison flag is IGNORED
+    (wrapping semantics); doing so only ever under-approximates poison, a sound (never false-proof)
+    conservatism -- abs(INT_MIN) is modeled as INT_MIN rather than poison."""
+    return {"op": "ite", "args": [{"op": "bvslt", "args": [x, _const(0)]}, {"op": "bvneg", "args": [x]}, x]}
 
 
 def _contains_flags(node: dict) -> bool:
@@ -271,6 +290,18 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
         if len(args) != 1:
             raise Unsupported("m_Freeze needs one operand")
         return {"op": "freeze", "args": [lower_matcher(args[0], binds, widths, pred_binds, hint)]}
+    if name == "m_Intrinsic":                                # generic intrinsic: m_Intrinsic<Intrinsic::ID>
+        tmpl = node.get("template")
+        if tmpl in _MINMAX_PRED:
+            if len(args) != 2:
+                raise Unsupported("min/max intrinsic needs two operands")
+            return _minmax(tmpl, lower_matcher(args[0], binds, widths, pred_binds, hint),
+                           lower_matcher(args[1], binds, widths, pred_binds, hint))
+        if tmpl == "abs":                                    # abs(X[, int_min_poison]) -- flag ignored
+            if not args:
+                raise Unsupported("abs intrinsic needs an operand")
+            return _abs(lower_matcher(args[0], binds, widths, pred_binds, hint))
+        raise Unsupported(f"unmodeled intrinsic {tmpl!r}")
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
                            lambda a, h: lower_matcher(a, binds, widths, pred_binds, h))
@@ -328,10 +359,17 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
             raise Unsupported("CreateFreeze needs one operand")
         return {"op": "freeze", "args": [lower_rewrite(args[0], binds, widths, hint)]}
     if name == "CreateBinaryIntrinsic":                             # first arg is the Intrinsic:: id
-        if len(args) != 3 or args[0]["kind"] != "name" or args[0]["name"] not in _MINMAX_PRED:
-            raise Unsupported("CreateBinaryIntrinsic only models a binary min/max intrinsic")
-        return _minmax(args[0]["name"], lower_rewrite(args[1], binds, widths, hint),
-                       lower_rewrite(args[2], binds, widths, hint))
+        if len(args) < 2 or args[0]["kind"] != "name":
+            raise Unsupported("CreateBinaryIntrinsic needs an intrinsic id and operands")
+        iid = args[0]["name"]
+        if iid in _MINMAX_PRED:
+            if len(args) != 3:
+                raise Unsupported("min/max intrinsic needs two operands")
+            return _minmax(iid, lower_rewrite(args[1], binds, widths, hint),
+                           lower_rewrite(args[2], binds, widths, hint))
+        if iid == "abs":                                            # abs(X[, int_min_poison]) -- flag ignored
+            return _abs(lower_rewrite(args[1], binds, widths, hint))
+        raise Unsupported(f"unmodeled binary intrinsic {iid!r}")
     if name in BUILDER_CAST:
         return _lower_cast(BUILDER_CAST[name], args,
                            lambda a, h: lower_rewrite(a, binds, widths, h))
@@ -344,7 +382,7 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
     raise Unsupported(f"unmodeled rewrite emitter {name!r}")
 
 
-_MATCH_RE = re.compile(r"\bmatch\s*\([^,]+,\s*(m_\w+\s*\(.*\))\s*\)\s*$")
+_MATCH_RE = re.compile(r"\bmatch\s*\([^,]+,\s*(m_\w+\s*(?:<[^>]*>)?\s*\(.*\))\s*\)\s*$")
 _RIUW_RE = re.compile(r"\breplaceInstUsesWith\s*\(\s*[^,]+,\s*(.+?)\s*\)\s*;?\s*$")
 # Guards that constrain legality/profitability but NOT the value semantics -- safe to drop from a
 # value-equivalence obligation (they gate *whether* to fold, not *what* the fold computes).
