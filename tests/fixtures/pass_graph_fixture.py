@@ -536,6 +536,23 @@ def main() -> int:
     assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
 
+    # 22) PARSER SOUNDNESS: the tokenizer must REJECT any operator it does not model and the parser
+    #     must consume every token, so an infix/ternary rewrite can never SILENTLY misparse to a
+    #     prefix and prove a model the source never expressed. Each of these declines (None).
+    misparse_cases = [
+        # `X & Y` would drop the operator and misparse to `X` -- a WRONG-but-provable model for or-self.
+        ("match(&I, m_Or(m_Value(X), m_Deferred(X)))", "return replaceInstUsesWith(I, X & Y);"),
+        ("match(&I, m_Add(m_Value(X), m_Value(Y)))", "return replaceInstUsesWith(I, X + Y);"),
+        ("match(&I, m_Sub(m_Value(X), m_Value(Y)))", "return replaceInstUsesWith(I, X - Y);"),
+        ("match(&I, m_Value(X))", "return replaceInstUsesWith(I, C ? X : Y);"),
+        ("match(&I, m_Add(m_Value(X), m_Zero()))", "return replaceInstUsesWith(I, X) trailing;"),
+    ]
+    for pred, rw in misparse_cases:
+        assert pg.recover_pair(pred, rw) is None, ("unmodeled operator must decline, not misparse", rw)
+    # a well-formed negative literal argument still parses (the rejection is operators, not `-` literals).
+    assert prove("match(&I, m_Add(m_Value(X), m_SpecificInt(-1)))",
+                 "return replaceInstUsesWith(I, Builder.CreateSub(X, 1));")[1][0] == "proved", "neg literal arg"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

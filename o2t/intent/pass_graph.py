@@ -85,8 +85,23 @@ class Unsupported(Exception):
     """A construct outside the modeled fragment -- the fold is declined, never mis-modeled."""
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z_]\w*|\(|\)|,|-?\d+|::|&|~|<|>")
+
+
 def _tokenize(text: str) -> list[str]:
-    return [t for t in re.findall(r"[A-Za-z_]\w*|\(|\)|,|-?\d+|::|&|~|<|>", text) if t.strip()]
+    """Tokenize, REJECTING any non-whitespace the token set doesn't cover (e.g. an infix `+`, `-`,
+    `?:`, or `==`). Dropping such characters silently would let a rewrite like `X + Y` misparse to
+    `X` and a wrong model prove; refusing them turns every misparse into a sound decline instead."""
+    toks: list[str] = []
+    pos = 0
+    for m in _TOKEN_RE.finditer(text):
+        if text[pos:m.start()].strip():
+            raise Unsupported(f"unrecognized token near {text[pos:m.start()].strip()!r}")
+        toks.append(m.group())
+        pos = m.end()
+    if text[pos:].strip():
+        raise Unsupported(f"unrecognized token near {text[pos:].strip()!r}")
+    return toks
 
 
 class _Parser:
@@ -148,7 +163,11 @@ class _Parser:
 def _parse(text: str) -> dict:
     # normalise `A.b` / `A::b` chains so tokenizer keeps the method name.
     text = text.replace(".", "::")
-    return _Parser(_tokenize(text)).parse_call()
+    parser = _Parser(_tokenize(text))
+    node = parser.parse_call()
+    if parser.peek() is not None:                            # leftover tokens => an infix/ternary form
+        raise Unsupported(f"trailing tokens after expression: {parser.toks[parser.i:]!r}")
+    return node
 
 
 def _var(name: str) -> dict:
