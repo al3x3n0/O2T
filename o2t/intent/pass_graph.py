@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from itertools import product
 
+from o2t import mini_alive as ma
 from o2t.facts.value_tracking import fact_to_assumptions
 
 # PatternMatch binary matchers -> formal-IR bitvector op (mirrors constraints/llvm_idioms.json).
@@ -998,6 +999,107 @@ def reconcile_widths(pair: dict, z3_bin: str,
     statuses = set(verdicts.values())
     return {"applicable": True, "verdicts": verdicts, "agree": len(statuses) == 1,
             "status": next(iter(statuses)) if len(statuses) == 1 else "disagree"}
+
+
+# --- phase 17: independent poison/flag-aware oracle for REFINEMENT obligations ------------------
+def _flag_poison(op: str, flags: list, a: int, b: int, w: int) -> bool:
+    """True iff `op a b` violates a no-wrap flag at width `w` (concrete mirror of flag_poison_smt)."""
+    mask = (1 << w) - 1
+    a, b = a & mask, b & mask
+    sa, sb = _to_signed(a, w), _to_signed(b, w)
+    lo, hi = -(1 << (w - 1)), (1 << (w - 1)) - 1
+    for fl in flags:
+        if op == "bvadd" and fl == "nsw" and not (lo <= sa + sb <= hi):
+            return True
+        if op == "bvadd" and fl == "nuw" and a + b > mask:
+            return True
+        if op == "bvsub" and fl == "nsw" and not (lo <= sa - sb <= hi):
+            return True
+        if op == "bvsub" and fl == "nuw" and a - b < 0:
+            return True
+        if op == "bvmul" and fl == "nsw" and not (lo <= sa * sb <= hi):
+            return True
+        if op == "bvmul" and fl == "nuw" and a * b > mask:
+            return True
+    return False
+
+
+def _eval_poison(node: dict, env: dict, pois: dict, w: int):
+    """Poison-aware concrete eval -> (value, poison, exact) or None for an op outside this oracle.
+    `exact` is False when a freeze of a poison input made the value arbitrary (unknowable concretely).
+    Covers the refinement fragment: var, const, freeze, and binops with no-wrap flags."""
+    mask = (1 << w) - 1
+    op = node.get("op")
+    if op == "var":
+        return env[node["name"]] & mask, bool(pois.get(node["name"], False)), True
+    if op == "bvconst":
+        return node["value"] & mask, False, True
+    if op == "freeze":
+        inner = _eval_poison(node["args"][0], env, pois, w)
+        if inner is None:
+            return None
+        v, p, ex = inner
+        return (0, False, False) if p else (v, False, ex)     # freeze(poison) = arbitrary but defined
+    if op in ma.EVAL and len(node.get("args", [])) == 2:
+        left = _eval_poison(node["args"][0], env, pois, w)
+        right = _eval_poison(node["args"][1], env, pois, w)
+        if left is None or right is None:
+            return None
+        value = ma.EVAL[op](int(left[0]), int(right[0]), mask)
+        poison = left[1] or right[1] or _flag_poison(op, node.get("flags", []), left[0], right[0], w)
+        return value, poison, left[2] and right[2]
+    return None                                               # ite/comparison/cast -> caller skips
+
+
+def reconcile_refinement(pair: dict, z3_bin: str, width: int = 4) -> dict:
+    """Independent cross-check for a REFINEMENT obligation (phases 11-13): poison/freeze/flag folds
+    that the value-equality reconcile abstains on, so they otherwise trust z3 alone. Enumerate value
+    AND poison-state assignments at `width` bits with a poison-aware evaluator and verify the actual
+    refinement condition -- `before defined => (after defined AND after == before)` -- then require the
+    concrete verdict to match z3. Returns {z3, concrete, agree, checked}; concrete is `skipped` for an
+    op outside the oracle (a cast, a comparison) or a freeze whose arbitrary value would be compared."""
+    z3_status, _ = ma.prove(pair, z3_bin)
+    if pair.get("refinement") != "refinement":
+        return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": 0, "reason": "not-refinement"}
+    variables = pair["variables"]
+    poison_vars = list(pair.get("poison_variables", []))
+    assumptions = pair.get("assumptions", [])
+    value_facts = [a for a in assumptions if a.get("op") != "not-poison"]
+    nonpoison = {a["name"] for a in assumptions if a.get("op") == "not-poison"}
+    counterexample = None
+    checked = 0
+    for combo in product(range(1 << width), repeat=len(variables)):
+        env = dict(zip(variables, combo))
+        if not all(_assumption_holds(a, env, width) for a in value_facts):
+            continue
+        for pstate in product((False, True), repeat=len(poison_vars)):
+            pois = dict(zip(poison_vars, pstate))
+            if any(pois.get(n, False) for n in nonpoison):        # not-poison guard filters this state
+                continue
+            b = _eval_poison(pair["before"], env, pois, width)
+            a = _eval_poison(pair["after"], env, pois, width)
+            if b is None or a is None:
+                return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": checked}
+            b_val, b_pois, b_exact = b
+            a_val, a_pois, a_exact = a
+            if b_pois:
+                continue                                          # before poison -> nothing to refine
+            checked += 1
+            if a_pois:                                            # before defined but after poison -> fails
+                counterexample = {"env": env, "poison": pois}
+                break
+            if not (b_exact and a_exact):                         # after defined but arbitrary -> can't compare
+                return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": checked}
+            if a_val != b_val:
+                counterexample = {"env": env, "poison": pois}
+                break
+        if counterexample:
+            break
+    concrete = "proved" if counterexample is None else "refuted"
+    agree = ((z3_status == "proved" and concrete == "proved") or
+             (z3_status == "refuted" and concrete == "refuted"))
+    return {"z3": z3_status, "concrete": concrete, "agree": agree, "checked": checked,
+            "counterexample": counterexample}
 
 
 # --- phase 3b: reconcile against the COMPILED symbolic execution of a generated shim harness -----

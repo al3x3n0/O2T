@@ -536,6 +536,30 @@ def main() -> int:
                "  if (!match(&I, m_NSWAdd(m_Value(X), m_Value(Y)))) return nullptr;\n"
                "  return replaceInstUsesWith(I, Builder.CreateAdd(X, Y)); }")
     assert fn(flag_fn)[1][0] == "proved", "function-form nsw drop not proved"
+    # POISON/FLAG CROSS-CHECK (phase 17): refinement folds (poison/freeze/flags) abstain from the
+    # value-equality + compiled engines, so they would trust z3 alone. An INDEPENDENT poison/flag-aware
+    # concrete oracle re-checks the actual refinement condition and must AGREE with z3 on each.
+    refinement_folds = [
+        ("match(&I, m_NSWAdd(m_Value(X), m_Value(Y)))",                       # flag-drop: proved
+         "return replaceInstUsesWith(I, Builder.CreateAdd(X, Y));", "proved"),
+        ("match(&I, m_Add(m_Value(X), m_Value(Y)))",                          # add a flag: refuted
+         "return replaceInstUsesWith(I, Builder.CreateNSWAdd(X, Y));", "refuted"),
+        ("match(&I, m_Value(X))",                                             # introduce freeze: proved
+         "return replaceInstUsesWith(I, Builder.CreateFreeze(X));", "proved"),
+        ("match(&I, m_Freeze(m_Value(X))) && isGuaranteedNotToBeUndefOrPoison(X)",  # guarded drop: proved
+         "return replaceInstUsesWith(I, X);", "proved"),
+        ("match(&I, m_Freeze(m_Value(X)))",                                   # unguarded drop: refuted
+         "return replaceInstUsesWith(I, X);", "refuted"),
+    ]
+    for pred, rw, expect in refinement_folds:
+        pair = pg.recover_pair(pred, rw)
+        assert pair.get("refinement") == "refinement", ("expected a refinement fold", pred)
+        rc = pg.reconcile_refinement(pair, z3)
+        assert rc["z3"] == expect and rc["concrete"] == expect and rc["agree"], (pred, rc)
+    # the oracle abstains (honestly) on a NON-refinement fold -- z3 already has the value-equality engine.
+    assert pg.reconcile_refinement(
+        pg.recover_pair("match(&I, m_Add(m_Value(X), m_Zero()))", "return replaceInstUsesWith(I, X);"),
+        z3)["concrete"] == "skipped", "non-refinement fold is not this oracle's job"
 
     # 21) GENERIC INTRINSIC MATCHER (phase 14): the `m_Intrinsic<Intrinsic::ID>(...)` template form is
     #     parsed (the tokenizer/parser now carry the `<...>` template id) and dispatched to a model.
