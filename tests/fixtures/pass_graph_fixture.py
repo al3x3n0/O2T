@@ -488,6 +488,31 @@ def main() -> int:
     assert prove("match(&I, m_Freeze(m_Value(X))) && isGuaranteedNotToBeUndefOrPoison(X)",
                  "return replaceInstUsesWith(I, X);")[1][0] == "proved", "guarded freeze-drop proves"
 
+    # 20) NO-WRAP FLAG MODELING (phase 13): `m_NSWAdd`/`m_NUWMul`/... and `CreateNSWAdd`/... carry a
+    #     no-wrap flag whose violation makes the result poison. DROPPING a flag is a sound refinement
+    #     (fewer poison inputs); ADDING one is unsound. Discharged via phase 12's refinement check.
+    pair, (status, _) = prove("match(&I, m_NSWAdd(m_Value(X), m_Value(Y)))",
+                              "return replaceInstUsesWith(I, Builder.CreateAdd(X, Y));")
+    assert status == "proved" and pair.get("refinement") == "refinement", (status, pair.get("refinement"))
+    assert pair["before"]["flags"] == ["nsw"] and "flags" not in pair["after"], pair["before"]
+    # nuw on a multiply drops just the same.
+    assert prove("match(&I, m_NUWMul(m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateMul(X, Y));")[1][0] == "proved", "nuw mul drop"
+    # TEETH: ADDING a no-wrap flag introduces poison the source lacked -> refuted.
+    _, (status, cex) = prove("match(&I, m_Add(m_Value(X), m_Value(Y)))",
+                             "return replaceInstUsesWith(I, Builder.CreateNSWAdd(X, Y));")
+    assert status == "refuted" and cex, ("adding nsw must refute", status)
+    # keeping the flag (identity) proves.
+    assert prove("match(&I, m_NSWSub(m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateNSWSub(X, Y));")[1][0] == "proved", "nsw sub identity"
+    # the toolless/compiled engines model neither poison nor flags -> they abstain; z3 authoritative.
+    assert pg.reconcile(pair, z3)["concrete"] == "skipped" and pg.to_shim_harness(pair) is None
+    # FUNCTION form: a flag-dropping fold recovered from control flow proves as a refinement.
+    flag_fn = ("Value *f(BinaryOperator &I){ Value *X, *Y;\n"
+               "  if (!match(&I, m_NSWAdd(m_Value(X), m_Value(Y)))) return nullptr;\n"
+               "  return replaceInstUsesWith(I, Builder.CreateAdd(X, Y)); }")
+    assert fn(flag_fn)[1][0] == "proved", "function-form nsw drop not proved"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

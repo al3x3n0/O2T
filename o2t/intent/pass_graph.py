@@ -34,10 +34,23 @@ MATCHER_CONST = {"m_Zero": 0, "m_One": 1, "m_AllOnes": 0xFFFFFFFF}
 MATCHER_VALUE = {"m_Value", "m_Specific", "m_Deferred"}
 # IRBuilder emission calls -> formal-IR op (the `after`/DFG side).
 BUILDER_BINOP = {
-    "CreateAdd": "bvadd", "CreateNSWAdd": "bvadd", "CreateNUWAdd": "bvadd",
+    "CreateAdd": "bvadd",
     "CreateSub": "bvsub", "CreateMul": "bvmul", "CreateAnd": "bvand", "CreateOr": "bvor",
     "CreateXor": "bvxor", "CreateShl": "bvshl", "CreateLShr": "bvlshr", "CreateAShr": "bvashr",
     "CreateUDiv": "bvudiv", "CreateSDiv": "bvsdiv", "CreateURem": "bvurem", "CreateSRem": "bvsrem",
+}
+# Poison-generating no-wrap flags. A flag makes the result poison when its no-overflow precondition is
+# violated, so DROPPING a flag is a sound refinement (fewer poison inputs) while ADDING one is not --
+# exactly what the refinement check (phase 12) discharges. `matcher/builder name -> (op, flag)`.
+MATCHER_FLAG_BINOP = {
+    "m_NSWAdd": ("bvadd", "nsw"), "m_NUWAdd": ("bvadd", "nuw"),
+    "m_NSWSub": ("bvsub", "nsw"), "m_NUWSub": ("bvsub", "nuw"),
+    "m_NSWMul": ("bvmul", "nsw"), "m_NUWMul": ("bvmul", "nuw"),
+}
+BUILDER_FLAG_BINOP = {
+    "CreateNSWAdd": ("bvadd", "nsw"), "CreateNUWAdd": ("bvadd", "nuw"),
+    "CreateNSWSub": ("bvsub", "nsw"), "CreateNUWSub": ("bvsub", "nuw"),
+    "CreateNSWMul": ("bvmul", "nsw"), "CreateNUWMul": ("bvmul", "nuw"),
 }
 # Width-changing casts -> formal-IR op. The matcher tree carries no bit widths, so we assign fixed
 # REPRESENTATIVE widths (narrow<->wide) and only recover cast folds licensed by an explicit
@@ -168,6 +181,16 @@ def _minmax(kind: str, a: dict, b: dict) -> dict:
     return {"op": "ite", "args": [{"op": _MINMAX_PRED[kind], "args": [a, b]}, a, b]}
 
 
+def _flag_binop(op: str, flag: str, a: dict, b: dict) -> dict:
+    return {"op": op, "args": [a, b], "flags": [flag]}
+
+
+def _contains_flags(node: dict) -> bool:
+    if node.get("flags"):
+        return True
+    return any(_contains_flags(a) for a in node.get("args", []))
+
+
 def _poison_relevant_vars(node: dict, under_freeze: bool = False) -> set[str]:
     """Vars that appear under a `freeze` -- they must be declared poison so freeze is meaningful
     (else `freeze(X)` collapses to `X` and an unguarded `freeze(X) -> X` would falsely prove)."""
@@ -225,6 +248,12 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
             raise Unsupported(f"{name} needs two operands")
         return {"op": MATCHER_BINOP[name], "args": [lower_matcher(args[0], binds, widths, pred_binds, hint),
                                                     lower_matcher(args[1], binds, widths, pred_binds, hint)]}
+    if name in MATCHER_FLAG_BINOP:
+        if len(args) != 2:
+            raise Unsupported(f"{name} needs two operands")
+        op, flag = MATCHER_FLAG_BINOP[name]
+        return _flag_binop(op, flag, lower_matcher(args[0], binds, widths, pred_binds, hint),
+                           lower_matcher(args[1], binds, widths, pred_binds, hint))
     if name in ("m_ICmp", "m_c_ICmp", "m_SpecificICmp"):
         if len(args) != 3 or args[0]["kind"] != "name":
             raise Unsupported(f"{name} needs a predicate and two operands")
@@ -278,6 +307,12 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
             raise Unsupported(f"{name} needs two operands")
         return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds, widths, hint),
                                                     lower_rewrite(args[1], binds, widths, hint)]}
+    if name in BUILDER_FLAG_BINOP:
+        if len(args) != 2:
+            raise Unsupported(f"{name} needs two operands")
+        op, flag = BUILDER_FLAG_BINOP[name]
+        return _flag_binop(op, flag, lower_rewrite(args[0], binds, widths, hint),
+                           lower_rewrite(args[1], binds, widths, hint))
     if name in BUILDER_ICMP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
@@ -437,10 +472,12 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         result["variable_bits"] = non_uniform
     if poison_vars:
         result["poison_variables"] = sorted(poison_vars)
-        # Refinement is the true soundness criterion for `before -> after` (any behaviour of `after`
-        # is allowed for `before`); we used value-equality as a conservative proxy. It coincides with
-        # equality on poison-free folds, but a poison-relevant rewrite may legitimately be MORE defined
-        # (introducing a `freeze` is always sound), so those are discharged as a refinement.
+    # Refinement is the true soundness criterion for `before -> after` (any behaviour of `after` is
+    # allowed for `before`); we used value-equality as a conservative proxy. It coincides with equality
+    # on poison-free folds, but a poison-relevant rewrite may legitimately be MORE defined: introducing
+    # a `freeze` or DROPPING a no-wrap flag is sound yet value-unequal. Those are discharged as a
+    # refinement (which still refutes adding a flag or a poison-unsound freeze).
+    if poison_vars or _contains_flags(before) or _contains_flags(after):
         result["refinement"] = "refinement"
     # Safety net: never emit a malformed obligation (e.g. an inconsistent-width cast mix). A formal
     # that the IR builder rejects is declined here rather than raised later at prove time.
@@ -778,6 +815,10 @@ def reconcile(pair: dict, z3_bin: str, width: int = 8) -> dict:
     obligation uses an op the toolless evaluator cannot cover."""
     from o2t import mini_alive as ma
     z3_status, _ = ma.prove(pair, z3_bin)
+    if pair.get("refinement") == "refinement":
+        # The toolless engine checks value-equality and models neither poison nor no-wrap flags, so it
+        # is not a faithful oracle for a refinement obligation -- abstain rather than (dis)agree.
+        return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": 0}
     variables = pair["variables"]
     assumptions = pair.get("assumptions", [])
     counterexample = None
@@ -847,6 +888,8 @@ def _query_call(assumption: dict) -> str | None:
 def to_shim_harness(pair: dict) -> str | None:
     """Generate a self-contained `symbolic_llvm.h` harness realizing a recovered fold, or None if any
     part (a builder op or a guard) has no shim mapping."""
+    if pair.get("refinement") == "refinement":
+        return None                                      # shim drops no-wrap flags / cannot model poison
     variables = [v.upper() for v in pair["variables"]]
     try:
         after_expr = _to_shim_expr(pair["after"])
