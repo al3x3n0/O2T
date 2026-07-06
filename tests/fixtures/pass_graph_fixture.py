@@ -322,6 +322,39 @@ def main() -> int:
     assert pg.recover_pair("match(&I, m_Select(m_ICmp(P, m_Value(A), m_Value(B)), m_Value(X), m_Value(Y)))",
                            "return replaceInstUsesWith(I, X);") is None
 
+    # 15) WIDTH-CHANGING CASTS (phase 8): `m_Trunc`/`m_ZExt`/`m_SExt` lower to mixed-width cast nodes
+    #     at representative widths (narrow 8 <-> wide 32). Because the matcher tree carries no bit
+    #     widths, a cast round-trip is recovered ONLY when licensed by an explicit width-equality guard
+    #     `X->getType() == I.getType()` (the fold `replaceInstUsesWith(I, X)` is well-typed only then),
+    #     so a width-dependent fold can never become a false proof.
+    te = " && X->getType() == I.getType()"
+    trunc_zext = "match(&I, m_Trunc(m_ZExt(m_Value(X))))"
+    pair, (status, _) = prove(trunc_zext + te, "return replaceInstUsesWith(I, X);")
+    assert status == "proved" and pair["variable_bits"] == {"x": 8}, (status, pair.get("variable_bits"))
+    assert pair["before"]["op"] == "trunc" and pair["before"]["args"][0]["op"] == "zext", pair["before"]
+    # trunc(sext(X)) -> X is the same round-trip identity.
+    assert prove("match(&I, m_Trunc(m_SExt(m_Value(X))))" + te,
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "trunc(sext(X))->X"
+    # SOUND GATE: without the width-equality guard the representative widths are unlicensed -> decline.
+    assert pg.recover_pair(trunc_zext, "return replaceInstUsesWith(I, X);") is None, \
+        "cast fold without a type-equality guard must decline"
+    # TEETH: `zext(trunc(X)) -> X` masks the high bits -- UNSOUND even with the guard -> refuted.
+    _, (status, cex) = prove("match(&I, m_ZExt(m_Trunc(m_Value(X))))" + te,
+                             "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("zext(trunc(X))->X must refute", status)
+    # the concrete + compiled engines cannot evaluate a width-changing cast, so they honestly abstain
+    # (skip/decline) rather than emit a bogus verdict; z3 remains authoritative.
+    assert pg.reconcile(pair, z3)["concrete"] == "skipped", "cast reconcile must be conservatively skipped"
+    assert pg.to_shim_harness(pair) is None, "cast has no shim builder -> harness declines"
+    # FUNCTION form: a positive `if (X->getType() == I.getType()) return fold;` guard licenses recovery.
+    cast_fn = ("Value *f(Instruction &I){ Value *X;\n"
+               "  if (!match(&I, m_Trunc(m_ZExt(m_Value(X))))) return nullptr;\n"
+               "  if (X->getType() == I.getType())\n"
+               "    return replaceInstUsesWith(I, X);\n"
+               "  return nullptr; }")
+    pair, (status, _) = fn(cast_fn)
+    assert status == "proved" and pair["variable_bits"] == {"x": 8}, (status, pair.get("variable_bits"))
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

@@ -39,7 +39,13 @@ BUILDER_BINOP = {
     "CreateXor": "bvxor", "CreateShl": "bvshl", "CreateLShr": "bvlshr", "CreateAShr": "bvashr",
     "CreateUDiv": "bvudiv", "CreateSDiv": "bvsdiv", "CreateURem": "bvurem", "CreateSRem": "bvsrem",
 }
+# Width-changing casts -> formal-IR op. The matcher tree carries no bit widths, so we assign fixed
+# REPRESENTATIVE widths (narrow<->wide) and only recover cast folds licensed by an explicit
+# width-equality guard (see `recover_pair`), so a width-dependent fold can never become a false proof.
+MATCHER_CAST = {"m_Trunc": "trunc", "m_ZExt": "zext", "m_SExt": "sext"}
+BUILDER_CAST = {"CreateTrunc": "trunc", "CreateZExt": "zext", "CreateSExt": "sext"}
 _WIDTH = 32
+_W_NARROW = 8
 
 
 class Unsupported(Exception):
@@ -104,8 +110,32 @@ def _var(name: str) -> dict:
     return {"op": "var", "name": name.lower()}
 
 
-def _const(value: int) -> dict:
-    return {"op": "bvconst", "bits": _WIDTH, "value": value & 0xFFFFFFFF}
+def _const(value: int, bits: int = _WIDTH) -> dict:
+    return {"op": "bvconst", "bits": bits, "value": value & ((1 << bits) - 1)}
+
+
+def _assign_width(widths: dict[str, int], name: str, bits: int) -> None:
+    """Pin a bound value's representative width; a conflicting width is unmodeled (declines)."""
+    key = name.lower()
+    if widths.get(key, bits) != bits:
+        raise Unsupported(f"conflicting widths for {name!r}")
+    widths[key] = bits
+
+
+def _lower_cast(castop: str, args: list, rec) -> dict:
+    """Lower a width-changing cast. Representative widths: zext/sext widen NARROW->WIDE, trunc narrows
+    WIDE->NARROW. `rec(argnode, hint_bits)` lowers the single operand at the required width."""
+    if len(args) != 1:
+        raise Unsupported(f"{castop} needs one operand")
+    if castop in ("zext", "sext"):
+        return {"op": castop, "args": [rec(args[0], _W_NARROW)], "bits": _WIDTH}
+    return {"op": "trunc", "args": [rec(args[0], _WIDTH)], "bits": _W_NARROW}
+
+
+def _contains_cast(node: dict) -> bool:
+    if node.get("op") in ("zext", "sext", "trunc"):
+        return True
+    return any(_contains_cast(a) for a in node.get("args", []))
 
 
 # Nodes that already produce a boolean (an ite condition may use them directly); everything else is a
@@ -125,62 +155,74 @@ def _select(cond: dict, then: dict, els: dict) -> dict:
     return {"op": "ite", "args": [_as_bool(cond), then, els]}
 
 
-def lower_matcher(node: dict, binds: set[str]) -> dict:
-    """Lower a parsed matcher tree to a formal-IR `before` node, collecting bound variable names."""
+def lower_matcher(node: dict, binds: set[str], widths: dict[str, int], hint: int = _WIDTH) -> dict:
+    """Lower a parsed matcher tree to a formal-IR `before` node, collecting bound variable names and
+    their representative widths. `hint` is the width leaves/consts take when unconstrained by a cast."""
     if node["kind"] == "int":
-        return _const(node["value"])
+        return _const(node["value"], hint)
     if node["kind"] == "name":
         raise Unsupported(f"bare operand {node['name']!r} in matcher")
     name, args = node["name"], node["args"]
     if name in MATCHER_CONST:
-        return _const(MATCHER_CONST[name])
+        return _const(MATCHER_CONST[name], hint)
     if name == "m_SpecificInt":
         if len(args) != 1 or args[0]["kind"] != "int":
             raise Unsupported("m_SpecificInt needs an integer")
-        return _const(args[0]["value"])
+        return _const(args[0]["value"], hint)
     if name in MATCHER_VALUE:
         if len(args) != 1 or args[0]["kind"] != "name":
             raise Unsupported(f"{name} needs a bound name")
         binds.add(args[0]["name"].lower())
+        _assign_width(widths, args[0]["name"], hint)
         return _var(args[0]["name"])
     if name in MATCHER_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
-        return {"op": MATCHER_BINOP[name], "args": [lower_matcher(args[0], binds),
-                                                    lower_matcher(args[1], binds)]}
+        return {"op": MATCHER_BINOP[name], "args": [lower_matcher(args[0], binds, widths, hint),
+                                                    lower_matcher(args[1], binds, widths, hint)]}
+    if name in MATCHER_CAST:
+        return _lower_cast(MATCHER_CAST[name], args,
+                           lambda a, h: lower_matcher(a, binds, widths, h))
     if name == "m_Select":
         if len(args) != 3:
             raise Unsupported("m_Select needs three operands")
-        return _select(lower_matcher(args[0], binds), lower_matcher(args[1], binds),
-                       lower_matcher(args[2], binds))
+        return _select(lower_matcher(args[0], binds, widths, hint),
+                       lower_matcher(args[1], binds, widths, hint),
+                       lower_matcher(args[2], binds, widths, hint))
     raise Unsupported(f"unmodeled matcher {name!r}")
 
 
-def lower_rewrite(node: dict, binds: set[str]) -> dict:
+def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int = _WIDTH) -> dict:
     """Lower a rewrite value expression to a formal-IR `after` node (bound var, Builder.Create*
-    DFG subtree, or a null/zero constant). References must resolve to matcher-bound names."""
+    DFG subtree, or a null/zero constant). References must resolve to matcher-bound names; a bound
+    value keeps the width the matcher pinned for it."""
     if node["kind"] == "int":
-        return _const(node["value"])
+        return _const(node["value"], hint)
     if node["kind"] == "name":
         nm = node["name"].lower()
         if nm not in binds:
             raise Unsupported(f"rewrite references unbound value {node['name']!r}")
+        _assign_width(widths, nm, widths.get(nm, hint))       # keep the matcher-pinned width
         return _var(node["name"])
     name, args = node["name"], node["args"]
     if name in ("getNullValue", "getZero"):
-        return _const(0)
+        return _const(0, hint)
     if name in ("getAllOnesValue",):
-        return _const(0xFFFFFFFF)
+        return _const(0xFFFFFFFF, hint)
     if name in BUILDER_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
-        return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds),
-                                                    lower_rewrite(args[1], binds)]}
+        return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds, widths, hint),
+                                                    lower_rewrite(args[1], binds, widths, hint)]}
+    if name in BUILDER_CAST:
+        return _lower_cast(BUILDER_CAST[name], args,
+                           lambda a, h: lower_rewrite(a, binds, widths, h))
     if name == "CreateSelect":
         if len(args) != 3:
             raise Unsupported("CreateSelect needs three operands")
-        return _select(lower_rewrite(args[0], binds), lower_rewrite(args[1], binds),
-                       lower_rewrite(args[2], binds))
+        return _select(lower_rewrite(args[0], binds, widths, hint),
+                       lower_rewrite(args[1], binds, widths, hint),
+                       lower_rewrite(args[2], binds, widths, hint))
     raise Unsupported(f"unmodeled rewrite emitter {name!r}")
 
 
@@ -191,6 +233,9 @@ _RIUW_RE = re.compile(r"\breplaceInstUsesWith\s*\(\s*[^,]+,\s*(.+?)\s*\)\s*;?\s*
 _VALUE_IRRELEVANT = re.compile(
     r"\b(?:hasOneUse|hasNUses|hasNUsesOrMore|hasPoisonGeneratingFlags|use_empty|user_empty|"
     r"isGuaranteedNotToBeUndefOrPoison|one[_-]?use)\b")
+# A type-equality guard (`X->getType() == I.getType()`) fixes the result width to a bound value's
+# width -- it licenses a cast round-trip's representative widths but carries no value SMT itself.
+_TYPE_EQ_RE = re.compile(r"getType\s*\(\s*\)\s*==\s*[^&|]*?getType\s*\(\s*\)")
 
 
 def _split_and(text: str) -> list[str]:
@@ -225,6 +270,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         return None
     matcher_src: str | None = None
     facts: list[dict] = []
+    has_type_eq = False
     for conjunct in _split_and(predicate_source.strip()):
         if "match(" in conjunct:
             mm = _MATCH_RE.search(conjunct)
@@ -233,6 +279,8 @@ def recover_pair(predicate_source: str, rewrite_source: str,
             matcher_src = mm.group(1)
         elif _VALUE_IRRELEVANT.search(conjunct):
             continue                                     # legality/profitability, no value effect
+        elif _TYPE_EQ_RE.search(conjunct):
+            has_type_eq = True                           # licenses a cast round-trip's width equality
         else:
             recovered = fact_to_assumptions(conjunct)
             if recovered is None:
@@ -242,11 +290,17 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         return None
     try:
         binds: set[str] = set()
-        before = lower_matcher(_parse(matcher_src), binds)
-        after = lower_rewrite(_parse(_unwrap(rm.group(1))), binds)   # unwrap inlined-helper parens
+        widths: dict[str, int] = {}
+        before = lower_matcher(_parse(matcher_src), binds, widths)
+        after = lower_rewrite(_parse(_unwrap(rm.group(1))), binds, widths)  # unwrap inlined-helper parens
     except Unsupported:
         return None
     if not binds:
+        return None
+    # A cast changes width, so `replaceInstUsesWith(I, X)` is well-typed only when the result width
+    # equals X's -- expressed in an explicit `X->getType() == I.getType()` guard, not the matcher tree.
+    # Without that guard we cannot license the representative widths, so decline (a sound bound).
+    if (_contains_cast(before) or _contains_cast(after)) and not has_type_eq:
         return None
     assumptions = []
     for fact in facts:
@@ -261,7 +315,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
             if fact["name"] not in binds:                # guard on a value the matcher never bound
                 return None
         assumptions.append(fact)
-    return {
+    result = {
         "domain": "scalar-bv32",
         "marker": marker,
         "variables": sorted(binds),
@@ -270,6 +324,19 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         "equivalence": "result",
         "assumptions": assumptions,
     }
+    # Non-uniform widths (from casts) declared explicitly; a uniform-32 fold omits this and is
+    # byte-identical to before this phase.
+    non_uniform = {v: w for v, w in widths.items() if w != _WIDTH}
+    if non_uniform:
+        result["variable_bits"] = non_uniform
+    # Safety net: never emit a malformed obligation (e.g. an inconsistent-width cast mix). A formal
+    # that the IR builder rejects is declined here rather than raised later at prove time.
+    from o2t.formal_ir import FormalIrError, pair_for_formal
+    try:
+        pair_for_formal(result)
+    except FormalIrError:
+        return None
+    return result
 
 
 # --- phase 1+: reconstruct the path condition from a fold FUNCTION's control flow ---------------
