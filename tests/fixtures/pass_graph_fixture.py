@@ -462,6 +462,32 @@ def main() -> int:
         "  if (!isGuaranteedNotToBeUndefOrPoison(X)) return nullptr;\n", ""))
     assert status == "refuted" and cex, ("dropping the poison guard must refute", status)
 
+    # 19) REFINEMENT-MODE EQUIVALENCE (phase 12): refinement -- not value-equality -- is the true
+    #     soundness criterion for `before -> after` (any behaviour of `after` must be allowed for
+    #     `before`). It coincides with equality on poison-free folds, but a poison-relevant rewrite may
+    #     legitimately be MORE defined. INTRODUCING a `freeze` is always sound, yet value-UNEQUAL, so it
+    #     is provable only as a refinement.
+    pair, (status, _) = prove("match(&I, m_Value(X))",
+                              "return replaceInstUsesWith(I, Builder.CreateFreeze(X));")
+    assert status == "proved" and pair.get("refinement") == "refinement", (status, pair.get("refinement"))
+    # freezing a computed value is likewise a sound refinement.
+    assert prove("match(&I, m_Add(m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateFreeze(Builder.CreateAdd(X, Y)));")[1][0] \
+        == "proved", "add(X,Y) -> freeze(add(X,Y)) refinement"
+    # TEETH hold under refinement: a value-WRONG freeze rewrite still refutes.
+    _, (status, cex) = prove("match(&I, m_Value(X))",
+                             "return replaceInstUsesWith(I, Builder.CreateFreeze(Builder.CreateAdd(X, 1)));")
+    assert status == "refuted" and cex, ("wrong-value refinement must refute", status)
+    # a poison-FREE fold carries no refinement flag and is discharged by value-equality, unchanged.
+    plain = pg.recover_pair("match(&I, m_Add(m_Value(X), m_Zero()))", "return replaceInstUsesWith(I, X);")
+    assert "refinement" not in plain and "poison_variables" not in plain, plain
+    # dropping a freeze (the reverse direction) is NOT a refinement unless the value is non-poison, so
+    # `freeze(X) -> X` still refutes unguarded and proves under the guard (phase 11 semantics preserved).
+    assert prove("match(&I, m_Freeze(m_Value(X)))", "return replaceInstUsesWith(I, X);")[1][0] == "refuted", \
+        "unguarded freeze-drop must refute under refinement too"
+    assert prove("match(&I, m_Freeze(m_Value(X))) && isGuaranteedNotToBeUndefOrPoison(X)",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "guarded freeze-drop proves"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

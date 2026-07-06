@@ -437,6 +437,11 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         result["variable_bits"] = non_uniform
     if poison_vars:
         result["poison_variables"] = sorted(poison_vars)
+        # Refinement is the true soundness criterion for `before -> after` (any behaviour of `after`
+        # is allowed for `before`); we used value-equality as a conservative proxy. It coincides with
+        # equality on poison-free folds, but a poison-relevant rewrite may legitimately be MORE defined
+        # (introducing a `freeze` is always sound), so those are discharged as a refinement.
+        result["refinement"] = "refinement"
     # Safety net: never emit a malformed obligation (e.g. an inconsistent-width cast mix). A formal
     # that the IR builder rejects is declined here rather than raised later at prove time.
     from o2t.formal_ir import FormalIrError, pair_for_formal
