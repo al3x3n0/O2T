@@ -352,6 +352,8 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
         return _const(0xFFFFFFFF, hint)
     if name in ("getTrue",):                              # i1 true, modeled as a 0/1 bitvector
         return _const(1, hint)
+    if name == "get" and len(args) == 2 and args[-1]["kind"] == "int":
+        return _const(args[-1]["value"], hint)            # ConstantInt::get(Ty, N)
     if name in BUILDER_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
@@ -546,7 +548,62 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     return result
 
 
-# --- phase 1+: reconstruct the path condition from a fold FUNCTION's control flow ---------------
+# --- phase 15: bridge the AST miner's operand-level finding schema to recover_pair --------------
+# The real `cv-mine-pass-source-ast` miner emits a fold as (opcode, operand-level predicate_source,
+# rewrite_source) -- e.g. opcode "add" + `match(Op1, m_Zero())` -- NOT a whole-instruction matcher
+# tree. This bridge reconstructs `match(&I, m_<Opcode>(slot0, slot1))` from the operand predicates so
+# a genuine miner finding flows through the same structural recovery.
+_OPCODE_MATCHER = {
+    "add": "m_Add", "sub": "m_Sub", "mul": "m_Mul", "and": "m_And", "or": "m_Or",
+    "xor": "m_Xor", "shl": "m_Shl", "lshr": "m_LShr", "ashr": "m_AShr",
+    "udiv": "m_UDiv", "sdiv": "m_SDiv", "urem": "m_URem", "srem": "m_SRem",
+}
+_OPERAND_MATCH_RE = re.compile(r"^match\s*\(\s*(Op\d+)\s*,\s*(.+)\)\s*$")
+_OPERAND_EQ_RE = re.compile(r"^(Op\d+)\s*==\s*(Op\d+)$")
+
+
+def finding_to_predicate(opcode: str, predicate_source: str) -> str | None:
+    """Rebuild a whole-instruction matcher predicate from a miner finding's opcode + operand-level
+    guard. `match(OpK, SUB)` fills operand slot K with SUB; `OpA == OpB` aliases the operands (a
+    deferred match); anything else is passed through as a value-fact conjunct. None if unmodeled."""
+    matcher_name = _OPCODE_MATCHER.get(opcode)
+    if matcher_name is None:
+        return None
+    slots = {0: "m_Value(Op0)", 1: "m_Value(Op1)"}
+    facts: list[str] = []
+    for conjunct in _split_and(predicate_source.strip()):
+        mm = _OPERAND_MATCH_RE.match(conjunct)
+        if mm and mm.group(1) in ("Op0", "Op1"):
+            slots[int(mm.group(1)[2:])] = mm.group(2).strip()
+            continue
+        eq = _OPERAND_EQ_RE.match(conjunct)
+        if eq and {eq.group(1), eq.group(2)} == {"Op0", "Op1"}:
+            slots[0], slots[1] = "m_Value(Op0)", "m_Deferred(Op0)"   # operands are the same value
+            continue
+        facts.append(conjunct)                                       # a value fact -> recover_pair owns it
+    predicate = f"match(&I, {matcher_name}(" + slots[0] + ", " + slots[1] + "))"
+    return " && ".join([predicate, *facts])
+
+
+def recover_from_finding(finding: dict) -> dict | None:
+    """Recover a formal obligation directly from an AST-miner finding dict (the real miner schema:
+    `opcode`, operand-level `predicate_source`, `rewrite_source`). The rewrite is normalized to the
+    `replaceInstUsesWith(I, <value>)` form whether the source returns the value directly or via
+    `replaceInstUsesWith`. Returns a formal dict provable by mini_alive.prove, or None if unmodeled."""
+    predicate = finding_to_predicate(str(finding.get("opcode") or ""),
+                                     str(finding.get("predicate_source") or ""))
+    if predicate is None:
+        return None
+    value = re.sub(r"^\s*return\s+", "", str(finding.get("rewrite_source") or "")).rstrip(";").strip()
+    if not value:
+        return None
+    if not value.startswith("replaceInstUsesWith"):
+        value = f"replaceInstUsesWith(I, {value})"
+    return recover_pair(predicate, "return " + value + ";",
+                        marker=str(finding.get("marker") or "probe.recovered.fold"))
+
+
+# --- phase 1+: reconstruct the path condition from a fold FUNCTION's control flow --------------
 _BAIL_RETURNS = ("nullptr", "false", "{}", "None", "std::nullopt", "0")
 
 
