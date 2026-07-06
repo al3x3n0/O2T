@@ -427,6 +427,41 @@ def main() -> int:
     assert pg.recover_pair("match(&I, m_Value(X))",
                            "return replaceInstUsesWith(I, Builder.CreateBinaryIntrinsic(Intrinsic::bswap, X, X));") is None
 
+    # 18) POISON / FREEZE (phase 11): `m_Freeze`/`CreateFreeze` lower to a freeze node over a
+    #     poison-declared value, and `isGuaranteedNotToBeUndefOrPoison(X)` is recovered as a
+    #     `not-poison` precondition (not dropped). `freeze(X) -> X` is UNSOUND in general (X may be
+    #     poison) but sound when X is guaranteed non-poison -- the guard is load-bearing.
+    freeze_x = "match(&I, m_Freeze(m_Value(X)))"
+    pair, (status, _) = prove(freeze_x + " && isGuaranteedNotToBeUndefOrPoison(X)",
+                              "return replaceInstUsesWith(I, X);")
+    assert status == "proved", ("guarded freeze(X)->X not proved", status)
+    assert pair["poison_variables"] == ["x"] and pair["assumptions"] == [{"op": "not-poison", "name": "x"}], pair
+    # TEETH: without the poison-freedom guard, X may be poison -> refuted (freeze cannot be dropped).
+    _, (status, cex) = prove(freeze_x, "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("unguarded freeze(X)->X must refute", status)
+    # the value under freeze is declared poison even without a guard -- that is what gives the teeth.
+    unguarded = pg.recover_pair(freeze_x, "return replaceInstUsesWith(I, X);")
+    assert unguarded["poison_variables"] == ["x"] and not unguarded["assumptions"], unguarded
+    # a poison-freedom guard on an UNBOUND value (never matched) declines, never silently dropped.
+    assert pg.recover_pair(freeze_x + " && isGuaranteedNotToBeUndefOrPoison(Y)",
+                           "return replaceInstUsesWith(I, X);") is None
+    # a value-only fold additionally guarded non-poison still proves (poison propagates equally).
+    assert prove("match(&I, m_Add(m_Value(X), m_Zero())) && isGuaranteedNotToBePoison(X)",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "add X,0 -> X under not-poison"
+    # freeze folds abstain in the toolless engines (freeze is not concretely evaluable) -> z3 authoritative.
+    assert pg.reconcile(pair, z3)["concrete"] == "skipped" and pg.to_shim_harness(pair) is None
+    # FUNCTION form: a `if (!isGuaranteedNotToBeUndefOrPoison(X)) return nullptr;` bailout recovers the
+    # not-poison precondition; dropping it flips the fold to refuted.
+    freeze_fn = ("Value *f(FreezeInst &I){ Value *X;\n"
+                 "  if (!match(&I, m_Freeze(m_Value(X)))) return nullptr;\n"
+                 "  if (!isGuaranteedNotToBeUndefOrPoison(X)) return nullptr;\n"
+                 "  return replaceInstUsesWith(I, X); }")
+    pair, (status, _) = fn(freeze_fn)
+    assert status == "proved" and pair["poison_variables"] == ["x"], (status, pair.get("poison_variables"))
+    _, (status, cex) = fn(freeze_fn.replace(
+        "  if (!isGuaranteedNotToBeUndefOrPoison(X)) return nullptr;\n", ""))
+    assert status == "refuted" and cex, ("dropping the poison guard must refute", status)
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "

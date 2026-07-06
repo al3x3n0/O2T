@@ -168,6 +168,18 @@ def _minmax(kind: str, a: dict, b: dict) -> dict:
     return {"op": "ite", "args": [{"op": _MINMAX_PRED[kind], "args": [a, b]}, a, b]}
 
 
+def _poison_relevant_vars(node: dict, under_freeze: bool = False) -> set[str]:
+    """Vars that appear under a `freeze` -- they must be declared poison so freeze is meaningful
+    (else `freeze(X)` collapses to `X` and an unguarded `freeze(X) -> X` would falsely prove)."""
+    acc: set[str] = set()
+    if node.get("op") == "var" and under_freeze:
+        acc.add(node["name"])
+    deeper = under_freeze or node.get("op") == "freeze"
+    for a in node.get("args", []):
+        acc |= _poison_relevant_vars(a, deeper)
+    return acc
+
+
 # Nodes that already produce a boolean (an ite condition may use them directly); everything else is a
 # bitvector and is coerced with `!= 0`, matching LLVM's i1 select condition (true iff nonzero).
 _BOOL_RESULT_OPS = {"eq", "ne", "bvslt", "bvsle", "bvsgt", "bvsge", "bvult", "bvule", "bvugt", "bvuge"}
@@ -226,6 +238,10 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
             raise Unsupported(f"{name} needs two operands")
         return _minmax(MATCHER_MINMAX[name], lower_matcher(args[0], binds, widths, pred_binds, hint),
                        lower_matcher(args[1], binds, widths, pred_binds, hint))
+    if name == "m_Freeze":
+        if len(args) != 1:
+            raise Unsupported("m_Freeze needs one operand")
+        return {"op": "freeze", "args": [lower_matcher(args[0], binds, widths, pred_binds, hint)]}
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
                            lambda a, h: lower_matcher(a, binds, widths, pred_binds, h))
@@ -272,6 +288,10 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
             raise Unsupported(f"{name} needs two operands")
         return _minmax(BUILDER_MINMAX[name], lower_rewrite(args[0], binds, widths, hint),
                        lower_rewrite(args[1], binds, widths, hint))
+    if name == "CreateFreeze":
+        if len(args) != 1:
+            raise Unsupported("CreateFreeze needs one operand")
+        return {"op": "freeze", "args": [lower_rewrite(args[0], binds, widths, hint)]}
     if name == "CreateBinaryIntrinsic":                             # first arg is the Intrinsic:: id
         if len(args) != 3 or args[0]["kind"] != "name" or args[0]["name"] not in _MINMAX_PRED:
             raise Unsupported("CreateBinaryIntrinsic only models a binary min/max intrinsic")
@@ -295,7 +315,11 @@ _RIUW_RE = re.compile(r"\breplaceInstUsesWith\s*\(\s*[^,]+,\s*(.+?)\s*\)\s*;?\s*
 # value-equivalence obligation (they gate *whether* to fold, not *what* the fold computes).
 _VALUE_IRRELEVANT = re.compile(
     r"\b(?:hasOneUse|hasNUses|hasNUsesOrMore|hasPoisonGeneratingFlags|use_empty|user_empty|"
-    r"isGuaranteedNotToBeUndefOrPoison|one[_-]?use)\b")
+    r"one[_-]?use)\b")
+# A poison-freedom guard (`isGuaranteedNotToBeUndefOrPoison(X)`) is a real precondition, recovered as
+# a `not-poison` assumption over a poison-declared value -- NOT dropped, since a fold sound only for a
+# never-poison operand (e.g. `freeze(X) -> X`) must be proved under it, and unsound without it.
+_NOTPOISON_RE = re.compile(r"\bisGuaranteedNotToBe(?:Undef(?:Or)?)?Poison\s*\(\s*&?(\w+)")
 # A type-equality guard (`X->getType() == I.getType()`) fixes the result width to a bound value's
 # width -- it licenses a cast round-trip's representative widths but carries no value SMT itself.
 _TYPE_EQ_RE = re.compile(r"getType\s*\(\s*\)\s*==\s*[^&|]*?getType\s*\(\s*\)")
@@ -337,6 +361,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     matcher_src: str | None = None
     facts: list[dict] = []
     pred_binds: dict[str, str] = {}
+    poison_free: set[str] = set()
     has_type_eq = False
     for conjunct in _split_and(predicate_source.strip()):
         if "match(" in conjunct:
@@ -348,6 +373,8 @@ def recover_pair(predicate_source: str, rewrite_source: str,
             continue                                     # legality/profitability, no value effect
         elif _TYPE_EQ_RE.search(conjunct):
             has_type_eq = True                           # licenses a cast round-trip's width equality
+        elif _NOTPOISON_RE.search(conjunct):
+            poison_free.add(_NOTPOISON_RE.search(conjunct).group(1).lower())
         elif _PRED_GUARD_RE.match(conjunct):
             ident, pred_name = _PRED_GUARD_RE.match(conjunct).groups()
             if pred_name not in _ICMP_PRED:
@@ -374,6 +401,13 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     # Without that guard we cannot license the representative widths, so decline (a sound bound).
     if (_contains_cast(before) or _contains_cast(after)) and not has_type_eq:
         return None
+    # Poison: a value under a `freeze` must be poison-declared (else freeze is a no-op and an unguarded
+    # `freeze(X) -> X` would falsely prove); a `not-poison` guard is asserted over its bound value. Both
+    # kinds of poison-relevant value must be matcher-bound.
+    poison_vars = _poison_relevant_vars(before) | _poison_relevant_vars(after) | poison_free
+    if not poison_vars <= binds:
+        return None                                      # freeze/poison guard on an unbound value
+    facts = facts + [{"op": "not-poison", "name": v} for v in poison_free]
     assumptions = []
     for fact in facts:
         fact = dict(fact)
@@ -401,6 +435,8 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     non_uniform = {v: w for v, w in widths.items() if w != _WIDTH}
     if non_uniform:
         result["variable_bits"] = non_uniform
+    if poison_vars:
+        result["poison_variables"] = sorted(poison_vars)
     # Safety net: never emit a malformed obligation (e.g. an inconsistent-width cast mix). A formal
     # that the IR builder rejects is declined here rather than raised later at prove time.
     from o2t.formal_ir import FormalIrError, pair_for_formal
