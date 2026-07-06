@@ -53,8 +53,9 @@ def main() -> int:
                                 "return replaceInstUsesWith(I, X);")
     assert status == "refuted" and cex, ("a wrong recovered fold was not refuted", status, cex)
 
-    # 5) SOUND boundary: an unmodeled matcher is declined (None), never mis-modeled.
-    assert pg.recover_pair("match(&I, m_Select(m_Value(C), m_Value(X), m_Value(Y)))",
+    # 5) SOUND boundary: an unmodeled matcher is declined (None), never mis-modeled. A type-changing
+    #    matcher (m_Trunc) is outside the scalar-bv32 domain, and an intrinsic matcher is unmodeled.
+    assert pg.recover_pair("match(&I, m_Trunc(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
     assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
@@ -280,6 +281,46 @@ def main() -> int:
     # dropping the disjointness guard removes the precondition -> unsound.
     _, (status, cex) = fn(disjoint_fn.replace("    if (!haveNoCommonBitsSet(X, Y)) continue;\n", ""))
     assert status == "refuted" and cex, ("add->or without disjointness must refute", status)
+
+    # 14) SELECT FOLDS (phase 7): `m_Select`/`CreateSelect` lower to an ite node whose condition is
+    #     coerced to a boolean (`C != 0`, LLVM i1 semantics), so select folds prove in the shared
+    #     scalar domain and compose with the existing matcher/rewrite algebra.
+    #     arm-equal `select C, X, X -> X` is sound for ANY condition.
+    pair, (status, _) = prove("match(&I, m_Select(m_Value(C), m_Value(X), m_Deferred(X)))",
+                              "return replaceInstUsesWith(I, X);")
+    assert status == "proved" and pair["before"]["op"] == "ite", (status, pair["before"])
+    # TEETH: `select C, X, Y -> X` is UNSOUND (the else arm leaks when C is false) -> refuted.
+    _, (status, cex) = prove("match(&I, m_Select(m_Value(C), m_Value(X), m_Value(Y)))",
+                             "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("unguarded select arm-pick must refute", status)
+    # CONSTANT condition selects the corresponding arm; the wrong arm refutes.
+    assert prove("match(&I, m_Select(m_One(), m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "select true -> then"
+    assert prove("match(&I, m_Select(m_Zero(), m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Y);")[1][0] == "proved", "select false -> else"
+    _, (status, _) = prove("match(&I, m_Select(m_One(), m_Value(X), m_Value(Y)))",
+                           "return replaceInstUsesWith(I, Y);")
+    assert status == "refuted", ("select true must not fold to the else arm", status)
+    # COMPOSITIONAL: an arm is itself a nested identity `(X+0)`, equal to the other arm -> proves.
+    assert prove("match(&I, m_Select(m_Value(C), m_Add(m_Value(X), m_Zero()), m_Deferred(X)))",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "select over nested identity arm"
+    # a `CreateSelect(C, X, Y)` rewrite reconstructing the same select is an identity.
+    assert prove("match(&I, m_Select(m_Value(C), m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateSelect(C, X, Y));")[1][0] == "proved", \
+        "CreateSelect passthrough"
+    # concrete reconciliation agrees on a select fold (the ite is handled by the concrete evaluator).
+    rec = pg.reconcile(pair, z3)
+    assert rec["z3"] == "proved" and rec["concrete"] == "proved" and rec["agree"], rec
+    # the compiled-shim path has no select builder -> declines cleanly (None), never a bogus verdict.
+    assert pg.to_shim_harness(pair) is None, "select has no shim mapping -> harness must decline"
+    # FUNCTION form: arm-equal select recovered from a fold function's control flow proves.
+    sel_fn = ("Value *f(SelectInst &I){ Value *C, *X;\n"
+              "  if (!match(&I, m_Select(m_Value(C), m_Value(X), m_Deferred(X)))) return nullptr;\n"
+              "  return replaceInstUsesWith(I, X); }")
+    assert fn(sel_fn)[1][0] == "proved", "function-form arm-equal select not proved"
+    # SOUND boundary: an unmodeled condition matcher (m_ICmp) inside the select declines, never mis-models.
+    assert pg.recover_pair("match(&I, m_Select(m_ICmp(P, m_Value(A), m_Value(B)), m_Value(X), m_Value(Y)))",
+                           "return replaceInstUsesWith(I, X);") is None
 
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "

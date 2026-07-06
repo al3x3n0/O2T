@@ -108,6 +108,23 @@ def _const(value: int) -> dict:
     return {"op": "bvconst", "bits": _WIDTH, "value": value & 0xFFFFFFFF}
 
 
+# Nodes that already produce a boolean (an ite condition may use them directly); everything else is a
+# bitvector and is coerced with `!= 0`, matching LLVM's i1 select condition (true iff nonzero).
+_BOOL_RESULT_OPS = {"eq", "ne", "bvslt", "bvsle", "bvsgt", "bvsge", "bvult", "bvule", "bvugt", "bvuge"}
+
+
+def _as_bool(node: dict) -> dict:
+    if node.get("op") in _BOOL_RESULT_OPS:
+        return node
+    return {"op": "ne", "args": [node, _const(0)]}
+
+
+def _select(cond: dict, then: dict, els: dict) -> dict:
+    """A `select`/ite formal-IR node: the condition is lowered to a boolean, the arms stay in the
+    shared scalar domain, so `select C, X, Y` proves exactly like `C != 0 ? X : Y`."""
+    return {"op": "ite", "args": [_as_bool(cond), then, els]}
+
+
 def lower_matcher(node: dict, binds: set[str]) -> dict:
     """Lower a parsed matcher tree to a formal-IR `before` node, collecting bound variable names."""
     if node["kind"] == "int":
@@ -131,6 +148,11 @@ def lower_matcher(node: dict, binds: set[str]) -> dict:
             raise Unsupported(f"{name} needs two operands")
         return {"op": MATCHER_BINOP[name], "args": [lower_matcher(args[0], binds),
                                                     lower_matcher(args[1], binds)]}
+    if name == "m_Select":
+        if len(args) != 3:
+            raise Unsupported("m_Select needs three operands")
+        return _select(lower_matcher(args[0], binds), lower_matcher(args[1], binds),
+                       lower_matcher(args[2], binds))
     raise Unsupported(f"unmodeled matcher {name!r}")
 
 
@@ -154,6 +176,11 @@ def lower_rewrite(node: dict, binds: set[str]) -> dict:
             raise Unsupported(f"{name} needs two operands")
         return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds),
                                                     lower_rewrite(args[1], binds)]}
+    if name == "CreateSelect":
+        if len(args) != 3:
+            raise Unsupported("CreateSelect needs three operands")
+        return _select(lower_rewrite(args[0], binds), lower_rewrite(args[1], binds),
+                       lower_rewrite(args[2], binds))
     raise Unsupported(f"unmodeled rewrite emitter {name!r}")
 
 
@@ -607,7 +634,9 @@ def _to_smt(node: dict) -> str:
         return node["name"].upper()
     if op == "bvconst":
         return f"(_ bv{node['value']} 32)"
-    return "(" + op + " " + " ".join(_to_smt(a) for a in node["args"]) + ")"
+    if op in _SHIM_BUILDER:                                # bv binops lower to valid SMT-LIB directly
+        return "(" + op + " " + " ".join(_to_smt(a) for a in node["args"]) + ")"
+    raise Unsupported(f"no SMT lowering for {op!r}")      # e.g. ite/ne -> compiled path declines
 
 
 def _to_shim_expr(node: dict) -> str:
