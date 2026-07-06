@@ -44,6 +44,20 @@ BUILDER_BINOP = {
 # width-equality guard (see `recover_pair`), so a width-dependent fold can never become a false proof.
 MATCHER_CAST = {"m_Trunc": "trunc", "m_ZExt": "zext", "m_SExt": "sext"}
 BUILDER_CAST = {"CreateTrunc": "trunc", "CreateZExt": "zext", "CreateSExt": "sext"}
+# ICmp predicates -> formal-IR comparison op. An icmp yields i1, modeled as a 0/1 bitvector (exact,
+# since the result is always 0 or 1) via `ite(pred, 1, 0)` -- so it stays in the shared bv domain and
+# the concrete engine can evaluate it. `m_SpecificICmp(PRED, ...)` carries the predicate as a literal;
+# `m_ICmp(Pred, ...)` binds it, fixed by a `Pred == ICmpInst::ICMP_*` guard (see `recover_pair`).
+_ICMP_PRED = {
+    "ICMP_EQ": "eq", "ICMP_NE": "ne",
+    "ICMP_SLT": "bvslt", "ICMP_SLE": "bvsle", "ICMP_SGT": "bvsgt", "ICMP_SGE": "bvsge",
+    "ICMP_ULT": "bvult", "ICMP_ULE": "bvule", "ICMP_UGT": "bvugt", "ICMP_UGE": "bvuge",
+}
+BUILDER_ICMP = {
+    "CreateICmpEQ": "eq", "CreateICmpNE": "ne",
+    "CreateICmpSLT": "bvslt", "CreateICmpSLE": "bvsle", "CreateICmpSGT": "bvsgt", "CreateICmpSGE": "bvsge",
+    "CreateICmpULT": "bvult", "CreateICmpULE": "bvule", "CreateICmpUGT": "bvugt", "CreateICmpUGE": "bvuge",
+}
 _WIDTH = 32
 _W_NARROW = 8
 
@@ -138,6 +152,11 @@ def _contains_cast(node: dict) -> bool:
     return any(_contains_cast(a) for a in node.get("args", []))
 
 
+def _icmp(pred: str, a: dict, b: dict, bits: int = _WIDTH) -> dict:
+    """An icmp result as a 0/1 bitvector: `pred(a, b) ? 1 : 0` at the result width `bits`."""
+    return {"op": "ite", "args": [{"op": pred, "args": [a, b]}, _const(1, bits), _const(0, bits)]}
+
+
 # Nodes that already produce a boolean (an ite condition may use them directly); everything else is a
 # bitvector and is coerced with `!= 0`, matching LLVM's i1 select condition (true iff nonzero).
 _BOOL_RESULT_OPS = {"eq", "ne", "bvslt", "bvsle", "bvsgt", "bvsge", "bvult", "bvule", "bvugt", "bvuge"}
@@ -155,9 +174,12 @@ def _select(cond: dict, then: dict, els: dict) -> dict:
     return {"op": "ite", "args": [_as_bool(cond), then, els]}
 
 
-def lower_matcher(node: dict, binds: set[str], widths: dict[str, int], hint: int = _WIDTH) -> dict:
+def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
+                  pred_binds: dict[str, str] | None = None, hint: int = _WIDTH) -> dict:
     """Lower a parsed matcher tree to a formal-IR `before` node, collecting bound variable names and
-    their representative widths. `hint` is the width leaves/consts take when unconstrained by a cast."""
+    their representative widths. `hint` is the width leaves/consts take when unconstrained by a cast;
+    `pred_binds` maps a bound icmp-predicate name to its guard-fixed comparison op."""
+    pred_binds = pred_binds or {}
     if node["kind"] == "int":
         return _const(node["value"], hint)
     if node["kind"] == "name":
@@ -178,17 +200,25 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int], hint: int
     if name in MATCHER_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
-        return {"op": MATCHER_BINOP[name], "args": [lower_matcher(args[0], binds, widths, hint),
-                                                    lower_matcher(args[1], binds, widths, hint)]}
+        return {"op": MATCHER_BINOP[name], "args": [lower_matcher(args[0], binds, widths, pred_binds, hint),
+                                                    lower_matcher(args[1], binds, widths, pred_binds, hint)]}
+    if name in ("m_ICmp", "m_c_ICmp", "m_SpecificICmp"):
+        if len(args) != 3 or args[0]["kind"] != "name":
+            raise Unsupported(f"{name} needs a predicate and two operands")
+        pred = _ICMP_PRED.get(args[0]["name"]) or pred_binds.get(args[0]["name"].lower())
+        if pred is None:                                 # unbound / unmodeled predicate -> decline
+            raise Unsupported(f"unresolved icmp predicate {args[0]['name']!r}")
+        return _icmp(pred, lower_matcher(args[1], binds, widths, pred_binds, _WIDTH),
+                     lower_matcher(args[2], binds, widths, pred_binds, _WIDTH), hint)
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
-                           lambda a, h: lower_matcher(a, binds, widths, h))
+                           lambda a, h: lower_matcher(a, binds, widths, pred_binds, h))
     if name == "m_Select":
         if len(args) != 3:
             raise Unsupported("m_Select needs three operands")
-        return _select(lower_matcher(args[0], binds, widths, hint),
-                       lower_matcher(args[1], binds, widths, hint),
-                       lower_matcher(args[2], binds, widths, hint))
+        return _select(lower_matcher(args[0], binds, widths, pred_binds, hint),
+                       lower_matcher(args[1], binds, widths, pred_binds, hint),
+                       lower_matcher(args[2], binds, widths, pred_binds, hint))
     raise Unsupported(f"unmodeled matcher {name!r}")
 
 
@@ -205,15 +235,22 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
         _assign_width(widths, nm, widths.get(nm, hint))       # keep the matcher-pinned width
         return _var(node["name"])
     name, args = node["name"], node["args"]
-    if name in ("getNullValue", "getZero"):
+    if name in ("getNullValue", "getZero", "getFalse"):
         return _const(0, hint)
     if name in ("getAllOnesValue",):
         return _const(0xFFFFFFFF, hint)
+    if name in ("getTrue",):                              # i1 true, modeled as a 0/1 bitvector
+        return _const(1, hint)
     if name in BUILDER_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
         return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds, widths, hint),
                                                     lower_rewrite(args[1], binds, widths, hint)]}
+    if name in BUILDER_ICMP:
+        if len(args) != 2:
+            raise Unsupported(f"{name} needs two operands")
+        return _icmp(BUILDER_ICMP[name], lower_rewrite(args[0], binds, widths, _WIDTH),
+                     lower_rewrite(args[1], binds, widths, _WIDTH), hint)
     if name in BUILDER_CAST:
         return _lower_cast(BUILDER_CAST[name], args,
                            lambda a, h: lower_rewrite(a, binds, widths, h))
@@ -236,6 +273,9 @@ _VALUE_IRRELEVANT = re.compile(
 # A type-equality guard (`X->getType() == I.getType()`) fixes the result width to a bound value's
 # width -- it licenses a cast round-trip's representative widths but carries no value SMT itself.
 _TYPE_EQ_RE = re.compile(r"getType\s*\(\s*\)\s*==\s*[^&|]*?getType\s*\(\s*\)")
+# A predicate-binding guard (`Pred == ICmpInst::ICMP_EQ`) fixes an `m_ICmp`-bound predicate to a
+# concrete comparison; it constrains WHICH icmp, not a value, so it carries no assumption SMT.
+_PRED_GUARD_RE = re.compile(r"^\s*(\w+)\s*==\s*(?:\w+::)?(ICMP_\w+)\s*$")
 
 
 def _split_and(text: str) -> list[str]:
@@ -270,6 +310,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         return None
     matcher_src: str | None = None
     facts: list[dict] = []
+    pred_binds: dict[str, str] = {}
     has_type_eq = False
     for conjunct in _split_and(predicate_source.strip()):
         if "match(" in conjunct:
@@ -281,6 +322,11 @@ def recover_pair(predicate_source: str, rewrite_source: str,
             continue                                     # legality/profitability, no value effect
         elif _TYPE_EQ_RE.search(conjunct):
             has_type_eq = True                           # licenses a cast round-trip's width equality
+        elif _PRED_GUARD_RE.match(conjunct):
+            ident, pred_name = _PRED_GUARD_RE.match(conjunct).groups()
+            if pred_name not in _ICMP_PRED:
+                return None                              # unmodeled predicate -> decline
+            pred_binds[ident.lower()] = _ICMP_PRED[pred_name]
         else:
             recovered = fact_to_assumptions(conjunct)
             if recovered is None:
@@ -291,7 +337,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     try:
         binds: set[str] = set()
         widths: dict[str, int] = {}
-        before = lower_matcher(_parse(matcher_src), binds, widths)
+        before = lower_matcher(_parse(matcher_src), binds, widths, pred_binds)
         after = lower_rewrite(_parse(_unwrap(rm.group(1))), binds, widths)  # unwrap inlined-helper parens
     except Unsupported:
         return None

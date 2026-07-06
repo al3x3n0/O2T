@@ -355,6 +355,47 @@ def main() -> int:
     pair, (status, _) = fn(cast_fn)
     assert status == "proved" and pair["variable_bits"] == {"x": 8}, (status, pair.get("variable_bits"))
 
+    # 16) ICMP PREDICATE MATCHERS (phase 9): `m_SpecificICmp(PRED, ...)` (literal predicate) and
+    #     `m_ICmp(Pred, ...)` fixed by a `Pred == ICmpInst::ICMP_*` guard lower to a 0/1 bitvector
+    #     `pred(a,b) ? 1 : 0`, so icmp folds stay in the shared domain and reconcile concretely.
+    eqxx = "match(&I, m_SpecificICmp(ICmpInst::ICMP_EQ, m_Value(X), m_Deferred(X)))"
+    pair, (status, _) = prove(eqxx, "return replaceInstUsesWith(I, getTrue());")
+    assert status == "proved" and pair["before"]["op"] == "ite", (status, pair["before"])
+    # m_ICmp with a bound predicate fixed by a guard: `icmp ne X, X -> false`.
+    assert prove("match(&I, m_ICmp(Pred, m_Value(X), m_Deferred(X))) && Pred == ICmpInst::ICMP_NE",
+                 "return replaceInstUsesWith(I, getFalse());")[1][0] == "proved", "icmp ne X,X -> false"
+    # a constant operand: `icmp ult X, 0 -> false` (nothing is unsigned-less-than zero).
+    assert prove("match(&I, m_SpecificICmp(ICmpInst::ICMP_ULT, m_Value(X), m_Zero()))",
+                 "return replaceInstUsesWith(I, ConstantInt::getFalse());")[1][0] == "proved", "ult X,0 -> false"
+    # TEETH: `icmp eq X, X -> false` is wrong -> refuted with a witness.
+    _, (status, cex) = prove(eqxx, "return replaceInstUsesWith(I, getFalse());")
+    assert status == "refuted" and cex, ("icmp eq X,X -> false must refute", status)
+    # unsound `icmp eq A, B -> true` (distinct operands) refutes.
+    _, (status, _) = prove("match(&I, m_ICmp(Pred, m_Value(A), m_Value(B))) && Pred == ICmpInst::ICMP_EQ",
+                           "return replaceInstUsesWith(I, getTrue());")
+    assert status == "refuted", ("icmp eq A,B -> true must refute", status)
+    # SOUND boundary: an m_ICmp whose predicate is neither literal nor guard-fixed declines.
+    assert pg.recover_pair("match(&I, m_ICmp(Pred, m_Value(A), m_Deferred(A)))",
+                           "return replaceInstUsesWith(I, getTrue());") is None
+    # a `CreateICmpEQ(A, B)` rewrite reconstructing the same compare is an identity.
+    assert prove("match(&I, m_SpecificICmp(ICmpInst::ICMP_EQ, m_Value(A), m_Value(B)))",
+                 "return replaceInstUsesWith(I, Builder.CreateICmpEQ(A, B));")[1][0] == "proved", \
+        "CreateICmp passthrough"
+    # unlike casts, an icmp IS concretely evaluable -> the concrete engine reconciles (cross-engine teeth).
+    rec = pg.reconcile(pair, z3)
+    assert rec["z3"] == "proved" and rec["concrete"] == "proved" and rec["agree"], rec
+    # COMPOSITION with phase 7: `select(icmp eq X,X, A, B) -> A` (the condition is always true).
+    assert prove("match(&I, m_Select(m_SpecificICmp(ICmpInst::ICMP_EQ, m_Value(X), m_Deferred(X)), "
+                 "m_Value(A), m_Value(B)))", "return replaceInstUsesWith(I, A);")[1][0] == "proved", \
+        "select over an always-true icmp -> then arm"
+    # FUNCTION form: m_ICmp bound predicate fixed by a positive `if (Pred == ICMP_UGE)` guard.
+    icmp_fn = ("Value *f(ICmpInst &I){ Value *X; ICmpInst::Predicate Pred;\n"
+               "  if (!match(&I, m_ICmp(Pred, m_Value(X), m_Deferred(X)))) return nullptr;\n"
+               "  if (Pred == ICmpInst::ICMP_UGE)\n"
+               "    return replaceInstUsesWith(I, getTrue());\n"
+               "  return nullptr; }")
+    assert fn(icmp_fn)[1][0] == "proved", "function-form icmp uge X,X -> true not proved"
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "
