@@ -956,6 +956,50 @@ def reconcile(pair: dict, z3_bin: str, width: int = 8) -> dict:
             "counterexample": counterexample}
 
 
+# --- phase 16: cross-WIDTH reconciliation for width-changing cast folds -------------------------
+def _rescale(node: dict, nmap: dict) -> dict:
+    """Copy a formal-IR node remapping every bit width through `nmap` (old bits -> new bits). A
+    bvconst's value is re-masked to its new width so `all-ones`/`0`/`1` stay themselves."""
+    if node.get("op") == "var":
+        return dict(node)
+    if node.get("op") == "bvconst":
+        bits = nmap.get(node["bits"], node["bits"])
+        return {"op": "bvconst", "bits": bits, "value": node["value"] & ((1 << bits) - 1)}
+    out = {k: v for k, v in node.items() if k != "args"}
+    if isinstance(out.get("bits"), int):
+        out["bits"] = nmap.get(out["bits"], out["bits"])
+    out["args"] = [_rescale(a, nmap) for a in node.get("args", [])]
+    return out
+
+
+def reconcile_widths(pair: dict, z3_bin: str,
+                     width_pairs: tuple = ((8, 32), (4, 16), (16, 32))) -> dict:
+    """Cross-WIDTH check for a width-changing cast fold. Phase 8 recovers casts at ONE representative
+    (narrow, wide) pair = (8, 32), and the toolless/compiled engines cannot evaluate a width change,
+    so a cast fold otherwise rests on a single-width z3 proof. Re-prove it at several representative
+    pairs (rescaling the recovered obligation): a width-UNIFORM identity -- the only sound kind --
+    holds at every pair, so the verdicts must AGREE; a divergence means the single-width proof was a
+    width-SPECIFIC coincidence and must not be trusted. Returns {applicable, verdicts, agree, status}.
+    `applicable` is False for a fold with no cast (nothing width-parametric to cross-check)."""
+    from o2t import mini_alive as ma
+    if not (_contains_cast(pair.get("before", {})) or _contains_cast(pair.get("after", {}))):
+        return {"applicable": False}
+    # every variable's width, INCLUDING those that default to _WIDTH (absent from variable_bits) -- all
+    # must be remapped or a rescaled variant would be width-inconsistent and error spuriously.
+    base_widths = {v: pair.get("variable_bits", {}).get(v, _WIDTH) for v in pair["variables"]}
+    verdicts: dict = {}
+    for narrow, wide in width_pairs:
+        nmap = {_W_NARROW: narrow, _WIDTH: wide}
+        variant = dict(pair)
+        variant["variable_bits"] = {v: nmap.get(b, b) for v, b in base_widths.items()}
+        variant["before"] = _rescale(pair["before"], nmap)
+        variant["after"] = _rescale(pair["after"], nmap)
+        verdicts[(narrow, wide)] = ma.prove(variant, z3_bin)[0]
+    statuses = set(verdicts.values())
+    return {"applicable": True, "verdicts": verdicts, "agree": len(statuses) == 1,
+            "status": next(iter(statuses)) if len(statuses) == 1 else "disagree"}
+
+
 # --- phase 3b: reconcile against the COMPILED symbolic execution of a generated shim harness -----
 _SHIM_BUILDER = {"bvadd": "CreateAdd", "bvsub": "CreateSub", "bvmul": "CreateMul", "bvand": "CreateAnd",
                  "bvor": "CreateOr", "bvxor": "CreateXor", "bvshl": "CreateShl", "bvlshr": "CreateLShr",

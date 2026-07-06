@@ -354,6 +354,30 @@ def main() -> int:
                "  return nullptr; }")
     pair, (status, _) = fn(cast_fn)
     assert status == "proved" and pair["variable_bits"] == {"x": 8}, (status, pair.get("variable_bits"))
+    # CROSS-WIDTH RECONCILIATION (phase 16): a cast is proved at ONE representative (narrow, wide) pair
+    # and no other engine can evaluate a width change, so re-prove at several pairs. A width-uniform
+    # identity holds at every pair (verdicts AGREE); a width-specific coincidence would diverge.
+    tz = pg.recover_pair("match(&I, m_Trunc(m_ZExt(m_Value(X))))" + te, "return replaceInstUsesWith(I, X);")
+    rw = pg.reconcile_widths(tz, z3)
+    assert rw["applicable"] and rw["agree"] and rw["status"] == "proved", rw
+    assert set(rw["verdicts"]) == {(8, 32), (4, 16), (16, 32)}, rw["verdicts"]
+    # the unsound zext(trunc(X))->X is consistently refuted at every width -- also an agreement.
+    zt = pg.recover_pair("match(&I, m_ZExt(m_Trunc(m_Value(X))))" + te, "return replaceInstUsesWith(I, X);")
+    assert pg.reconcile_widths(zt, z3)["status"] == "refuted", "unsound cast must refute at every width"
+    # a non-cast fold has nothing width-parametric to cross-check.
+    assert pg.reconcile_widths(
+        pg.recover_pair("match(&I, m_Add(m_Value(X), m_Zero()))", "return replaceInstUsesWith(I, X);"),
+        z3) == {"applicable": False}
+    # TEETH on the cross-check itself: a width-NON-uniform cast obligation (zext(X) vs zext(X) & 0xFF,
+    # true only when X fits in 8 bits) is caught as a DISAGREEMENT -- what a single-width proof misses.
+    ze = {"op": "zext", "bits": 32, "args": [{"op": "var", "name": "x"}]}
+    wnu = {"domain": "scalar-bv32", "marker": "probe.wnu.cast", "variables": ["x"], "equivalence": "result",
+           "variable_bits": {"x": 8}, "before": ze,
+           "after": {"op": "bvand", "args": [ze, {"op": "bvconst", "bits": 32, "value": 0xFF}]},
+           "assumptions": []}
+    rwnu = pg.reconcile_widths(wnu, z3)
+    assert not rwnu["agree"] and rwnu["status"] == "disagree", \
+        ("a width-non-uniform cast fold must be flagged as a cross-width disagreement", rwnu)
 
     # 16) ICMP PREDICATE MATCHERS (phase 9): `m_SpecificICmp(PRED, ...)` (literal predicate) and
     #     `m_ICmp(Pred, ...)` fixed by a `Pred == ICmpInst::ICMP_*` guard lower to a 0/1 bitvector
