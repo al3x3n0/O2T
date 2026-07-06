@@ -58,6 +58,12 @@ BUILDER_ICMP = {
     "CreateICmpSLT": "bvslt", "CreateICmpSLE": "bvsle", "CreateICmpSGT": "bvsgt", "CreateICmpSGE": "bvsge",
     "CreateICmpULT": "bvult", "CreateICmpULE": "bvule", "CreateICmpUGT": "bvugt", "CreateICmpUGE": "bvuge",
 }
+# min/max intrinsics: each is `pred(x,y) ? x : y` for the pred that keeps the extremum in x (smin
+# keeps the smaller -> x<y; smax the larger -> x>y). Modeled as that ite, so a select/icmp min-select
+# canonicalizes into the intrinsic and proves by construction. `kind -> keep-x-when predicate`.
+_MINMAX_PRED = {"smin": "bvslt", "smax": "bvsgt", "umin": "bvult", "umax": "bvugt"}
+MATCHER_MINMAX = {"m_SMin": "smin", "m_SMax": "smax", "m_UMin": "umin", "m_UMax": "umax"}
+BUILDER_MINMAX = {"CreateSMin": "smin", "CreateSMax": "smax", "CreateUMin": "umin", "CreateUMax": "umax"}
 _WIDTH = 32
 _W_NARROW = 8
 
@@ -157,6 +163,11 @@ def _icmp(pred: str, a: dict, b: dict, bits: int = _WIDTH) -> dict:
     return {"op": "ite", "args": [{"op": pred, "args": [a, b]}, _const(1, bits), _const(0, bits)]}
 
 
+def _minmax(kind: str, a: dict, b: dict) -> dict:
+    """A min/max intrinsic as `keep-a-when(a, b) ? a : b` (e.g. smin -> a<b ? a : b)."""
+    return {"op": "ite", "args": [{"op": _MINMAX_PRED[kind], "args": [a, b]}, a, b]}
+
+
 # Nodes that already produce a boolean (an ite condition may use them directly); everything else is a
 # bitvector and is coerced with `!= 0`, matching LLVM's i1 select condition (true iff nonzero).
 _BOOL_RESULT_OPS = {"eq", "ne", "bvslt", "bvsle", "bvsgt", "bvsge", "bvult", "bvule", "bvugt", "bvuge"}
@@ -210,6 +221,11 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
             raise Unsupported(f"unresolved icmp predicate {args[0]['name']!r}")
         return _icmp(pred, lower_matcher(args[1], binds, widths, pred_binds, _WIDTH),
                      lower_matcher(args[2], binds, widths, pred_binds, _WIDTH), hint)
+    if name in MATCHER_MINMAX:
+        if len(args) != 2:
+            raise Unsupported(f"{name} needs two operands")
+        return _minmax(MATCHER_MINMAX[name], lower_matcher(args[0], binds, widths, pred_binds, hint),
+                       lower_matcher(args[1], binds, widths, pred_binds, hint))
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
                            lambda a, h: lower_matcher(a, binds, widths, pred_binds, h))
@@ -251,6 +267,16 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
             raise Unsupported(f"{name} needs two operands")
         return _icmp(BUILDER_ICMP[name], lower_rewrite(args[0], binds, widths, _WIDTH),
                      lower_rewrite(args[1], binds, widths, _WIDTH), hint)
+    if name in BUILDER_MINMAX:
+        if len(args) != 2:
+            raise Unsupported(f"{name} needs two operands")
+        return _minmax(BUILDER_MINMAX[name], lower_rewrite(args[0], binds, widths, hint),
+                       lower_rewrite(args[1], binds, widths, hint))
+    if name == "CreateBinaryIntrinsic":                             # first arg is the Intrinsic:: id
+        if len(args) != 3 or args[0]["kind"] != "name" or args[0]["name"] not in _MINMAX_PRED:
+            raise Unsupported("CreateBinaryIntrinsic only models a binary min/max intrinsic")
+        return _minmax(args[0]["name"], lower_rewrite(args[1], binds, widths, hint),
+                       lower_rewrite(args[2], binds, widths, hint))
     if name in BUILDER_CAST:
         return _lower_cast(BUILDER_CAST[name], args,
                            lambda a, h: lower_rewrite(a, binds, widths, h))

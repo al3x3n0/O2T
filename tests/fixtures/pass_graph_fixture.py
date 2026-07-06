@@ -396,6 +396,37 @@ def main() -> int:
                "  return nullptr; }")
     assert fn(icmp_fn)[1][0] == "proved", "function-form icmp uge X,X -> true not proved"
 
+    # 17) MIN/MAX INTRINSICS (phase 10): `m_SMin/SMax/UMin/UMax` and `CreateBinaryIntrinsic(Intrinsic::
+    #     smin, ...)` / `CreateSMin(...)` model each as `keep-x-when(x,y) ? x : y`. Because that is the
+    #     same ite algebra as select+icmp (phases 7,9), a min-select CANONICALIZES into the intrinsic
+    #     and proves by construction -- the payoff of ordering these phases together.
+    min_sel = ("match(&I, m_Select(m_SpecificICmp(ICmpInst::ICMP_SLT, m_Value(X), m_Value(Y)), "
+               "m_Value(X), m_Value(Y)))")
+    pair, (status, _) = prove(min_sel, "return replaceInstUsesWith(I, Builder.CreateBinaryIntrinsic(Intrinsic::smin, X, Y));")
+    assert status == "proved", ("min-select -> smin not proved", status)
+    # swapped arms canonicalize to smax; an unsigned compare canonicalizes to umax.
+    assert prove("match(&I, m_Select(m_SpecificICmp(ICmpInst::ICMP_SLT, m_Value(X), m_Value(Y)), "
+                 "m_Value(Y), m_Value(X)))",
+                 "return replaceInstUsesWith(I, Builder.CreateSMax(X, Y));")[1][0] == "proved", "max-select -> smax"
+    assert prove("match(&I, m_Select(m_SpecificICmp(ICmpInst::ICMP_UGT, m_Value(X), m_Value(Y)), "
+                 "m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateUMax(X, Y));")[1][0] == "proved", "umax-select -> umax"
+    # TEETH: a min-select canonicalized to the WRONG intrinsic (smax) refutes with a witness.
+    _, (status, cex) = prove(min_sel, "return replaceInstUsesWith(I, Builder.CreateBinaryIntrinsic(Intrinsic::smax, X, Y));")
+    assert status == "refuted" and cex, ("min-select -> smax must refute", status)
+    # MATCHER form: `smin(X, X) -> X` is idempotent; and a min/max round-trips back to its select.
+    assert prove("match(&I, m_SMin(m_Value(X), m_Deferred(X)))",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "smin(X,X) -> X"
+    assert prove("match(&I, m_SMin(m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateSelect(Builder.CreateICmpSLT(X, Y), X, Y));")[1][0] \
+        == "proved", "smin(X,Y) -> equivalent select"
+    # a min/max intrinsic is concretely evaluable -> all engines reconcile.
+    rec = pg.reconcile(pair, z3)
+    assert rec["z3"] == "proved" and rec["concrete"] == "proved" and rec["agree"], rec
+    # SOUND boundary: a non-min/max binary intrinsic has no model -> declines.
+    assert pg.recover_pair("match(&I, m_Value(X))",
+                           "return replaceInstUsesWith(I, Builder.CreateBinaryIntrinsic(Intrinsic::bswap, X, X));") is None
+
     print("pass_graph_fixture OK: compositional recovery proves a NESTED (X+0)*1->X and a "
           "registry-less or-self (X|X->X); a wrong fold is refuted with a witness; unmodeled "
           "matchers decline; and RECOVERED PRECONDITIONS are load-bearing -- sdiv->udiv refutes "
