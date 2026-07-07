@@ -1129,6 +1129,118 @@ def reconcile_refinement(pair: dict, z3_bin: str, width: int = 4) -> dict:
             "counterexample": counterexample}
 
 
+# --- phase 19: lower an obligation to real LLVM IR for a machine-checked interpreter oracle --------
+# The recovered before/after is emitted as textual LLVM IR so an EXTERNAL LLVM-IR interpreter can serve
+# as an independent oracle. Vellvm (github.com/vellvm/vellvm) ships an interpreter EXTRACTED FROM a
+# Coq/Rocq-mechanized semantics -- the only oracle backed by a machine-checked spec -- and it evaluates
+# the poison/undef/flag semantics that concrete CPU execution cannot observe. The SAME IR also runs
+# through `lli` or clang for a value-level cross-check. Native `freeze`/`nsw`/`nuw`/`icmp`/`select`/
+# `trunc|zext|sext` are emitted so the interpreter checks O2T's SMT encoding against LLVM's real IR.
+_LLOP = {"bvadd": "add", "bvsub": "sub", "bvmul": "mul", "bvand": "and", "bvor": "or", "bvxor": "xor",
+         "bvshl": "shl", "bvlshr": "lshr", "bvashr": "ashr", "bvudiv": "udiv", "bvsdiv": "sdiv",
+         "bvurem": "urem", "bvsrem": "srem"}
+_LLCMP = {"eq": "eq", "ne": "ne", "bvslt": "slt", "bvsle": "sle", "bvsgt": "sgt", "bvsge": "sge",
+          "bvult": "ult", "bvule": "ule", "bvugt": "ugt", "bvuge": "uge"}
+
+
+def _ll_lower(node: dict, widths: dict, lines: list, ctr: list) -> tuple:
+    """Lower a DSL node to LLVM IR SSA text -> (operand, bit-width). Appends instructions to `lines`."""
+    op = node.get("op")
+    if op == "var":
+        return "%" + node["name"], widths.get(node["name"], _WIDTH)
+    if op == "bvconst":
+        return str(_to_signed(node["value"] & ((1 << node["bits"]) - 1), node["bits"])), node["bits"]
+    if op in _LLOP:
+        a, wa = _ll_lower(node["args"][0], widths, lines, ctr)
+        b, _ = _ll_lower(node["args"][1], widths, lines, ctr)
+        flags = "".join(" " + f for f in node.get("flags", []))
+        nm = f"%t{ctr[0]}"; ctr[0] += 1
+        lines.append(f"  {nm} = {_LLOP[op]}{flags} i{wa} {a}, {b}")
+        return nm, wa
+    if op in _LLCMP:
+        a, wa = _ll_lower(node["args"][0], widths, lines, ctr)
+        b, _ = _ll_lower(node["args"][1], widths, lines, ctr)
+        nm = f"%t{ctr[0]}"; ctr[0] += 1
+        lines.append(f"  {nm} = icmp {_LLCMP[op]} i{wa} {a}, {b}")
+        return nm, 1
+    if op == "ite":
+        c, wc = _ll_lower(node["args"][0], widths, lines, ctr)
+        if wc != 1:
+            raise Unsupported("ite condition must be i1")
+        t, wt = _ll_lower(node["args"][1], widths, lines, ctr)
+        e, _ = _ll_lower(node["args"][2], widths, lines, ctr)
+        nm = f"%t{ctr[0]}"; ctr[0] += 1
+        lines.append(f"  {nm} = select i1 {c}, i{wt} {t}, i{wt} {e}")
+        return nm, wt
+    if op in ("zext", "sext", "trunc"):
+        v, wv = _ll_lower(node["args"][0], widths, lines, ctr)
+        nm = f"%t{ctr[0]}"; ctr[0] += 1
+        lines.append(f"  {nm} = {op} i{wv} {v} to i{node['bits']}")
+        return nm, node["bits"]
+    if op == "freeze":
+        v, wv = _ll_lower(node["args"][0], widths, lines, ctr)
+        nm = f"%t{ctr[0]}"; ctr[0] += 1
+        lines.append(f"  {nm} = freeze i{wv} {v}")
+        return nm, wv
+    if op == "bvneg":
+        v, wv = _ll_lower(node["args"][0], widths, lines, ctr)
+        nm = f"%t{ctr[0]}"; ctr[0] += 1
+        lines.append(f"  {nm} = sub i{wv} 0, {v}")
+        return nm, wv
+    raise Unsupported(f"no LLVM IR lowering for {op!r}")
+
+
+def to_llvm_ir(pair: dict, side: str = "before", fn: str = "f") -> str | None:
+    """Emit the `before` or `after` side of an obligation as a textual LLVM IR module `define @fn`.
+    None if any op has no IR lowering. This is the input a machine-checked interpreter (Vellvm) or
+    `lli`/clang consumes to serve as an independent oracle over LLVM's real semantics."""
+    widths = {v: pair.get("variable_bits", {}).get(v, _WIDTH) for v in pair["variables"]}
+    lines: list = []
+    try:
+        result, rbits = _ll_lower(pair[side], widths, lines, [0])
+    except Unsupported:
+        return None
+    params = ", ".join(f"i{widths[v]} %{v}" for v in pair["variables"])
+    body = "\n".join(lines + [f"  ret i{rbits} {result}"])
+    return f"define i{rbits} @{fn}({params}) {{\n{body}\n}}\n"
+
+
+# Small values fit an int32_t driver literal (clang path); the poison-aware interp path adds signed/
+# unsigned boundary inputs so an nsw/nuw overflow (hence poison) is actually reachable in the sweep.
+_CLANG_VALUES = (0, 1, 2, 3, 5, 8)
+_INTERP_VALUES = (0, 1, 2, 3, (1 << 31) - 1, 1 << 31, (1 << 32) - 1)
+
+
+def reconcile_vellvm(pair: dict, z3_bin: str, interp_bin=None, clang_bin: str = "clang",
+                     values=None) -> dict:
+    """4th, LLVM-IR-level oracle: emit before/after as real IR and execute both through an external
+    interpreter over a value sweep, requiring agreement with z3. Prefers a machine-checked interpreter
+    (`interp_bin`, e.g. Vellvm) that also models poison/undef; falls back to clang/CPU (value fragment,
+    poison unobservable). Returns {z3, interp, agree, ...}; `interp` is `skipped` when the IR uses an
+    op with no lowering, the signature is unsupported (mixed width), or no runner is available."""
+    z3_status, _ = ma.prove(pair, z3_bin)
+    before_ir = to_llvm_ir(pair, "before")
+    after_ir = to_llvm_ir(pair, "after")
+    if before_ir is None or after_ir is None:
+        return {"z3": z3_status, "interp": "skipped", "agree": True, "reason": "no IR lowering"}
+    if interp_bin is not None:
+        from o2t.symexec import vellvm_interp as vi                    # poison-aware machine-checked backend
+        verdict = vi.differential(before_ir, after_ir, "f", interp_bin, values or _INTERP_VALUES)
+    else:
+        if pair.get("refinement") == "refinement":
+            # clang/CPU executes concretely and cannot observe poison (nsw is a no-op, freeze an
+            # identity at -O0), so it is not a faithful oracle for a refinement fold -- abstain.
+            return {"z3": z3_status, "interp": "skipped", "agree": True, "reason": "value-oracle vs poison"}
+        from o2t.validate.differential import differential
+        verdict = differential(before_ir, after_ir, "f", clang_bin, values or _CLANG_VALUES)
+    status = verdict.get("status")
+    if status in ("skipped", "unsupported-signature", "compile-failed", "inconclusive"):
+        return {"z3": z3_status, "interp": "skipped", "agree": True, "reason": status}
+    interp = "proved" if status.endswith("pass") else "refuted"
+    return {"z3": z3_status, "interp": interp, "agree": z3_status == interp,
+            "witness": verdict.get("witness")}
+
+
 # --- phase 3b: reconcile against the COMPILED symbolic execution of a generated shim harness -----
 _SHIM_BUILDER = {"bvadd": "CreateAdd", "bvsub": "CreateSub", "bvmul": "CreateMul", "bvand": "CreateAnd",
                  "bvor": "CreateOr", "bvxor": "CreateXor", "bvshl": "CreateShl", "bvlshr": "CreateLShr",
