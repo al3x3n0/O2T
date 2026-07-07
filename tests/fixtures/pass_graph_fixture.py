@@ -618,8 +618,8 @@ def main() -> int:
     _, (status, cex) = prove("match(&I, m_Intrinsic<Intrinsic::abs>(m_Value(X), m_Zero()))",
                              "return replaceInstUsesWith(I, X);")
     assert status == "refuted" and cex, ("abs(X) -> X must refute", status)
-    # SOUND boundary: an intrinsic with no model (ctpop) parses now but still declines semantically.
-    assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)))",
+    # SOUND boundary: an intrinsic with no model (ctlz) parses now but still declines semantically.
+    assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctlz>(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
     # BSWAP (phase 23): `@llvm.bswap.i32` is modeled EXACTLY in existing ops (mask/shift/or) at the
     # domain width, so every engine handles it. Byte-swap is an involution -> bswap(bswap(X)) proves;
@@ -671,6 +671,21 @@ def main() -> int:
         pf = pg.recover_pair(f"match(&I, {fl}(m_Value(A), m_Value(B), m_Zero()))",
                              "return replaceInstUsesWith(I, A);")
         assert pg.reconcile_vellvm(pf, z3)["agree"], "clang must confirm fshl(A,B,0)->A at i32"
+    # CTPOP (phase 26): `@llvm.ctpop.i32` (population count) via the exact 32-bit SWAR algorithm, still
+    # existing ops. A single-bit value counts to itself; and X and ~X partition the 32 bits.
+    cp = "m_Intrinsic<Intrinsic::ctpop>"
+    assert prove(f"match(&I, {cp}(m_And(m_Value(X), m_One())))",
+                 "return replaceInstUsesWith(I, Builder.CreateAnd(X, 1));")[1][0] == "proved", "ctpop(X&1) -> X&1"
+    # compound: ctpop(X) + ctpop(~X) == 32 -- the set and clear bits partition the word.
+    assert prove(f"match(&I, m_Add({cp}(m_Value(X)), {cp}(m_Xor(m_Value(X), m_AllOnes()))))",
+                 "return replaceInstUsesWith(I, ConstantInt::get(Ty, 32));")[1][0] == "proved", \
+        "ctpop(X) + ctpop(~X) -> 32"
+    _, (status, cex) = prove(f"match(&I, {cp}(m_Value(X)))", "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("ctpop(X) -> X must refute", status)
+    if shutil.which("clang"):
+        pc = pg.recover_pair(f"match(&I, {cp}(m_And(m_Value(X), m_One())))",
+                             "return replaceInstUsesWith(I, Builder.CreateAnd(X, 1));")
+        assert pg.reconcile_vellvm(pc, z3)["agree"], "clang must confirm ctpop(X&1)->X&1 at i32"
 
     # 22) PARSER SOUNDNESS: the tokenizer must REJECT any operator it does not model and the parser
     #     must consume every token, so an infix/ternary rewrite can never SILENTLY misparse to a
