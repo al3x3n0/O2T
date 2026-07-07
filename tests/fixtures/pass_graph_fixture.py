@@ -640,6 +640,20 @@ def main() -> int:
         p_wrong = pg.recover_pair(f"match(&I, {bs}(m_Value(X)))", "return replaceInstUsesWith(I, X);")
         rc = pg.reconcile_vellvm(p_wrong, z3)
         assert rc["interp"] == "refuted" and rc["agree"], ("clang must catch bswap(X)->X", rc)
+    # BITREVERSE (phase 24): `@llvm.bitreverse.i32` as the 5-step parallel bit-reversal network, again
+    # in existing ops. Also an involution; and it is DISTINCT from bswap, so bitreverse -> bswap refutes.
+    br = "m_Intrinsic<Intrinsic::bitreverse>"
+    inv = prove(f"match(&I, {br}({br}(m_Value(X))))", "return replaceInstUsesWith(I, X);")
+    assert inv[1][0] == "proved", ("bitreverse involution", inv[1][0])
+    assert prove(f"match(&I, {br}(m_Value(X)))",
+                 "return replaceInstUsesWith(I, Builder.CreateUnaryIntrinsic(Intrinsic::bitreverse, X));")[1][0] \
+        == "proved", "bitreverse builder round-trip"
+    _, (status, cex) = prove(f"match(&I, {br}(m_Value(X)))", "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("bitreverse(X) -> X must refute", status)
+    # bitreverse and bswap are different permutations -> conflating them refutes with a witness.
+    _, (status, cex) = prove(f"match(&I, {br}(m_Value(X)))",
+                             "return replaceInstUsesWith(I, Builder.CreateUnaryIntrinsic(Intrinsic::bswap, X));")
+    assert status == "refuted" and cex, ("bitreverse is not bswap", status)
 
     # 22) PARSER SOUNDNESS: the tokenizer must REJECT any operator it does not model and the parser
     #     must consume every token, so an infix/ternary rewrite can never SILENTLY misparse to a

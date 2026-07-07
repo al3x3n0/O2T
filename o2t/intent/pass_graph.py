@@ -243,6 +243,17 @@ def _bswap(x: dict) -> dict:
                                    {"op": "bvor", "args": [mid_hi, hi_lo]}]}
 
 
+def _bitreverse(x: dict) -> dict:
+    """`@llvm.bitreverse.i32` -- reverse the bit order -- as the classic 5-step parallel swap network
+    (swap adjacent bits, then pairs, nibbles, bytes, halfwords), all in existing mask/shift/or ops."""
+    node = x
+    for mask, sh in ((0x55555555, 1), (0x33333333, 2), (0x0F0F0F0F, 4), (0x00FF00FF, 8), (0x0000FFFF, 16)):
+        low = {"op": "bvshl", "args": [{"op": "bvand", "args": [node, _const(mask)]}, _const(sh)]}
+        high = {"op": "bvlshr", "args": [{"op": "bvand", "args": [node, _const((~mask) & 0xFFFFFFFF)]}, _const(sh)]}
+        node = {"op": "bvor", "args": [low, high]}
+    return node
+
+
 def _contains_flags(node: dict) -> bool:
     if node.get("flags"):
         return True
@@ -359,10 +370,11 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
             if not args:
                 raise Unsupported("abs intrinsic needs an operand")
             return _abs(lower_matcher(args[0], binds, widths, pred_binds, hint))
-        if tmpl == "bswap":
+        if tmpl in ("bswap", "bitreverse"):
             if len(args) != 1:
-                raise Unsupported("bswap intrinsic needs one operand")
-            return _bswap(lower_matcher(args[0], binds, widths, pred_binds, hint))
+                raise Unsupported(f"{tmpl} intrinsic needs one operand")
+            fold = _bswap if tmpl == "bswap" else _bitreverse
+            return fold(lower_matcher(args[0], binds, widths, pred_binds, hint))
         raise Unsupported(f"unmodeled intrinsic {tmpl!r}")
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
@@ -435,9 +447,10 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
             return _abs(lower_rewrite(args[1], binds, widths, hint))
         raise Unsupported(f"unmodeled binary intrinsic {iid!r}")
     if name == "CreateUnaryIntrinsic":                              # CreateUnaryIntrinsic(Intrinsic::ID, X)
-        if len(args) != 2 or args[0]["kind"] != "name" or args[0]["name"] != "bswap":
-            raise Unsupported("CreateUnaryIntrinsic only models bswap")
-        return _bswap(lower_rewrite(args[1], binds, widths, hint))
+        if len(args) != 2 or args[0]["kind"] != "name" or args[0]["name"] not in ("bswap", "bitreverse"):
+            raise Unsupported("CreateUnaryIntrinsic only models bswap/bitreverse")
+        fold = _bswap if args[0]["name"] == "bswap" else _bitreverse
+        return fold(lower_rewrite(args[1], binds, widths, hint))
     if name in BUILDER_CAST:
         return _lower_cast(BUILDER_CAST[name], args,
                            lambda a, h: lower_rewrite(a, binds, widths, h))
