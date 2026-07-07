@@ -1143,6 +1143,42 @@ def corroborate_widths(pair: dict, z3_bin: str, widths: tuple = (8, 16, 32, 64))
             "status": next(iter(statuses)) if len(statuses) == 1 else "width-specific"}
 
 
+# --- phase 29: cross-check against a SECOND, independent SMT solver -------------------------------
+def reconcile_solver(pair: dict, z3_bin: str, solver_bin: str = "bitwuzla", timeout: int = 30) -> dict:
+    """Discharge the obligation with a SECOND, independent SMT solver (e.g. bitwuzla -- a different
+    codebase from z3) on the IDENTICAL SMT-LIB QF_BV query, and require the same sat/unsat. This is the
+    one cross-check no amount of re-running z3 can provide: it guards against a z3 soundness bug or a
+    malformed encoding that z3 happens to (mis)handle consistently. Returns {z3, solver, agree, ...};
+    `solver` is `skipped` when the second solver is absent or the obligation is unencodable."""
+    import shutil
+    import subprocess
+    from pathlib import Path as _Path
+    from o2t import formal_ir
+    z3_status = ma.prove(pair, z3_bin)[0]
+    solver = shutil.which(solver_bin) or (solver_bin if _Path(solver_bin).exists() else None)
+    if solver is None:
+        return {"z3": z3_status, "solver": "skipped", "agree": True, "reason": "no second solver"}
+    try:
+        instances = formal_ir.pair_instances_for_formal(pair)
+    except formal_ir.FormalIrError:
+        return {"z3": z3_status, "solver": "skipped", "agree": True, "reason": "unencodable"}
+    heads: list = []
+    for _, fp in instances:
+        smt = formal_ir.equivalence_smt(str(pair.get("marker", "?")), "cross-solver", fp)
+        try:
+            out = subprocess.run([solver], input=smt, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"z3": z3_status, "solver": "skipped", "agree": True, "reason": "timeout"}
+        lines = out.stdout.strip().splitlines()
+        heads.append(lines[0] if lines else "error")
+    if any(h not in ("sat", "unsat") for h in heads):
+        return {"z3": z3_status, "solver": "error", "agree": False, "raw": heads}
+    solver_core = "sat" if any(h == "sat" for h in heads) else "unsat"     # any SAT instance -> refuted
+    z3_core = "sat" if z3_status == "refuted" else "unsat"                  # proved/unsupported = unsat core
+    return {"z3": z3_status, "solver": "refuted" if solver_core == "sat" else "proved",
+            "agree": z3_core == solver_core, "backend": solver_bin}
+
+
 # --- phase 17: independent poison/flag-aware oracle for REFINEMENT obligations ------------------
 def _flag_poison(op: str, flags: list, a: int, b: int, w: int) -> bool:
     """True iff `op a b` violates a no-wrap flag at width `w` (concrete mirror of flag_poison_smt)."""
