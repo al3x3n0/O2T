@@ -621,6 +621,25 @@ def main() -> int:
     # SOUND boundary: an intrinsic with no model (ctpop) parses now but still declines semantically.
     assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
+    # BSWAP (phase 23): `@llvm.bswap.i32` is modeled EXACTLY in existing ops (mask/shift/or) at the
+    # domain width, so every engine handles it. Byte-swap is an involution -> bswap(bswap(X)) proves;
+    # bswap(X) -> X is wrong. The `CreateUnaryIntrinsic(Intrinsic::bswap, X)` builder round-trips.
+    bs = "m_Intrinsic<Intrinsic::bswap>"
+    inv = prove(f"match(&I, {bs}({bs}(m_Value(X))))", "return replaceInstUsesWith(I, X);")
+    assert inv[1][0] == "proved" and inv[0]["before"]["op"] == "bvor", ("bswap involution", inv[1][0])
+    _, (status, cex) = prove(f"match(&I, {bs}(m_Value(X)))", "return replaceInstUsesWith(I, X);")
+    assert status == "refuted" and cex, ("bswap(X) -> X must refute", status)
+    assert prove(f"match(&I, {bs}(m_Value(X)))",
+                 "return replaceInstUsesWith(I, Builder.CreateUnaryIntrinsic(Intrinsic::bswap, X));")[1][0] \
+        == "proved", "bswap builder round-trip"
+    # bswap is bv32-specific, so the meaningful independent check runs the REAL IR at i32 through clang;
+    # it agrees with z3 (involution proves, and the wrong fold is a concrete mismatch).
+    if shutil.which("clang"):
+        p_inv = pg.recover_pair(f"match(&I, {bs}({bs}(m_Value(X))))", "return replaceInstUsesWith(I, X);")
+        assert pg.reconcile_vellvm(p_inv, z3)["agree"], "clang must confirm the bswap involution at i32"
+        p_wrong = pg.recover_pair(f"match(&I, {bs}(m_Value(X)))", "return replaceInstUsesWith(I, X);")
+        rc = pg.reconcile_vellvm(p_wrong, z3)
+        assert rc["interp"] == "refuted" and rc["agree"], ("clang must catch bswap(X)->X", rc)
 
     # 22) PARSER SOUNDNESS: the tokenizer must REJECT any operator it does not model and the parser
     #     must consume every token, so an infix/ternary rewrite can never SILENTLY misparse to a

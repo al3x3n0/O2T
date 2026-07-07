@@ -230,6 +230,19 @@ def _abs(x: dict) -> dict:
     return {"op": "ite", "args": [{"op": "bvslt", "args": [x, _const(0)]}, {"op": "bvneg", "args": [x]}, x]}
 
 
+def _bswap(x: dict) -> dict:
+    """`@llvm.bswap.i32` -- reverse the 4 bytes -- modeled EXACTLY in existing ops (mask/shift/or) at
+    the 32-bit domain width, so every engine handles it and no new prover node is needed."""
+    def band(mask):
+        return {"op": "bvand", "args": [x, _const(mask)]}
+    lo_hi = {"op": "bvshl", "args": [band(0x000000FF), _const(24)]}
+    mid_lo = {"op": "bvshl", "args": [band(0x0000FF00), _const(8)]}
+    mid_hi = {"op": "bvlshr", "args": [band(0x00FF0000), _const(8)]}
+    hi_lo = {"op": "bvlshr", "args": [band(0xFF000000), _const(24)]}
+    return {"op": "bvor", "args": [{"op": "bvor", "args": [lo_hi, mid_lo]},
+                                   {"op": "bvor", "args": [mid_hi, hi_lo]}]}
+
+
 def _contains_flags(node: dict) -> bool:
     if node.get("flags"):
         return True
@@ -346,6 +359,10 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
             if not args:
                 raise Unsupported("abs intrinsic needs an operand")
             return _abs(lower_matcher(args[0], binds, widths, pred_binds, hint))
+        if tmpl == "bswap":
+            if len(args) != 1:
+                raise Unsupported("bswap intrinsic needs one operand")
+            return _bswap(lower_matcher(args[0], binds, widths, pred_binds, hint))
         raise Unsupported(f"unmodeled intrinsic {tmpl!r}")
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
@@ -417,6 +434,10 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
         if iid == "abs":                                            # abs(X[, int_min_poison]) -- flag ignored
             return _abs(lower_rewrite(args[1], binds, widths, hint))
         raise Unsupported(f"unmodeled binary intrinsic {iid!r}")
+    if name == "CreateUnaryIntrinsic":                              # CreateUnaryIntrinsic(Intrinsic::ID, X)
+        if len(args) != 2 or args[0]["kind"] != "name" or args[0]["name"] != "bswap":
+            raise Unsupported("CreateUnaryIntrinsic only models bswap")
+        return _bswap(lower_rewrite(args[1], binds, widths, hint))
     if name in BUILDER_CAST:
         return _lower_cast(BUILDER_CAST[name], args,
                            lambda a, h: lower_rewrite(a, binds, widths, h))
