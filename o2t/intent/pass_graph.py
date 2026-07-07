@@ -17,9 +17,10 @@ premise-SAT anti-vacuity gate, the teeth, and the second-solver cross-check.
 from __future__ import annotations
 
 import re
-from itertools import product
+from itertools import combinations, product
 
 from o2t import mini_alive as ma
+from o2t.assumption_algebra import normalize_assumptions
 from o2t.facts.value_tracking import fact_to_assumptions
 
 # PatternMatch binary matchers -> formal-IR bitvector op (mirrors constraints/llvm_idioms.json).
@@ -1304,6 +1305,81 @@ def check_certificate(pair: dict, cert: dict, width: int = 4) -> str:
                 return "invalid"                              # a false 'proved' caught independently
             checked += 1
     return "confirmed" if checked else "unchecked"
+
+
+# --- phase 27: precondition SYNTHESIS (abduction) -- diagnose why a fold is unsound ----------------
+def _atom_key(a: dict) -> tuple:
+    return (a.get("op"), a.get("name"), a.get("predicate"), a.get("value"), a.get("left"), a.get("right"))
+
+
+def _candidate_atoms(variables: list) -> list:
+    """O2T's ValueTracking guard vocabulary instantiated over the fold's variables -- the space of
+    preconditions a real pass could test and O2T could recover."""
+    atoms: list = []
+    for v in variables:
+        atoms.append({"op": "not-eq", "name": v, "value": 0})                       # isKnownNonZero
+        atoms.append({"op": "cmp", "predicate": "sge", "name": v, "value": 0})       # isKnownNonNegative
+        atoms.append({"op": "cmp", "predicate": "slt", "name": v, "value": 0})       # isKnownNegative
+        atoms.append({"op": "cmp", "predicate": "sgt", "name": v, "value": 0})       # isKnownPositive
+        atoms.append({"op": "power-of-two", "name": v, "nonzero": True})             # isKnownToBeAPowerOfTwo
+    for i, a in enumerate(variables):
+        for b in variables[i + 1:]:
+            atoms.append({"op": "mask-pair", "left": a, "right": b})                 # haveNoCommonBitsSet
+    return atoms
+
+
+def render_guard(atom: dict) -> str:
+    """The source-level ValueTracking predicate a synthesized atom corresponds to."""
+    if atom["op"] == "cmp":
+        return {"sge": f"isKnownNonNegative({atom['name']})", "slt": f"isKnownNegative({atom['name']})",
+                "sgt": f"isKnownPositive({atom['name']})"}.get(atom["predicate"], str(atom))
+    if atom["op"] == "not-eq":
+        return f"isKnownNonZero({atom['name']})"
+    if atom["op"] == "power-of-two":
+        return f"isKnownToBeAPowerOfTwo({atom['name']})"
+    if atom["op"] == "mask-pair":
+        return f"haveNoCommonBitsSet({atom['left']}, {atom['right']})"
+    return str(atom)
+
+
+def synthesize_precondition(pair: dict, z3_bin: str, max_atoms: int = 2):
+    """Abduce the WEAKEST modeled precondition (a set of extra assumption atoms) under which `pair`
+    becomes sound, ON TOP of its existing guard. Returns [] if already sound, a minimal list of atoms
+    if a modeled guard suffices, or None if none does (the fold is unsound for ANY modeled guard).
+    A minimal-subset search over O2T's ValueTracking vocabulary -- diagnostic, not on the hot path."""
+    variables = pair["variables"]
+    if len(variables) > 3:
+        return None
+    base_asm = list(pair.get("assumptions", []))
+
+    def proves(extra):
+        return ma.prove({**pair, "assumptions": base_asm + list(extra)}, z3_bin)[0] == "proved"
+
+    if proves([]):
+        return []
+    existing = {_atom_key(a) for a in base_asm}
+    cands = [a for a in _candidate_atoms(variables) if _atom_key(a) not in existing]
+    for k in range(1, max_atoms + 1):                        # weakest (fewest-atom) sufficient guard first
+        for combo in combinations(cands, k):
+            if normalize_assumptions(base_asm + list(combo))["contradictions"]:
+                continue                                     # skip vacuous (contradictory) guards
+            if proves(combo):
+                return list(combo)
+    return None
+
+
+def diagnose(pair: dict, z3_bin: str) -> dict:
+    """Explain a recovered fold's verdict: `sound`; `insufficient-guard` with the MISSING preconditions
+    a pass must also test (turning a bare refutation into an actionable fix); or `unsound` -- no modeled
+    guard can rescue it. Built on precondition abduction."""
+    if ma.prove(pair, z3_bin)[0] == "proved":
+        return {"status": "sound"}
+    guard = synthesize_precondition(pair, z3_bin)
+    if guard is None:
+        return {"status": "unsound", "reason": "no modeled precondition makes this fold sound"}
+    if not guard:
+        return {"status": "sound"}
+    return {"status": "insufficient-guard", "missing": [render_guard(a) for a in guard], "atoms": guard}
 
 
 # --- phase 19: lower an obligation to real LLVM IR for a machine-checked interpreter oracle --------
