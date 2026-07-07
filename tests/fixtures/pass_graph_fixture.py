@@ -485,6 +485,20 @@ def main() -> int:
     _, (status, cex) = fn(freeze_fn.replace(
         "  if (!isGuaranteedNotToBeUndefOrPoison(X)) return nullptr;\n", ""))
     assert status == "refuted" and cex, ("dropping the poison guard must refute", status)
+    # TWO-LEVEL LATTICE (phase 18): poison and undef are distinct (Lee et al. PLDI'17), and LLVM has
+    # two freedom guards. `isGuaranteedNotToBeUndefOrPoison(X)` = X is DEFINITE (licenses freeze drop);
+    # `isGuaranteedNotToBePoison(X)` rules out poison ONLY -- X may be undef, and `freeze` exists to
+    # collapse undef's use-multiplicity, so a poison-only guard must NOT license dropping a freeze.
+    assert prove("match(&I, m_Freeze(m_Value(X))) && isGuaranteedNotToBeUndefOrPoison(X)",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "definite guard licenses freeze-drop"
+    # the poison-ONLY guard would falsely prove in a single-poison-bit model (no undef) -> must decline.
+    assert pg.recover_pair("match(&I, m_Freeze(m_Value(X))) && isGuaranteedNotToBePoison(X)",
+                           "return replaceInstUsesWith(I, X);") is None, \
+        "poison-only guard cannot license dropping a freeze (undef still possible)"
+    # the distinction only gates freeze REMOVAL: a poison-only guard still discharges a non-freeze fold,
+    # and introducing a freeze needs no guard at all.
+    assert prove("match(&I, m_Add(m_Value(X), m_Zero())) && isGuaranteedNotToBePoison(X)",
+                 "return replaceInstUsesWith(I, X);")[1][0] == "proved", "poison-only ok for non-freeze fold"
 
     # 19) REFINEMENT-MODE EQUIVALENCE (phase 12): refinement -- not value-equality -- is the true
     #     soundness criterion for `before -> after` (any behaviour of `after` must be allowed for

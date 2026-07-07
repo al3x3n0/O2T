@@ -242,6 +242,18 @@ def _poison_relevant_vars(node: dict, under_freeze: bool = False) -> set[str]:
     return acc
 
 
+def _bare_vars(node: dict, under_freeze: bool = False) -> set[str]:
+    """Vars used OUTSIDE any `freeze`. A var frozen in `before` but used bare in `after` has its freeze
+    DROPPED -- which is sound only if the value is a definite (non-undef) value."""
+    acc: set[str] = set()
+    if node.get("op") == "var" and not under_freeze:
+        acc.add(node["name"])
+    deeper = under_freeze or node.get("op") == "freeze"
+    for a in node.get("args", []):
+        acc |= _bare_vars(a, deeper)
+    return acc
+
+
 # Nodes that already produce a boolean (an ite condition may use them directly); everything else is a
 # bitvector and is coerced with `!= 0`, matching LLVM's i1 select condition (true iff nonzero).
 _BOOL_RESULT_OPS = {"eq", "ne", "bvslt", "bvsle", "bvsgt", "bvsge", "bvult", "bvule", "bvugt", "bvuge"}
@@ -411,10 +423,14 @@ _RIUW_RE = re.compile(r"\breplaceInstUsesWith\s*\(\s*[^,]+,\s*(.+?)\s*\)\s*;?\s*
 _VALUE_IRRELEVANT = re.compile(
     r"\b(?:hasOneUse|hasNUses|hasNUsesOrMore|hasPoisonGeneratingFlags|use_empty|user_empty|"
     r"one[_-]?use)\b")
-# A poison-freedom guard (`isGuaranteedNotToBeUndefOrPoison(X)`) is a real precondition, recovered as
-# a `not-poison` assumption over a poison-declared value -- NOT dropped, since a fold sound only for a
-# never-poison operand (e.g. `freeze(X) -> X`) must be proved under it, and unsound without it.
-_NOTPOISON_RE = re.compile(r"\bisGuaranteedNotToBe(?:Undef(?:Or)?)?Poison\s*\(\s*&?(\w+)")
+# Poison/undef are a TWO-LEVEL lattice (Lee et al. PLDI'17): poison is strictly stronger than undef,
+# and LLVM has two distinct freedom guards. `isGuaranteedNotToBeUndefOrPoison(X)` means X is a DEFINITE
+# value (neither undef nor poison); `isGuaranteedNotToBePoison(X)` rules out poison ONLY -- X may still
+# be undef. O2T's single poison bit has no `undef`, so its `not-poison` assumption models a definite
+# value; both guards therefore emit it, but only the DEFINITE guard may license dropping a `freeze`
+# (freeze exists precisely to collapse undef's use-multiplicity, so a poison-only guard is not enough).
+_NOTUNDEFPOISON_RE = re.compile(r"\bisGuaranteedNotToBeUndefOrPoison\s*\(\s*&?(\w+)")
+_NOTPOISON_ONLY_RE = re.compile(r"\bisGuaranteedNotToBePoison\s*\(\s*&?(\w+)")
 # A type-equality guard (`X->getType() == I.getType()`) fixes the result width to a bound value's
 # width -- it licenses a cast round-trip's representative widths but carries no value SMT itself.
 _TYPE_EQ_RE = re.compile(r"getType\s*\(\s*\)\s*==\s*[^&|]*?getType\s*\(\s*\)")
@@ -457,6 +473,7 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     facts: list[dict] = []
     pred_binds: dict[str, str] = {}
     poison_free: set[str] = set()
+    definite: set[str] = set()
     has_type_eq = False
     for conjunct in _split_and(predicate_source.strip()):
         if "match(" in conjunct:
@@ -468,8 +485,12 @@ def recover_pair(predicate_source: str, rewrite_source: str,
             continue                                     # legality/profitability, no value effect
         elif _TYPE_EQ_RE.search(conjunct):
             has_type_eq = True                           # licenses a cast round-trip's width equality
-        elif _NOTPOISON_RE.search(conjunct):
-            poison_free.add(_NOTPOISON_RE.search(conjunct).group(1).lower())
+        elif _NOTUNDEFPOISON_RE.search(conjunct):        # X is a DEFINITE value (not undef, not poison)
+            v = _NOTUNDEFPOISON_RE.search(conjunct).group(1).lower()
+            poison_free.add(v)
+            definite.add(v)
+        elif _NOTPOISON_ONLY_RE.search(conjunct):        # X is not poison, but may still be undef
+            poison_free.add(_NOTPOISON_ONLY_RE.search(conjunct).group(1).lower())
         elif _PRED_GUARD_RE.match(conjunct):
             ident, pred_name = _PRED_GUARD_RE.match(conjunct).groups()
             if pred_name not in _ICMP_PRED:
@@ -502,6 +523,12 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     poison_vars = _poison_relevant_vars(before) | _poison_relevant_vars(after) | poison_free
     if not poison_vars <= binds:
         return None                                      # freeze/poison guard on an unbound value
+    # Two-level lattice: dropping a `freeze` (frozen in `before`, used bare in `after`) is sound only
+    # if the value is DEFINITE. A poison-only `not-poison` guard rules out poison but NOT undef, and
+    # O2T's model has no undef -- so it would falsely prove. Require the definite guard, else decline.
+    freeze_dropped = _poison_relevant_vars(before) & _bare_vars(after)
+    if freeze_dropped & (poison_free - definite):
+        return None
     facts = facts + [{"op": "not-poison", "name": v} for v in poison_free]
     assumptions = []
     for fact in facts:
