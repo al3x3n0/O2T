@@ -654,6 +654,23 @@ def main() -> int:
     _, (status, cex) = prove(f"match(&I, {br}(m_Value(X)))",
                              "return replaceInstUsesWith(I, Builder.CreateUnaryIntrinsic(Intrinsic::bswap, X));")
     assert status == "refuted" and cex, ("bitreverse is not bswap", status)
+    # FUNNEL SHIFT (phase 25): `@llvm.fshl/fshr(A, B, C)` -- concat A:B, shift by C mod 32, take the
+    # top/bottom 32 bits -- in existing shift/or ops, with the `C mod 32 == 0` case an explicit branch
+    # so z3 and the masking concrete evaluator agree. Shift by 0 selects the funnel's leading operand.
+    fl = "m_Intrinsic<Intrinsic::fshl>"
+    fr = "m_Intrinsic<Intrinsic::fshr>"
+    assert prove(f"match(&I, {fl}(m_Value(A), m_Value(B), m_Zero()))",
+                 "return replaceInstUsesWith(I, A);")[1][0] == "proved", "fshl(A,B,0) -> A"
+    assert prove(f"match(&I, {fr}(m_Value(A), m_Value(B), m_Zero()))",
+                 "return replaceInstUsesWith(I, B);")[1][0] == "proved", "fshr(A,B,0) -> B"
+    # a non-zero (symbolic) shift is NOT the identity -> refuted with a witness.
+    _, (status, cex) = prove(f"match(&I, {fl}(m_Value(A), m_Value(B), m_Value(C)))",
+                             "return replaceInstUsesWith(I, A);")
+    assert status == "refuted" and cex, ("fshl(A,B,C) -> A must refute for symbolic C", status)
+    if shutil.which("clang"):
+        pf = pg.recover_pair(f"match(&I, {fl}(m_Value(A), m_Value(B), m_Zero()))",
+                             "return replaceInstUsesWith(I, A);")
+        assert pg.reconcile_vellvm(pf, z3)["agree"], "clang must confirm fshl(A,B,0)->A at i32"
 
     # 22) PARSER SOUNDNESS: the tokenizer must REJECT any operator it does not model and the parser
     #     must consume every token, so an infix/ternary rewrite can never SILENTLY misparse to a

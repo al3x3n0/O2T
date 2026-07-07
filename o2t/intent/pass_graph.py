@@ -254,6 +254,21 @@ def _bitreverse(x: dict) -> dict:
     return node
 
 
+def _funnel(kind: str, a: dict, b: dict, c: dict) -> dict:
+    """Funnel shift `@llvm.fshl`/`fshr(A, B, C)`: concatenate A:B, shift by `C mod 32`, take the top
+    (fshl) / bottom (fshr) 32 bits -- i.e. `(A << sh) | (B >> (32-sh))` (fshl). The `sh == 0` case is an
+    explicit branch (returning A / B) so no shift-by-width appears, keeping z3 and the masking concrete
+    evaluator in agreement."""
+    sh = {"op": "bvand", "args": [c, _const(31)]}
+    inv = {"op": "bvsub", "args": [_const(32), sh]}
+    is_zero = {"op": "eq", "args": [sh, _const(0)]}
+    if kind == "fshl":
+        shifted = {"op": "bvor", "args": [{"op": "bvshl", "args": [a, sh]}, {"op": "bvlshr", "args": [b, inv]}]}
+        return {"op": "ite", "args": [is_zero, a, shifted]}
+    shifted = {"op": "bvor", "args": [{"op": "bvshl", "args": [a, inv]}, {"op": "bvlshr", "args": [b, sh]}]}
+    return {"op": "ite", "args": [is_zero, b, shifted]}
+
+
 def _contains_flags(node: dict) -> bool:
     if node.get("flags"):
         return True
@@ -375,6 +390,10 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
                 raise Unsupported(f"{tmpl} intrinsic needs one operand")
             fold = _bswap if tmpl == "bswap" else _bitreverse
             return fold(lower_matcher(args[0], binds, widths, pred_binds, hint))
+        if tmpl in ("fshl", "fshr"):
+            if len(args) != 3:
+                raise Unsupported(f"{tmpl} intrinsic needs three operands")
+            return _funnel(tmpl, *(lower_matcher(a, binds, widths, pred_binds, hint) for a in args))
         raise Unsupported(f"unmodeled intrinsic {tmpl!r}")
     if name in MATCHER_CAST:
         return _lower_cast(MATCHER_CAST[name], args,
