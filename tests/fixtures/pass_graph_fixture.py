@@ -564,6 +564,16 @@ def main() -> int:
     # exact is a shift-only flag: m_Exact over a non-shift declines (sound boundary).
     assert pg.recover_pair("match(&I, m_Exact(m_UDiv(m_Value(X), m_Value(Y))))",
                            "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));") is None
+    # DISJOINT FLAG (phase 22): `or disjoint X, Y` is poison when the operands share a set bit. Dropping
+    # it is a refinement; adding it is unsound; and because disjoint operands add without carry,
+    # `or disjoint X, Y` refines to `add X, Y` -- a semantically load-bearing cross-op fold.
+    dj = prove("match(&I, m_DisjointOr(m_Value(X), m_Value(Y)))", "return replaceInstUsesWith(I, Builder.CreateOr(X, Y));")
+    assert dj[1][0] == "proved" and dj[0]["before"]["flags"] == ["disjoint"], dj[0]["before"]
+    assert prove("match(&I, m_DisjointOr(m_Value(X), m_Value(Y)))",
+                 "return replaceInstUsesWith(I, Builder.CreateAdd(X, Y));")[1][0] == "proved", "or disjoint -> add"
+    _, (status, cex) = prove("match(&I, m_Or(m_Value(X), m_Value(Y)))",
+                             "return replaceInstUsesWith(I, Builder.CreateDisjointOr(X, Y));")
+    assert status == "refuted" and cex, ("adding disjoint must refute", status)
     # POISON/FLAG CROSS-CHECK (phase 17): refinement folds (poison/freeze/flags) abstain from the
     # value-equality + compiled engines, so they would trust z3 alone. An INDEPENDENT poison/flag-aware
     # concrete oracle re-checks the actual refinement condition and must AGREE with z3 on each.

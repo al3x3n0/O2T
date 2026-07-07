@@ -47,12 +47,14 @@ MATCHER_FLAG_BINOP = {
     "m_NSWAdd": ("bvadd", "nsw"), "m_NUWAdd": ("bvadd", "nuw"),
     "m_NSWSub": ("bvsub", "nsw"), "m_NUWSub": ("bvsub", "nuw"),
     "m_NSWMul": ("bvmul", "nsw"), "m_NUWMul": ("bvmul", "nuw"),
+    "m_DisjointOr": ("bvor", "disjoint"),
 }
 BUILDER_FLAG_BINOP = {
     "CreateNSWAdd": ("bvadd", "nsw"), "CreateNUWAdd": ("bvadd", "nuw"),
     "CreateNSWSub": ("bvsub", "nsw"), "CreateNUWSub": ("bvsub", "nuw"),
     "CreateNSWMul": ("bvmul", "nsw"), "CreateNUWMul": ("bvmul", "nuw"),
     "CreateExactLShr": ("bvlshr", "exact"), "CreateExactAShr": ("bvashr", "exact"),
+    "CreateDisjointOr": ("bvor", "disjoint"),
 }
 # `exact` (on lshr/ashr) is poison when a shifted-out bit is nonzero; like nsw/nuw, DROPPING it is a
 # sound refinement and ADDING it is not. `m_Exact(SUB)` is a WRAPPER, tagging its shift operand exact.
@@ -1065,6 +1067,8 @@ def _flag_poison(op: str, flags: list, a: int, b: int, w: int) -> bool:
             shifted = (a >> b) if op == "bvlshr" else (sa >> b)
             if ((shifted << b) & mask) != a:
                 return True
+        if op == "bvor" and fl == "disjoint" and (a & b) != 0:  # operands share a set bit
+            return True
     return False
 
 

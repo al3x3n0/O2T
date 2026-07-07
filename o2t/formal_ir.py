@@ -158,6 +158,7 @@ VALID_FLAGS = {
     "bvshl": {"nsw", "nuw"},
     "bvlshr": {"exact"},
     "bvashr": {"exact"},
+    "bvor": {"disjoint"},
 }
 
 
@@ -193,6 +194,8 @@ def flag_poison_smt(op: str, flags: list[str], a: str, b: str, n: int) -> str:
         elif op in {"bvlshr", "bvashr"} and fl == "exact":
             shr = f"({op} {a} {b})"
             conds.append(f"(or (bvuge {b} {width_lit}) (not (= (bvshl {shr} {b}) {a})))")
+        elif op == "bvor" and fl == "disjoint":
+            conds.append(f"(not (= (bvand {a} {b}) (_ bv0 {n})))")
     return smt_or(conds) if conds else "false"
 
 
