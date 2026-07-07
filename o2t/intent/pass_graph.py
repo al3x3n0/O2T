@@ -1107,6 +1107,42 @@ def reconcile_widths(pair: dict, z3_bin: str,
             "status": next(iter(statuses)) if len(statuses) == 1 else "disagree"}
 
 
+# --- phase 28: width-parametric corroboration -- is the bv32 verdict width-UNIFORM? ---------------
+def _at_width(node: dict, w: int) -> dict:
+    """Copy a formal-IR node with EVERY bit width set to `w` (bvconst values re-masked). For a fold
+    whose only width is the domain width -- not a width-changing cast, which needs distinct widths."""
+    if node.get("op") == "var":
+        return dict(node)
+    if node.get("op") == "bvconst":
+        return {"op": "bvconst", "bits": w, "value": node["value"] & ((1 << w) - 1)}
+    out = {k: v for k, v in node.items() if k != "args"}
+    if isinstance(out.get("bits"), int):
+        out["bits"] = w
+    out["args"] = [_at_width(a, w) for a in node.get("args", [])]
+    return out
+
+
+def corroborate_widths(pair: dict, z3_bin: str, widths: tuple = (8, 16, 32, 64)) -> dict:
+    """Re-prove a fold at several bit widths to corroborate its bv32 verdict is width-UNIFORM rather
+    than a width-32 coincidence. A uniform identity (or refinement) holds at EVERY width, so the
+    verdicts must agree; a width-SPECIFIC fold -- a mask or closed form tuned to 32 bits (e.g. the
+    bswap/ctpop expansions, or `and X, 0xFF` which is all-ones only at i8) -- diverges and is flagged
+    `width-specific`, telling the caller the verdict does not generalize. Returns {applicable, verdicts,
+    agree, status}; not applicable to a width-changing cast (use `reconcile_widths`)."""
+    if _contains_cast(pair.get("before", {})) or _contains_cast(pair.get("after", {})):
+        return {"applicable": False, "reason": "cast fold -- use reconcile_widths"}
+    verdicts: dict = {}
+    for w in widths:
+        variant = dict(pair)
+        variant["variable_bits"] = {v: w for v in pair["variables"]}
+        variant["before"] = _at_width(pair["before"], w)
+        variant["after"] = _at_width(pair["after"], w)
+        verdicts[w] = ma.prove(variant, z3_bin)[0]
+    statuses = set(verdicts.values())
+    return {"applicable": True, "verdicts": verdicts, "agree": len(statuses) == 1,
+            "status": next(iter(statuses)) if len(statuses) == 1 else "width-specific"}
+
+
 # --- phase 17: independent poison/flag-aware oracle for REFINEMENT obligations ------------------
 def _flag_poison(op: str, flags: list, a: int, b: int, w: int) -> bool:
     """True iff `op a b` violates a no-wrap flag at width `w` (concrete mirror of flag_poison_smt)."""
