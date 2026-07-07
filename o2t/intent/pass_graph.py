@@ -1129,6 +1129,97 @@ def reconcile_refinement(pair: dict, z3_bin: str, width: int = 4) -> dict:
             "counterexample": counterexample}
 
 
+# --- phase 20: re-checkable certificates (an unverified validator only weakly increases confidence) --
+def _holds_at(pair: dict, env: dict, pois: dict, width: int):
+    """z3-free: does `before -> after` HOLD at this concrete point? True / False(violated) / None
+    (an op the evaluator cannot cover, e.g. a width-changing cast). Poison-aware for refinement folds."""
+    if pair.get("refinement") == "refinement":
+        b = _eval_poison(pair["before"], env, pois, width)
+        a = _eval_poison(pair["after"], env, pois, width)
+        if b is None or a is None:
+            return None
+        (bv, bp, bex), (av, ap, aex) = b, a
+        if bp:
+            return True                                       # before poison -> refinement vacuously holds
+        if ap:
+            return False                                      # before defined, after poison -> violated
+        if not (bex and aex):
+            return None                                       # arbitrary frozen value -> cannot compare
+        return av == bv
+    b = ma.evaluate(pair["before"], env, width)
+    a = ma.evaluate(pair["after"], env, width)
+    if b is None or a is None:
+        return None
+    return b == a
+
+
+def _find_violation(pair: dict, base_env: dict, width: int):
+    """z3-free search for a concrete point that VIOLATES the obligation, drawing operand values from
+    `base_env` and trying every poison state of the poison-declared variables. Returns the point or None
+    (None also when the assumptions exclude it or the evaluator cannot cover the ops)."""
+    variables = pair["variables"]
+    poison_vars = list(pair.get("poison_variables", []))
+    assumptions = pair.get("assumptions", [])
+    value_facts = [a for a in assumptions if a.get("op") != "not-poison"]
+    nonpoison = {a["name"] for a in assumptions if a.get("op") == "not-poison"}
+    env = {v: int(base_env.get(v, 0)) & ((1 << width) - 1) for v in variables}
+    if not all(_assumption_holds(a, env, width) for a in value_facts):
+        return None
+    for pstate in product((False, True), repeat=len(poison_vars)):
+        pois = dict(zip(poison_vars, pstate))
+        if any(pois.get(n, False) for n in nonpoison):
+            continue
+        if _holds_at(pair, env, pois, width) is False:
+            return {"env": env, "poison": pois}
+    return None
+
+
+def certify(pair: dict, z3_bin: str) -> dict:
+    """Emit a re-checkable certificate for the verdict. A `refuted` verdict carries the concrete
+    counterexample -- a self-contained, z3-free proof of unsoundness. A `proved` verdict is attested by
+    the solver and marked for independent re-checking by exhaustive small-width enumeration (see
+    `check_certificate`). Turns 'z3 said so' into an artifact an independent checker can re-verify."""
+    status, cex = ma.prove(pair, z3_bin)
+    cert = {"marker": pair.get("marker", "?"), "verdict": status, "solver": "z3"}
+    if status == "refuted" and cex:
+        cert["counterexample"] = {k: int(v) for k, v in cex.get("inputs", {}).items()}
+    return cert
+
+
+def check_certificate(pair: dict, cert: dict, width: int = 4) -> str:
+    """Independently re-verify a certificate WITHOUT invoking z3.
+      * refuted -> `confirmed` if the counterexample really violates the obligation, else `invalid`
+        (z3's model does not refute -> the verdict is untrustworthy).
+      * proved  -> exhaustive z3-free enumeration at `width` bits: `confirmed` if no violation exists,
+        `invalid` if a concrete counterexample is found (z3 was WRONG -> false proof caught), or
+        `unchecked` when the ops are outside the toolless evaluator (a cast/div covered elsewhere)."""
+    if cert["verdict"] == "refuted":
+        return "confirmed" if _find_violation(pair, cert.get("counterexample", {}), 32) is not None else "invalid"
+    if cert["verdict"] != "proved":
+        return "unchecked"
+    variables = pair["variables"]
+    poison_vars = list(pair.get("poison_variables", []))
+    assumptions = pair.get("assumptions", [])
+    value_facts = [a for a in assumptions if a.get("op") != "not-poison"]
+    nonpoison = {a["name"] for a in assumptions if a.get("op") == "not-poison"}
+    checked = 0
+    for combo in product(range(1 << width), repeat=len(variables)):
+        env = dict(zip(variables, combo))
+        if not all(_assumption_holds(a, env, width) for a in value_facts):
+            continue
+        for pstate in product((False, True), repeat=len(poison_vars)):
+            pois = dict(zip(poison_vars, pstate))
+            if any(pois.get(n, False) for n in nonpoison):
+                continue
+            holds = _holds_at(pair, env, pois, width)
+            if holds is None:
+                return "unchecked"                            # op outside the evaluator -> cannot re-check here
+            if holds is False:
+                return "invalid"                              # a false 'proved' caught independently
+            checked += 1
+    return "confirmed" if checked else "unchecked"
+
+
 # --- phase 19: lower an obligation to real LLVM IR for a machine-checked interpreter oracle --------
 # The recovered before/after is emitted as textual LLVM IR so an EXTERNAL LLVM-IR interpreter can serve
 # as an independent oracle. Vellvm (github.com/vellvm/vellvm) ships an interpreter EXTRACTED FROM a
