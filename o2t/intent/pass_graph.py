@@ -1342,29 +1342,55 @@ def render_guard(atom: dict) -> str:
     return str(atom)
 
 
+def _contradictory_combo(combo: list) -> bool:
+    """Cheap sign-contradiction check (a var forced both negative and non-negative/positive), catching
+    vacuous guards `normalize_assumptions` misses so they never reach the solver."""
+    signs: dict = {}
+    for a in combo:
+        if a.get("op") == "cmp":
+            signs.setdefault(a["name"], set()).add({"sge": "nn", "sgt": "pos", "slt": "neg"}.get(a["predicate"]))
+        elif a.get("op") == "power-of-two":
+            signs.setdefault(a["name"], set()).add("pos")   # a power of two is positive
+    return any("neg" in s and ("nn" in s or "pos" in s) for s in signs.values())
+
+
 def synthesize_precondition(pair: dict, z3_bin: str, max_atoms: int = 2):
     """Abduce the WEAKEST modeled precondition (a set of extra assumption atoms) under which `pair`
     becomes sound, ON TOP of its existing guard. Returns [] if already sound, a minimal list of atoms
     if a modeled guard suffices, or None if none does (the fold is unsound for ANY modeled guard).
-    A minimal-subset search over O2T's ValueTracking vocabulary -- diagnostic, not on the hot path."""
+
+    A weakest-first search over O2T's ValueTracking vocabulary, z3-confirming each candidate (so a
+    coincidental concrete match can never masquerade as a guard), pruned by the accumulating set of
+    counterexamples: a sufficient guard must exclude every witness, so any combo that doesn't is skipped
+    without a solver call, and each refutation adds a witness that tightens the prune. Diagnostic, not
+    on the hot path."""
     variables = pair["variables"]
     if len(variables) > 3:
         return None
     base_asm = list(pair.get("assumptions", []))
 
-    def proves(extra):
-        return ma.prove({**pair, "assumptions": base_asm + list(extra)}, z3_bin)[0] == "proved"
+    def prove_with(extra):
+        return ma.prove({**pair, "assumptions": base_asm + list(extra)}, z3_bin)
 
-    if proves([]):
+    status, cex = prove_with([])
+    if status == "proved":
         return []
+    if status != "refuted" or not cex:
+        return None
     existing = {_atom_key(a) for a in base_asm}
     cands = [a for a in _candidate_atoms(variables) if _atom_key(a) not in existing]
-    for k in range(1, max_atoms + 1):                        # weakest (fewest-atom) sufficient guard first
+    cexes = [cex.get("inputs", {})]
+    for k in range(1, max_atoms + 1):                        # weakest (fewest-atom) guard first
         for combo in combinations(cands, k):
-            if normalize_assumptions(base_asm + list(combo))["contradictions"]:
-                continue                                     # skip vacuous (contradictory) guards
-            if proves(combo):
+            if _contradictory_combo(combo) or normalize_assumptions(base_asm + list(combo))["contradictions"]:
+                continue
+            if not all(any(not _assumption_holds(a, env, 32) for a in combo) for env in cexes):
+                continue                                     # cannot exclude a known witness -> skip (no solver)
+            status, cx = prove_with(combo)
+            if status == "proved":
                 return list(combo)
+            if status == "refuted" and cx:
+                cexes.append(cx.get("inputs", {}))           # new witness tightens the prune
     return None
 
 
