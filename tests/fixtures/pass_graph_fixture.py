@@ -550,6 +550,20 @@ def main() -> int:
                "  if (!match(&I, m_NSWAdd(m_Value(X), m_Value(Y)))) return nullptr;\n"
                "  return replaceInstUsesWith(I, Builder.CreateAdd(X, Y)); }")
     assert fn(flag_fn)[1][0] == "proved", "function-form nsw drop not proved"
+    # EXACT FLAG (phase 21): `exact` on lshr/ashr is poison when a shifted-out bit is nonzero. Like
+    # nsw/nuw, dropping it is a sound refinement and adding it is not. `m_Exact(SUB)` is a wrapper.
+    exact = prove("match(&I, m_Exact(m_LShr(m_Value(X), m_Value(Y))))",
+                  "return replaceInstUsesWith(I, Builder.CreateLShr(X, Y));")
+    assert exact[1][0] == "proved" and exact[0]["before"]["flags"] == ["exact"], exact[0]["before"]
+    assert prove("match(&I, m_Exact(m_AShr(m_Value(X), m_Value(Y))))",
+                 "return replaceInstUsesWith(I, Builder.CreateAShr(X, Y));")[1][0] == "proved", "exact ashr drop"
+    # ADDING exact introduces poison the source lacked -> refuted with a witness.
+    _, (status, cex) = prove("match(&I, m_LShr(m_Value(X), m_Value(Y)))",
+                             "return replaceInstUsesWith(I, Builder.CreateExactLShr(X, Y));")
+    assert status == "refuted" and cex, ("adding exact must refute", status)
+    # exact is a shift-only flag: m_Exact over a non-shift declines (sound boundary).
+    assert pg.recover_pair("match(&I, m_Exact(m_UDiv(m_Value(X), m_Value(Y))))",
+                           "return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));") is None
     # POISON/FLAG CROSS-CHECK (phase 17): refinement folds (poison/freeze/flags) abstain from the
     # value-equality + compiled engines, so they would trust z3 alone. An INDEPENDENT poison/flag-aware
     # concrete oracle re-checks the actual refinement condition and must AGREE with z3 on each.

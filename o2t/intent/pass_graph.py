@@ -52,7 +52,11 @@ BUILDER_FLAG_BINOP = {
     "CreateNSWAdd": ("bvadd", "nsw"), "CreateNUWAdd": ("bvadd", "nuw"),
     "CreateNSWSub": ("bvsub", "nsw"), "CreateNUWSub": ("bvsub", "nuw"),
     "CreateNSWMul": ("bvmul", "nsw"), "CreateNUWMul": ("bvmul", "nuw"),
+    "CreateExactLShr": ("bvlshr", "exact"), "CreateExactAShr": ("bvashr", "exact"),
 }
+# `exact` (on lshr/ashr) is poison when a shifted-out bit is nonzero; like nsw/nuw, DROPPING it is a
+# sound refinement and ADDING it is not. `m_Exact(SUB)` is a WRAPPER, tagging its shift operand exact.
+_EXACT_OPS = {"bvlshr", "bvashr"}
 # Width-changing casts -> formal-IR op. The matcher tree carries no bit widths, so we assign fixed
 # REPRESENTATIVE widths (narrow<->wide) and only recover cast folds licensed by an explicit
 # width-equality guard (see `recover_pair`), so a width-dependent fold can never become a false proof.
@@ -305,6 +309,13 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
         op, flag = MATCHER_FLAG_BINOP[name]
         return _flag_binop(op, flag, lower_matcher(args[0], binds, widths, pred_binds, hint),
                            lower_matcher(args[1], binds, widths, pred_binds, hint))
+    if name == "m_Exact":                                    # wrapper: tag a shift operand `exact`
+        if len(args) != 1:
+            raise Unsupported("m_Exact needs one operand")
+        inner = lower_matcher(args[0], binds, widths, pred_binds, hint)
+        if inner.get("op") not in _EXACT_OPS:
+            raise Unsupported("m_Exact only models lshr/ashr")
+        return {**inner, "flags": inner.get("flags", []) + ["exact"]}
     if name in ("m_ICmp", "m_c_ICmp", "m_SpecificICmp"):
         if len(args) != 3 or args[0]["kind"] != "name":
             raise Unsupported(f"{name} needs a predicate and two operands")
@@ -1048,6 +1059,12 @@ def _flag_poison(op: str, flags: list, a: int, b: int, w: int) -> bool:
             return True
         if op == "bvmul" and fl == "nuw" and a * b > mask:
             return True
+        if op in ("bvlshr", "bvashr") and fl == "exact":     # a shifted-out bit was nonzero
+            if b >= w:
+                return True
+            shifted = (a >> b) if op == "bvlshr" else (sa >> b)
+            if ((shifted << b) & mask) != a:
+                return True
     return False
 
 

@@ -28,6 +28,11 @@ def overflow(op, flag, a, b, w):
         return {"add": sa + sb, "sub": sa - sb, "mul": sa * sb, "shl": sa << (b & (w - 1))}.get(op, 0) not in range(lo, hi + 1)
     if flag == "nuw":
         return {"add": a + b, "sub": a - b, "mul": a * b, "shl": a << (b & (w - 1))}.get(op, 0) & ~m != 0 or (op == "sub" and a - b < 0)
+    if flag == "exact" and op in ("lshr", "ashr"):
+        if b >= w:
+            return True
+        shifted = (a >> b) if op == "lshr" else (sa >> b)
+        return ((shifted << b) & m) != a
     return False
 
 
@@ -62,7 +67,7 @@ def main():
         dst, rhs = [s.strip() for s in line.split("=", 1)]
         dst = dst[1:]
         mask = lambda w: (1 << w) - 1  # noqa: E731
-        mm = re.match(r"(add|sub|mul|and|or|xor|shl|lshr|ashr|udiv|sdiv|urem|srem)((?: nsw| nuw)*) i(\d+) (\S+), (\S+)", rhs)
+        mm = re.match(r"(add|sub|mul|and|or|xor|shl|lshr|ashr|udiv|sdiv|urem|srem)((?: nsw| nuw| exact)*) i(\d+) (\S+), (\S+)", rhs)
         if mm:
             op, flags, w = mm.group(1), mm.group(2).split(), int(mm.group(3))
             a, pa = operand(mm.group(4), w)
