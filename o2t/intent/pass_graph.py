@@ -1828,3 +1828,59 @@ def reconcile_compiled(pair: dict, z3_bin: str, clang: str = "clang++") -> dict:
              (z3_status == "refuted" and compiled == "refuted"))
     return {"z3": z3_status, "compiled": compiled, "agree": agree,
             "paths": v["paths"], "rewriting_paths": v["rewriting_paths"]}
+
+
+# --- phase 33: ground the RECOVERY against the compiler's own reading of the source ---------------
+def ground_recovery(pair: dict, rewrite_source: str, z3_bin: str, clang: str = "clang++") -> dict:
+    """Ground the RECOVERY (not the fold's soundness) against the compiler's own reading of the source:
+    compile the VERBATIM source rewrite against the symbolic shim -- which implements each `Builder.
+    Create*` INDEPENDENTLY of O2T's lowering -- and check the SMT it computes equals O2T's recovered
+    `after`. If O2T misrecovered the rewrite (a dropped operator, a wrong builder, a mislowered op),
+    the two diverge and it is caught -- a check `reconcile_compiled` cannot give, since that
+    reconstructs the harness from O2T's OWN node. Returns {grounded, source_smt, recovered_smt,
+    divergence}; `grounded` is `skipped` when the compiler is absent or the rewrite is outside the
+    shim / `_to_smt` fragment."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path as _Path
+    from o2t.symexec import real_pass as rp
+    m = _RIUW_RE.search(rewrite_source.strip())
+    if not m:
+        return {"grounded": "skipped", "reason": "no replaceInstUsesWith rewrite"}
+    rewrite_expr = _unwrap(m.group(1)).strip()
+    try:
+        recovered_smt = _to_smt(pair["after"])                 # O2T's after (uppercase vars), bv fragment
+    except Unsupported:
+        return {"grounded": "skipped", "reason": "recovered after outside shim fragment"}
+    if shutil.which(clang) is None and not _Path(clang).exists():
+        return {"grounded": "skipped", "reason": "no compiler"}
+    variables = [v.upper() for v in pair["variables"]]
+    params = ", ".join([f"Value {v}" for v in variables] + ["IRBuilder &Builder"])
+    decls = "; ".join(f'Value {v}{{"{v}"}}' for v in variables)
+    harness = (f'#include "symbolic_llvm.h"\n'
+               f'static Value src_rewrite({params}) {{\n  return {rewrite_expr};\n}}\n'
+               f'int main(int argc, char **argv) {{\n  cv_setup(argc, argv);\n'
+               f'  {decls}; IRBuilder Builder;\n'
+               f'  Value out = src_rewrite({", ".join(variables + ["Builder"])});\n'
+               f'  cv_emit("", out.t.empty() ? nullptr : &out);\n  return 0;\n}}\n')
+    with tempfile.TemporaryDirectory() as d:
+        cpp = _Path(d) / "ground.cpp"
+        cpp.write_text(harness)
+        exe = rp.compile_harness(str(cpp), clang=clang)
+        if exe is None:
+            return {"grounded": "skipped", "reason": "source rewrite did not compile against the shim"}
+        stdout = subprocess.run([exe], capture_output=True, text=True).stdout
+    try:
+        source_smt = (json.loads(stdout) if stdout.strip() else {}).get("output", "")
+    except json.JSONDecodeError:
+        return {"grounded": "skipped", "reason": "no shim output"}
+    if not source_smt:
+        return {"grounded": "skipped", "reason": "shim produced no value"}
+    vdecl = "\n".join(f"(declare-const {v} (_ BitVec 32))" for v in variables)
+    smt = f"(set-logic QF_BV)\n{vdecl}\n(assert (not (= {source_smt} {recovered_smt})))\n(check-sat)"
+    head = (subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True).stdout.strip()
+            .splitlines() or ["error"])[0]
+    return {"grounded": head == "unsat", "divergence": head == "sat",
+            "source_smt": source_smt, "recovered_smt": recovered_smt}
