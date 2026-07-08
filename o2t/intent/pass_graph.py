@@ -266,6 +266,41 @@ def _ctpop(x: dict) -> dict:
     return op("bvlshr", op("bvmul", x, _const(0x01010101)), _const(24))
 
 
+# --- phase 30: memory obligations over the theory of arrays (load/store/aliasing) ----------------
+def memvar(name: str) -> dict:
+    return {"op": "memvar", "name": name}
+
+
+def memload(mem: dict, addr: dict) -> dict:
+    return {"op": "mem_load", "args": [mem, addr]}
+
+
+def memstore(mem: dict, addr: dict, val: dict) -> dict:
+    return {"op": "mem_store", "args": [mem, addr, val]}
+
+
+def must_alias(p: str, q: str) -> dict:
+    """Precondition that two pointers name the SAME address (P == Q)."""
+    return {"op": "rel", "predicate": "eq", "left": p, "right": q}
+
+
+def no_alias(p: str, q: str) -> dict:
+    """Precondition that two pointers name DISTINCT addresses (P != Q)."""
+    return {"op": "addr-diseq", "left": p, "right": q}
+
+
+def memory_fold(before: dict, after: dict, variables, mem_vars=("m",), assumptions=(),
+                marker: str = "probe.memory.fold") -> dict:
+    """Assemble a memory obligation over the theory of arrays: `before`/`after` are bitvector results
+    that may load from (`memload`) / store to (`memstore`) memory-typed variables, gated by aliasing
+    preconditions (`must_alias`/`no_alias`). Discharged by mini_alive.prove exactly like a scalar fold
+    -- so store-to-load forwarding, redundant-load and dead-store (observed by any load) all prove,
+    each unsound without its aliasing guard."""
+    return {"domain": "memory-bv32", "marker": marker, "variables": sorted(variables),
+            "variable_sorts": {m: "memory-bv32" for m in mem_vars},
+            "before": before, "after": after, "equivalence": "result", "assumptions": list(assumptions)}
+
+
 def _funnel(kind: str, a: dict, b: dict, c: dict) -> dict:
     """Funnel shift `@llvm.fshl`/`fshr(A, B, C)`: concatenate A:B, shift by `C mod 32`, take the top
     (fshl) / bottom (fshr) 32 bits -- i.e. `(A << sh) | (B >> (32-sh))` (fshl). The `sh == 0` case is an
@@ -1007,6 +1042,11 @@ def _assumption_holds(assumption: dict, env: dict, width: int) -> bool:
     op = assumption["op"]
     if op == "mask-pair":                                 # (X & Y) == 0 -- operands share no set bits
         return ((env[assumption["left"]] & env[assumption["right"]]) & mask) == 0
+    if op in ("addr-diseq", "rel"):                       # two-operand aliasing / relational guard
+        left, right = env[assumption["left"]] & mask, env[assumption["right"]] & mask
+        if op == "addr-diseq":
+            return left != right
+        return {"eq": left == right, "ne": left != right}.get(assumption.get("predicate"), True)
     v = env[assumption["name"]] & mask
     if op == "not-eq":
         return v != (int(assumption.get("value", 0)) & mask)
@@ -1397,6 +1437,7 @@ def _candidate_atoms(variables: list) -> list:
     for i, a in enumerate(variables):
         for b in variables[i + 1:]:
             atoms.append({"op": "mask-pair", "left": a, "right": b})                 # haveNoCommonBitsSet
+            atoms.append({"op": "addr-diseq", "left": a, "right": b})                # isNoAlias (P != Q)
     return atoms
 
 
@@ -1411,6 +1452,8 @@ def render_guard(atom: dict) -> str:
         return f"isKnownToBeAPowerOfTwo({atom['name']})"
     if atom["op"] == "mask-pair":
         return f"haveNoCommonBitsSet({atom['left']}, {atom['right']})"
+    if atom["op"] == "addr-diseq":
+        return f"isNoAlias({atom['left']}, {atom['right']})"
     return str(atom)
 
 
@@ -1436,8 +1479,11 @@ def synthesize_precondition(pair: dict, z3_bin: str, max_atoms: int = 2):
     counterexamples: a sufficient guard must exclude every witness, so any combo that doesn't is skipped
     without a solver call, and each refutation adds a witness that tightens the prune. Diagnostic, not
     on the hot path."""
-    variables = pair["variables"]
-    if len(variables) > 3:
+    # candidate guards range over the bitvector variables only; a memory-typed variable is not a value
+    # a ValueTracking/aliasing predicate constrains (and its z3 model has no scalar to evaluate).
+    mem_vars = set(pair.get("variable_sorts", {}))
+    cand_vars = [v for v in pair["variables"] if v not in mem_vars]
+    if len(cand_vars) > 3:
         return None
     base_asm = list(pair.get("assumptions", []))
 
@@ -1450,7 +1496,7 @@ def synthesize_precondition(pair: dict, z3_bin: str, max_atoms: int = 2):
     if status != "refuted" or not cex:
         return None
     existing = {_atom_key(a) for a in base_asm}
-    cands = [a for a in _candidate_atoms(variables) if _atom_key(a) not in existing]
+    cands = [a for a in _candidate_atoms(cand_vars) if _atom_key(a) not in existing]
     cexes = [cex.get("inputs", {})]
     for k in range(1, max_atoms + 1):                        # weakest (fewest-atom) guard first
         for combo in combinations(cands, k):
