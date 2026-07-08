@@ -168,6 +168,15 @@ class _Parser:
         return {"kind": "name", "name": name}
 
 
+def parse_source_tree(source: str) -> dict:
+    """Reference for the structured tree a Clang-AST miner emits for a matcher/rewrite expression --
+    the {kind, name, args, template} form. In production the miner produces this directly from the C++
+    AST (a `CallExpr` -> call, `IntegerLiteral` -> int, `DeclRefExpr` -> name), so the tokenizer/parser
+    below is NOT in the trusted path; here it derives the tree from the source string so the structured
+    recovery (`recover_pair(..., matcher_tree=, rewrite_tree=)`) can be exercised and shown equivalent."""
+    return _parse(source)
+
+
 def _parse(text: str) -> dict:
     # normalise `A.b` / `A::b` chains so tokenizer keeps the method name.
     text = text.replace(".", "::")
@@ -640,16 +649,24 @@ def _split_and(text: str) -> list[str]:
 
 
 def recover_pair(predicate_source: str, rewrite_source: str,
-                 marker: str = "probe.recovered.fold") -> dict | None:
+                 marker: str = "probe.recovered.fold",
+                 matcher_tree: dict | None = None, rewrite_tree: dict | None = None) -> dict | None:
     """Recover a compositional formal obligation from a fold's guard conjunction and its
     `replaceInstUsesWith(I, <expr>)` rewrite. The guard's `match(...)` conjunct becomes `before`; its
     analysis-query conjuncts (`isKnownNonZero`/`isKnownNonNegative`/...) become the PRECONDITION under
     which the equivalence must hold. Returns a formal dict provable by mini_alive.prove, or None on
     any unmodeled construct -- including an UNRECOGNISED guard, since dropping a value-relevant
-    precondition could turn an unsound fold into a false `proved` (a sound decline)."""
-    rm = _RIUW_RE.search(rewrite_source.strip())
-    if not rm:
-        return None
+    precondition could turn an unsound fold into a false `proved` (a sound decline).
+
+    `matcher_tree` / `rewrite_tree` accept the ALREADY-PARSED matcher and rewrite (the tree form
+    `_parse` produces -- {kind,name,args,template}). Supplying them BYPASSES the tokenizer/parser
+    entirely: a Clang-AST miner that emits these structured trees removes the whole hand-parser from
+    the trusted core (no misparse is possible on a tree)."""
+    rm = None
+    if rewrite_tree is None:
+        rm = _RIUW_RE.search(rewrite_source.strip())
+        if not rm:
+            return None
     matcher_src: str | None = None
     facts: list[dict] = []
     pred_binds: dict[str, str] = {}
@@ -658,6 +675,8 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     has_type_eq = False
     for conjunct in _split_and(predicate_source.strip()):
         if "match(" in conjunct:
+            if matcher_tree is not None:
+                continue                                     # matcher supplied as a tree; ignore source form
             mm = _MATCH_RE.search(conjunct)
             if not mm or matcher_src is not None:
                 return None
@@ -682,13 +701,15 @@ def recover_pair(predicate_source: str, rewrite_source: str,
             if recovered is None:
                 return None                              # unmodeled precondition -> decline
             facts.extend(recovered)
-    if matcher_src is None:
+    if matcher_tree is None and matcher_src is None:
         return None
     try:
         binds: set[str] = set()
         widths: dict[str, int] = {}
-        before = lower_matcher(_parse(matcher_src), binds, widths, pred_binds)
-        after = lower_rewrite(_parse(_unwrap(rm.group(1))), binds, widths)  # unwrap inlined-helper parens
+        m_node = matcher_tree if matcher_tree is not None else _parse(matcher_src)
+        r_node = rewrite_tree if rewrite_tree is not None else _parse(_unwrap(rm.group(1)))
+        before = lower_matcher(m_node, binds, widths, pred_binds)
+        after = lower_rewrite(r_node, binds, widths)
     except Unsupported:
         return None
     if not binds:
