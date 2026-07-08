@@ -266,6 +266,73 @@ def _ctpop(x: dict) -> dict:
     return op("bvlshr", op("bvmul", x, _const(0x01010101)), _const(24))
 
 
+# --- phase 31: proper refinement via the existential (2QBF) encoding -----------------------------
+def _refine_emit(node: dict, side: str, poison_vars: set, src: list, tgt: list, ctr: list) -> tuple:
+    """Emit (value-SMT, poison-SMT) for the refinement fragment {var, const, freeze, binop(+flags)}.
+    A `freeze` in the SOURCE side records a UNIVERSAL fresh (the environment's worst-case pick); a
+    `freeze` in the TARGET side records an EXISTENTIAL (free) fresh (the target picks to match)."""
+    op = node.get("op")
+    if op == "var":
+        n = node["name"]
+        return n, (f"{n}_p" if n in poison_vars else "false")
+    if op == "bvconst":
+        return f"(_ bv{node['value'] & 0xFFFFFFFF} 32)", "false"
+    if op == "freeze":
+        v, p = _refine_emit(node["args"][0], side, poison_vars, src, tgt, ctr)
+        fresh = f"fr{ctr[0]}"
+        ctr[0] += 1
+        (src if side == "before" else tgt).append(fresh)
+        return f"(ite {p} {fresh} {v})", "false"                # freeze(poison) = arbitrary but DEFINED
+    if op in _LLOP:
+        from o2t.formal_ir import flag_poison_smt
+        a, ap = _refine_emit(node["args"][0], side, poison_vars, src, tgt, ctr)
+        b, bp = _refine_emit(node["args"][1], side, poison_vars, src, tgt, ctr)
+        fp = flag_poison_smt(op, list(node.get("flags", [])), a, b, 32) if node.get("flags") else "false"
+        return f"({op} {a} {b})", f"(or {ap} {bp} {fp})"
+    raise Unsupported(f"refinement encoding does not cover {op!r}")
+
+
+def prove_refinement(pair: dict, z3_bin: str) -> str:
+    """Prove a refinement obligation with the CORRECT quantifier structure for nondeterminism. A
+    `freeze` in the source is universally quantified (the environment picks the worst value) and a
+    `freeze` in the target is existential (the target picks to match), so the refinement counterexample
+    check is an exists-forall query. This proves refinements the single-quantifier check can only
+    DECLINE -- notably freeze idempotence `freeze(freeze(X)) -> freeze(X)` -- while agreeing with it on
+    freeze-free folds (no source freeze -> no quantifier -> the ordinary check). Returns proved /
+    refuted / `unsupported` (an op or assumption outside the fragment)."""
+    import subprocess
+    from o2t.facts.value_tracking import scalar_assumption_smt
+    poison_vars = set(pair.get("poison_variables", []))
+    src: list = []
+    tgt: list = []
+    try:
+        b_val, b_pois = _refine_emit(pair["before"], "before", poison_vars, src, tgt, [0])
+        a_val, a_pois = _refine_emit(pair["after"], "after", poison_vars, src, tgt, [0])
+    except Unsupported:
+        return "unsupported"
+    constraints = []
+    for asm in pair.get("assumptions", []):
+        if asm.get("op") == "not-poison":
+            constraints.append(f"(not {asm['name']}_p)")
+        else:
+            smt = scalar_assumption_smt(asm, asm.get("name", ""))
+            if smt is None:
+                return "unsupported"
+            constraints.append(smt)
+    decls = [f"(declare-fun {v} () (_ BitVec 32))" for v in pair["variables"]]
+    decls += [f"(declare-fun {v}_p () Bool)" for v in poison_vars]
+    decls += [f"(declare-fun {f} () (_ BitVec 32))" for f in tgt]
+    # counterexample to refinement: source defined, yet target poison or unequal for EVERY source pick.
+    cex = f"(and (not {b_pois}) (or {a_pois} (not (= {a_val} {b_val}))))"
+    if src:                                                  # source freezes -> universally quantified
+        cex = "(forall (" + " ".join(f"({f} (_ BitVec 32))" for f in src) + f") {cex})"
+    assertion = cex if not constraints else "(and " + " ".join([*constraints, cex]) + ")"
+    smt = "(set-logic BV)\n" + "\n".join(decls) + f"\n(assert {assertion})\n(check-sat)"
+    out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True).stdout.strip()
+    head = out.splitlines()[0] if out else "error"
+    return "refuted" if head == "sat" else "proved" if head == "unsat" else "unsupported"
+
+
 # --- phase 30: memory obligations over the theory of arrays (load/store/aliasing) ----------------
 def memvar(name: str) -> dict:
     return {"op": "memvar", "name": name}
