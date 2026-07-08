@@ -57,7 +57,7 @@ def main() -> int:
     #    matcher (m_Trunc) is outside the scalar-bv32 domain, and an intrinsic matcher is unmodeled.
     assert pg.recover_pair("match(&I, m_Trunc(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
-    assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)))",
+    assert pg.recover_pair("match(&I, m_Intrinsic<Intrinsic::ctlz>(m_Value(X)))",
                            "return replaceInstUsesWith(I, X);") is None
 
     # 6) PRECONDITION RECOVERY (phase 1): the guard's analysis queries become the premise the
