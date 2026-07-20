@@ -141,6 +141,21 @@ token parsed as the first operand param; a `getType()` normalization that clobbe
 folds' type-equality guard — caught by the gated fixture suite immediately) — E7 specimens four
 and five.
 
+## Where the binding ladder ends (measured)
+
+The remaining `foldX(I, Op0, Op1)` half of the caller contract was measured before building:
+only **7** such helpers have in-file call sites at all, and every one passes caller-local
+arguments (`LHS`, `X`, …) whose resolution needs interprocedural tracing of the *caller's* lets —
+high effort, ≤7-function yield, with the commuted-call false-proof hazard to defend against.
+**Measured and deferred, stated.** Dynamic-opcode (5) and two-instruction (2) folds likewise.
+
+The honest conclusion of four E6 runs: the binding mechanisms (anchors, slicing, composition,
+the name contract) now capture what they can capture on this corpus. The next real coverage
+dimension is **guard vocabulary**, not binding — the `in-fragment-shape` 55 and the declined
+contract arms fail on facts the premise language cannot yet express (poison/undef queries,
+`isa<Constant>` guards, KnownBits, `Q.` context) — with per-fold slicing already in place to
+multiply every new fact across the cascades.
+
 ## Reproducing
 
 ```sh
