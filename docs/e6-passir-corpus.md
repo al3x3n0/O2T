@@ -101,6 +101,24 @@ proved/proved/refuted-standalone; the mutation screen declines).
 | operand-only signatures (`simplifyXInst(Op0, Op1)` — the implicit op is named by the FUNCTION) | 27 | function-name-implied `before` (phase-37 candidate) |
 | FP matchers/builders (outside the bitvector fragment) | 13 | out of scope (stated) |
 
+## Phase 38 (same day): composition lands; the 69 decompose further
+
+The multi-match composition (`pass_graph_compose_fixture`) splices `match(I.getOperand(K), …)`
+conjuncts into slot K of the primary tree; comma-declarator lets normalize the dominant
+`Value *Op0 = I.getOperand(0), *Op1 = …;` idiom into composable form. Wiring it **closed a second
+gate hole**: the subject regex captured `I` from `match(I.getOperand(0), …)`, letting a single
+operand match impersonate an instruction-subject one (the simplifyOrLogic misattribution class
+hidden behind the `I.` prefix) — now comma-anchored and fixture-pinned.
+
+The pre-implementation decomposition of the 69 (read-only analysis) reshaped the plan honestly:
+
+| shape within the 69 | n | status |
+| --- | ---: | --- |
+| directly composable (one instruction primary + `getOperand` secondaries in-function) | ~1–3 | **unlocked by phase 38** (the machinery; synthetic-gated) |
+| operand params bound only by the CALLER's convention (`foldX(I, Op0, Op1)` with `Op0 ≡ I.getOperand(0)` invisible in-function) | ~61 | **caller-contract parameter binding** — one mechanism that also covers phase 37's 27 operand-only signatures; the next big phase, gated on the visitX/simplifyXInst naming contract |
+| dynamic-opcode folds (`CreateBinOp(BO.getOpcode(), …)`) | 5 | needs op-parametric obligations (stated) |
+| two-instruction folds (icmp pairs under and/or) | 2 | needs multi-instruction before (stated) |
+
 ## Reproducing
 
 ```sh

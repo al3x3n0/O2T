@@ -1164,26 +1164,68 @@ _FOLD_CONTRACT_RE = re.compile(r"(?i)(fold|simplif|visit|combine|canonicaliz)")
 _INSTR_PARAM_RE = re.compile(
     r"(?:BinaryOperator|Instruction|UnaryOperator|ICmpInst|CmpInst|SelectInst|PHINode|"
     r"GetElementPtrInst|CastInst|Operator)\s*[&*]\s*(\w+)\b")
-_MATCH_SUBJECT_RE = re.compile(r"match\s*\(\s*&?\s*(\w+)")
+# The subject must be the BARE name followed by the comma -- `match(&I, ...)`. Without the comma
+# anchor, `match(I.getOperand(0), ...)` would capture subject `I` and sneak an OPERAND match past
+# the gate (the simplifyOrLogic misattribution class, hidden behind the `I.` prefix).
+_MATCH_SUBJECT_RE = re.compile(r"match\s*\(\s*&?\s*(\w+)\s*,")
 # A local single-assignment binding of a value the rewrite later uses:
-# `Value *NewShl = Builder.CreateShl(B, Cnt);` -- a pure SSA let.
-_LET_RE = re.compile(r"\b(?:Value|Constant)\s*\*\s*(\w+)\s*=\s*([^;]+);")
+# `Value *NewShl = Builder.CreateShl(B, Cnt);` -- a pure SSA let. Real sources use comma
+# declarator lists (`Value *Op0 = I.getOperand(0), *Op1 = I.getOperand(1);`), so the statement is
+# scanned paren-aware and split on TOP-level commas (a comma inside `CreateShl(B, Cnt)` is not a
+# declarator separator).
+_DECL_START_RE = re.compile(r"\b(?:Value|Constant)\s*\*\s*")
+
+
+def _decl_bindings(body: str, start: int):
+    """Parse one declarator statement beginning at `start` (just past `Value *`). Returns
+    ([(name, expr), ...], index-after-';') -- uninitialized declarators are skipped -- or None
+    when the statement is unterminated."""
+    depth, i, frag_start, frags = 0, start, start, []
+    while i < len(body):
+        c = body[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                return [], i + 1     # `Value *In : ...)` -- a range-for header, not a declarator
+        elif depth == 0 and c in ",;":
+            frags.append(body[frag_start:i])
+            if c == ";":
+                bindings = []
+                for frag in frags:
+                    fm = re.match(r"\s*\*?\s*(\w+)\s*=\s*(.+?)\s*$", frag, re.S)
+                    if fm:
+                        bindings.append((fm.group(1), fm.group(2)))
+                return bindings, i + 1
+            frag_start = i + 1
+        i += 1
+    return None
 
 
 def _inline_lets(body: str) -> str | None:
     """Substitute single-assignment `Value *T = <expr>;` bindings into later uses (a pure let).
-    Declines (None) when the bound name is MUTATED or method-dereferenced after binding
+    Declines (None) when a bound name is MUTATED or method-dereferenced after binding
     (`T->setHasNoSignedWrap()`, `dyn_cast<..>(T)->...`) -- the rewrite would then depend on state
-    the substitution cannot see -- or when the name is reassigned (not an SSA let)."""
-    for m in list(_LET_RE.finditer(body)):
-        name, expr = m.group(1), m.group(2).strip()
-        rest = body[m.end():]
-        if re.search(rf"\b{re.escape(name)}\s*->", rest):
-            return None                              # mutated / dereferenced after binding
-        if re.search(rf"\b{re.escape(name)}\s*=[^=]", rest):
-            return None                              # reassigned -> not a let
-        body = body[:m.end()] + re.sub(rf"\b{re.escape(name)}\b", expr, rest)
-    return body
+    the substitution cannot see -- or when the name is reassigned (not an SSA let). Substitution
+    only ever edits text AFTER the current statement, so scan positions stay stable."""
+    pos = 0
+    while True:
+        m = _DECL_START_RE.search(body, pos)
+        if m is None:
+            return body
+        parsed = _decl_bindings(body, m.end())
+        if parsed is None:
+            return body
+        bindings, stmt_end = parsed
+        for name, expr in bindings:
+            rest = body[stmt_end:]
+            if re.search(rf"\b{re.escape(name)}\s*->", rest):
+                return None                          # mutated / dereferenced after binding
+            if re.search(rf"\b{re.escape(name)}\s*=[^=]", rest):
+                return None                          # reassigned -> not a let
+            body = body[:stmt_end] + re.sub(rf"\b{re.escape(name)}\b", lambda _: expr, rest)
+        pos = stmt_end
 
 
 def _finish_fold(found, marker: str) -> dict | None:
@@ -1210,6 +1252,68 @@ def _subject_gated(found, instr_params: set) -> bool:
     match_atoms = [a for a in found[0] if a.lstrip("!").strip().startswith("match")]
     subjects = [_MATCH_SUBJECT_RE.search(a) for a in match_atoms]
     return bool(subjects) and all(s is not None and s.group(1) in instr_params for s in subjects)
+
+
+# --- phase 38: multi-match conjunct composition --------------------------------------------------
+# Real fold arms often match the instruction AND its operands' shapes in SEPARATE conjuncts:
+#     if (!match(&I, m_Xor(m_Value(A), m_Value(B))) ||
+#         !match(I.getOperand(0), m_And(m_Value(X), m_Value(Y)))) return nullptr;
+# The operand conjunct constrains slot 0 of the SAME instruction, so the two compose into ONE
+# before-tree: xor(and(X, Y), B). Composition happens on the STRUCTURED trees (the phase-32
+# interface), never by string surgery.
+_PRIMARY_MATCH_RE = re.compile(r"^match\s*\(\s*&?\s*(\w+)\s*,\s*(.+)\)\s*$", re.S)
+_GETOP_MATCH_RE = re.compile(
+    r"^match\s*\(\s*(\w+)\s*(?:\.|->|::)\s*getOperand\s*\(\s*(\d+)\s*\)\s*,\s*(.+)\)\s*$", re.S)
+
+
+def _compose_fold(found, instr_params: set, marker: str) -> dict | None:
+    """Compose an arm's multiple match conjuncts into one obligation: exactly ONE primary match on
+    an instruction-typed parameter, plus secondary matches on `I.getOperand(K)` of the SAME
+    instruction, spliced into slot K of the primary tree. Sound bounds (each declines):
+    - the slot must be a bound `m_Value(NAME)` whose NAME appears nowhere else (the splice retires
+      the binding; an alias the rewrite still references cannot be resolved in tree form);
+    - any other subject shape (a different instruction, a Value* parameter) is a misattribution
+      risk -- the subject gate's reasoning applies conjunct-wise."""
+    atoms = [" ".join(a.split()) for a in found[0]]
+    rewrite = " ".join(found[1].split())
+    match_atoms = [a for a in atoms if a.startswith("match")]
+    others = [a for a in atoms if not a.startswith("match")]
+    primary_src = None
+    secondaries: list[tuple[int, str]] = []
+    for a in match_atoms:
+        gm = _GETOP_MATCH_RE.match(a)
+        if gm and gm.group(1) in instr_params:
+            secondaries.append((int(gm.group(2)), gm.group(3)))
+            continue
+        pm = _PRIMARY_MATCH_RE.match(a)
+        if pm and pm.group(1) in instr_params and primary_src is None:
+            primary_src = pm.group(2)
+            continue
+        return None                                  # second primary / foreign subject: decline
+    if primary_src is None or not secondaries:
+        return None
+    try:
+        tree = _parse(primary_src)
+        subtrees = [(k, _parse(src)) for k, src in secondaries]
+    except Unsupported:
+        return None
+    elsewhere = " ".join(others + [rewrite])
+    for k, subtree in subtrees:
+        args = tree.get("args", [])
+        if k >= len(args):
+            return None
+        slot = args[k]
+        if not (slot.get("kind") == "call" and slot.get("name") == "m_Value"
+                and slot.get("args") and slot["args"][0].get("kind") == "name"):
+            return None                              # slot is not a bound value: cannot splice
+        name = slot["args"][0]["name"]
+        # the splice retires NAME: it must not be referenced by the primary tree again
+        # (m_Deferred/m_Specific), by other guards, or by the rewrite.
+        if len(re.findall(rf"\b{re.escape(name)}\b", primary_src)) != 1 \
+                or re.search(rf"\b{re.escape(name)}\b", elsewhere):
+            return None
+        args[k] = subtree
+    return recover_pair(" && ".join(others), rewrite, marker, matcher_tree=tree)
 
 
 # In-place INSTRUCTION mutation is invisible to the keyword-driven walker but changes what a
@@ -1258,9 +1362,14 @@ def recover_folds_from_function(source: str, marker: str = "probe.recovered.fold
             return []
         arms = []
         for idx, found in enumerate(founds):
-            if instr_params is not None and not _subject_gated(found, instr_params):
-                continue                                  # misattribution risk: this arm declines
-            pair = _finish_fold(found, marker)
+            if instr_params is None:
+                pair = _finish_fold(found, marker)
+            elif _subject_gated(found, instr_params):
+                pair = _finish_fold(found, marker)
+            else:
+                # phase 38: conjuncts on I.getOperand(K) compose into the primary tree; any other
+                # off-subject shape stays a misattribution decline.
+                pair = _compose_fold(found, instr_params, marker)
             if pair is not None:
                 arms.append({**pair, "arm": idx, "standalone": idx > 0})
         return arms

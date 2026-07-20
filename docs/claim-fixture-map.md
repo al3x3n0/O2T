@@ -109,6 +109,7 @@ mis-modeled.
 | The AST-miner finding schema bridges into the same recovery (operand-level findings) | `pass_graph_miner_fixture` |
 | RETURN-form rewrite anchor (upstream's "return the replacement" contract): a VERBATIM LLVM 18 fold recovered + proved + exhaustively reconciled; teeth (mutated reducer refutes); name gate, instruction-subject gate (pins the operand-subject false-refutation found on upstream), let-mutation guard, in-place/unbound returns decline; RIUW anchor byte-unchanged | `pass_graph_return_form_fixture` |
 | Per-fold CASCADE slicing: every `if (match...) return ...;` arm an independent obligation; arm-0 refutations pass-level, later arms `refuted-standalone` only (zero false refutations preserved); in-place-mutation screen declines the cascade | `passir_corpus_fixture` (3-arm cascade + mutation screen) |
+| Multi-match COMPOSITION: instruction + operand conjuncts spliced into one before-tree (structured trees; retired-name/foreign-subject/out-of-range/m_Specific slots decline); comma-declarator lets; the operand-subject gate hole (`match(I.getOperand(0),...)` impersonating the instruction subject) closed | `pass_graph_compose_fixture` |
 
 ### C7 — Certifying the recovery itself: the cross-check stack (paper §4)
 
