@@ -156,6 +156,26 @@ contract arms fail on facts the premise language cannot yet express (poison/unde
 `isa<Constant>` guards, KnownBits, `Q.` context) — with per-fold slicing already in place to
 multiply every new fact across the cascades.
 
+## Phase 39 (guard vocabulary, first slice): case splits land; E6 holds at 10; a sixth hole closed
+
+Predicate-SET guards (`isEquality`/`isUnsigned`/`isSigned`) now split the obligation into one
+case per member, instantiated consistently through the matcher **and** the generic
+`CreateICmp(Pred, …)` rewrite — all must prove, and a rewrite hardcoding one member refutes on
+the others (overreach caught; `pass_graph_predset_fixture`). Domain-affirming/ordering guards
+(`!isa<VectorType>`, `isIntOrIntVectorTy()`, `!isa<Constant>`, `!shouldChangeType`) drop,
+including through positive bails.
+
+**E6 stays at 10 proved arms**: the upstream `isEquality` population sits inside two-instruction
+(`Cmp0`/`Cmp1`) folds and cast-family functions that decline on *other* walls — the guard tally
+counted conjuncts, not unlockable arms. Reported honestly; the mechanisms are synthetic-gated and
+wait for the multi-instruction phase.
+
+**The sixth latent hole** — found while widening `_bail_atoms`: the fact vocabulary matches by
+substring, so a NEGATED fact (`!isKnownNonNegative(X)`, whether written in a positive guard or
+contributed by a fact-bail) silently bound its **positive** premise — an inverted guard, i.e. a
+false-proof vector that predates this phase. Negated non-domain conjuncts now decline;
+fixture-pinned on both routes.
+
 ## Reproducing
 
 ```sh

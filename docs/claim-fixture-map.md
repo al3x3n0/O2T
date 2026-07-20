@@ -111,6 +111,7 @@ mis-modeled.
 | Per-fold CASCADE slicing: every `if (match...) return ...;` arm an independent obligation; arm-0 refutations pass-level, later arms `refuted-standalone` only (zero false refutations preserved); in-place-mutation screen declines the cascade | `passir_corpus_fixture` (3-arm cascade + mutation screen) |
 | Multi-match COMPOSITION: instruction + operand conjuncts spliced into one before-tree (structured trees; retired-name/foreign-subject/out-of-range/m_Specific slots decline); comma-declarator lets; the operand-subject gate hole (`match(I.getOperand(0),...)` impersonating the instruction subject) closed | `pass_graph_compose_fixture` |
 | The simplifyXInst CALLER CONTRACT: phantom instruction synthesized from the documented name; ORIENTATION honored on non-commutative ops (`0-X->X` refutes); nullptr sentinels/reassigned locals inert; `getType()` normalized in rewrites only (cast type-equality guard survives); non-canonical names/missing params/foreign subjects decline | `pass_graph_contract_fixture` |
+| Predicate-SET case splits: per-member obligations through matcher + generic CreateICmp rewrite, ALL must prove (hardcoded-member overreach refuted); subject form via unique binder; domain-affirming drops incl. positive bails; positive `isa<Constant>`/i1-width decline; the inverted-guard hole (negated facts binding their POSITIVE premise) closed on both routes | `pass_graph_predset_fixture` |
 
 ### C7 — Certifying the recovery itself: the cross-check stack (paper §4)
 

@@ -541,7 +541,8 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
     raise Unsupported(f"unmodeled matcher {name!r}")
 
 
-def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int = _WIDTH) -> dict:
+def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int = _WIDTH,
+                  pred_binds: dict | None = None) -> dict:
     """Lower a rewrite value expression to a formal-IR `after` node (bound var, Builder.Create*
     DFG subtree, or a null/zero constant). References must resolve to matcher-bound names; a bound
     value keeps the width the matcher pinned for it."""
@@ -565,33 +566,45 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
     if name in BUILDER_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
-        return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds, widths, hint),
-                                                    lower_rewrite(args[1], binds, widths, hint)]}
+        return {"op": BUILDER_BINOP[name], "args": [lower_rewrite(args[0], binds, widths, hint, pred_binds),
+                                                    lower_rewrite(args[1], binds, widths, hint, pred_binds)]}
     if name in BUILDER_FLAG_BINOP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
         op, flag = BUILDER_FLAG_BINOP[name]
-        return _flag_binop(op, flag, lower_rewrite(args[0], binds, widths, hint),
-                           lower_rewrite(args[1], binds, widths, hint))
+        return _flag_binop(op, flag, lower_rewrite(args[0], binds, widths, hint, pred_binds),
+                           lower_rewrite(args[1], binds, widths, hint, pred_binds))
     if name in BUILDER_ICMP:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
-        return _icmp(BUILDER_ICMP[name], lower_rewrite(args[0], binds, widths, _WIDTH),
-                     lower_rewrite(args[1], binds, widths, _WIDTH), hint)
+        return _icmp(BUILDER_ICMP[name], lower_rewrite(args[0], binds, widths, _WIDTH, pred_binds),
+                     lower_rewrite(args[1], binds, widths, _WIDTH, pred_binds), hint)
+    if name in ("CreateICmp", "CreateCmp"):
+        # phase 39: the GENERIC form -- the predicate is a bound variable (`Builder.CreateICmp(Pred,
+        # A, B)`) resolved through pred_binds (a guard-fixed value or the current predicate-set
+        # case), or an ICMP_* literal. Unresolvable predicates decline.
+        if len(args) != 3 or args[0].get("kind") != "name":
+            raise Unsupported(f"{name} needs a predicate and two operands")
+        pname = args[0]["name"]
+        pred = _ICMP_PRED.get(pname) or (pred_binds or {}).get(pname.lower())
+        if pred is None:
+            raise Unsupported(f"unresolved icmp predicate {pname!r}")
+        return _icmp(pred, lower_rewrite(args[1], binds, widths, _WIDTH, pred_binds),
+                     lower_rewrite(args[2], binds, widths, _WIDTH, pred_binds), hint)
     if name in BUILDER_MINMAX:
         if len(args) != 2:
             raise Unsupported(f"{name} needs two operands")
-        return _minmax(BUILDER_MINMAX[name], lower_rewrite(args[0], binds, widths, hint),
-                       lower_rewrite(args[1], binds, widths, hint))
+        return _minmax(BUILDER_MINMAX[name], lower_rewrite(args[0], binds, widths, hint, pred_binds),
+                       lower_rewrite(args[1], binds, widths, hint, pred_binds))
     if name == "CreateFreeze":
         if len(args) != 1:
             raise Unsupported("CreateFreeze needs one operand")
-        return {"op": "freeze", "args": [lower_rewrite(args[0], binds, widths, hint)]}
+        return {"op": "freeze", "args": [lower_rewrite(args[0], binds, widths, hint, pred_binds)]}
     if name in ("CreateNeg", "CreateNot"):
         # phase 36: unary sugar. A second arg is only ever the twine NAME (API contract) -- ignored.
         if len(args) not in (1, 2):
             raise Unsupported(f"{name} needs one operand")
-        inner = lower_rewrite(args[0], binds, widths, hint)
+        inner = lower_rewrite(args[0], binds, widths, hint, pred_binds)
         if name == "CreateNeg":
             return {"op": "bvsub", "args": [_const(0, hint), inner]}
         return {"op": "bvxor", "args": [inner, _const(0xFFFFFFFF, hint)]}
@@ -602,26 +615,26 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
         if iid in _MINMAX_PRED:
             if len(args) != 3:
                 raise Unsupported("min/max intrinsic needs two operands")
-            return _minmax(iid, lower_rewrite(args[1], binds, widths, hint),
-                           lower_rewrite(args[2], binds, widths, hint))
+            return _minmax(iid, lower_rewrite(args[1], binds, widths, hint, pred_binds),
+                           lower_rewrite(args[2], binds, widths, hint, pred_binds))
         if iid == "abs":                                            # abs(X[, int_min_poison]) -- flag ignored
-            return _abs(lower_rewrite(args[1], binds, widths, hint))
+            return _abs(lower_rewrite(args[1], binds, widths, hint, pred_binds))
         raise Unsupported(f"unmodeled binary intrinsic {iid!r}")
     if name == "CreateUnaryIntrinsic":                              # CreateUnaryIntrinsic(Intrinsic::ID, X)
         fold = {"bswap": _bswap, "bitreverse": _bitreverse, "ctpop": _ctpop}.get(
             args[0]["name"] if len(args) == 2 and args[0]["kind"] == "name" else None)
         if fold is None:
             raise Unsupported("CreateUnaryIntrinsic only models bswap/bitreverse/ctpop")
-        return fold(lower_rewrite(args[1], binds, widths, hint))
+        return fold(lower_rewrite(args[1], binds, widths, hint, pred_binds))
     if name in BUILDER_CAST:
         return _lower_cast(BUILDER_CAST[name], args,
-                           lambda a, h: lower_rewrite(a, binds, widths, h))
+                           lambda a, h: lower_rewrite(a, binds, widths, h, pred_binds))
     if name == "CreateSelect":
         if len(args) != 3:
             raise Unsupported("CreateSelect needs three operands")
-        return _select(lower_rewrite(args[0], binds, widths, hint),
-                       lower_rewrite(args[1], binds, widths, hint),
-                       lower_rewrite(args[2], binds, widths, hint))
+        return _select(lower_rewrite(args[0], binds, widths, hint, pred_binds),
+                       lower_rewrite(args[1], binds, widths, hint, pred_binds),
+                       lower_rewrite(args[2], binds, widths, hint, pred_binds))
     raise Unsupported(f"unmodeled rewrite emitter {name!r}")
 
 
@@ -646,6 +659,36 @@ _TYPE_EQ_RE = re.compile(r"getType\s*\(\s*\)\s*==\s*[^&|]*?getType\s*\(\s*\)")
 # A predicate-binding guard (`Pred == ICmpInst::ICMP_EQ`) fixes an `m_ICmp`-bound predicate to a
 # concrete comparison; it constrains WHICH icmp, not a value, so it carries no assumption SMT.
 _PRED_GUARD_RE = re.compile(r"^\s*(\w+)\s*==\s*(?:\w+::)?(ICMP_\w+)\s*$")
+# phase 39: a predicate-SET guard (`ICmpInst::isEquality(Pred)`) constrains a bound predicate to a
+# MEMBER SET. The obligation is proved once PER MEMBER (a case split instantiated through both the
+# matcher and the rewrite); ALL cases must prove -- a rewrite that hardcodes one member refutes on
+# the others (predicate overreach caught by the split). The subject form (`Cmp.isEquality()`)
+# resolves only when the matcher binds exactly ONE predicate name (else decline).
+_PRED_SET_RE = re.compile(
+    r"^\s*(?:ICmpInst::|CmpInst::)?(isEquality|isUnsigned|isSigned|isRelational)"
+    r"\s*\(\s*(\w+)\s*\)\s*$")
+_PRED_SET_SUBJ_RE = re.compile(
+    r"^\s*(\w+)\s*(?:\.|->)\s*(isEquality|isUnsigned|isSigned|isRelational)\s*\(\s*\)\s*$")
+_PRED_SETS = {
+    "isEquality": ["eq", "ne"],
+    "isUnsigned": ["bvult", "bvule", "bvugt", "bvuge"],
+    "isSigned": ["bvslt", "bvsle", "bvsgt", "bvsge"],
+    "isRelational": ["bvslt", "bvsle", "bvsgt", "bvsge", "bvult", "bvule", "bvugt", "bvuge"],
+}
+# phase 39: guards that only AFFIRM the modeled domain or an IR-structural ordering, with no value
+# content -- droppable from a value obligation. Polarity matters: `!isa<Constant>(X)` is
+# canonicalization ordering (droppable), but POSITIVE `isa<Constant>(X)` implies X is never poison
+# -- dropping it could falsely refute a refinement obligation, so it stays a decline.
+# `isIntOrIntVectorTy()` must have EMPTY parens: the `(1)` form is an i1 width constraint
+# (value-relevant, declines).
+_DOMAIN_AFFIRMING_RE = re.compile(
+    r"^\s*(?:"
+    r"!\s*isa\s*<\s*VectorType\s*>\s*\(.*?\)"
+    r"|!\s*\w+\s*(?:\.|->)\s*(?:getType\s*\(\s*\)\s*(?:\.|->)\s*)?isVectorTy\s*\(\s*\)"
+    r"|\w+\s*(?:\.|->)\s*(?:getType\s*\(\s*\)\s*(?:\.|->)\s*)?isIntOrIntVectorTy\s*\(\s*\)"
+    r"|!\s*isa\s*<\s*Constant\s*>\s*\(.*?\)"
+    r"|!\s*shouldChangeType\s*\(.*?\)"
+    r")\s*$")
 
 
 def _split_and(text: str) -> list[str]:
@@ -667,15 +710,20 @@ def _split_and(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def recover_pair(predicate_source: str, rewrite_source: str,
-                 marker: str = "probe.recovered.fold",
-                 matcher_tree: dict | None = None, rewrite_tree: dict | None = None) -> dict | None:
+def recover_pair_cases(predicate_source: str, rewrite_source: str,
+                       marker: str = "probe.recovered.fold",
+                       matcher_tree: dict | None = None,
+                       rewrite_tree: dict | None = None) -> list[dict]:
     """Recover a compositional formal obligation from a fold's guard conjunction and its
     `replaceInstUsesWith(I, <expr>)` rewrite. The guard's `match(...)` conjunct becomes `before`; its
     analysis-query conjuncts (`isKnownNonZero`/`isKnownNonNegative`/...) become the PRECONDITION under
-    which the equivalence must hold. Returns a formal dict provable by mini_alive.prove, or None on
-    any unmodeled construct -- including an UNRECOGNISED guard, since dropping a value-relevant
-    precondition could turn an unsound fold into a false `proved` (a sound decline).
+    which the equivalence must hold. Returns the obligation CASES: normally one formal dict; a
+    predicate-SET guard (phase 39, `isEquality(Pred)`) expands into one case per member, each
+    instantiated consistently through both the matcher and the rewrite and tagged `case` -- ALL must
+    prove for the fold to be sound. [] on any unmodeled construct -- including an UNRECOGNISED
+    guard, since dropping a value-relevant precondition could turn an unsound fold into a false
+    `proved` (a sound decline); a set whose members do not all recover also declines (partial case
+    coverage could mask predicate overreach).
 
     `matcher_tree` / `rewrite_tree` accept the ALREADY-PARSED matcher and rewrite (the tree form
     `_parse` produces -- {kind,name,args,template}). Supplying them BYPASSES the tokenizer/parser
@@ -685,10 +733,12 @@ def recover_pair(predicate_source: str, rewrite_source: str,
     if rewrite_tree is None:
         rm = _RIUW_RE.search(rewrite_source.strip())
         if not rm:
-            return None
+            return []
     matcher_src: str | None = None
     facts: list[dict] = []
     pred_binds: dict[str, str] = {}
+    pred_sets: dict[str, list[str]] = {}
+    subj_sets: list[str] = []                            # subject-form sets awaiting binder resolution
     poison_free: set[str] = set()
     definite: set[str] = set()
     has_type_eq = False
@@ -698,10 +748,18 @@ def recover_pair(predicate_source: str, rewrite_source: str,
                 continue                                     # matcher supplied as a tree; ignore source form
             mm = _MATCH_RE.search(conjunct)
             if not mm or matcher_src is not None:
-                return None
+                return []
             matcher_src = mm.group(1)
         elif _VALUE_IRRELEVANT.search(conjunct):
             continue                                     # legality/profitability, no value effect
+        elif _DOMAIN_AFFIRMING_RE.match(conjunct):
+            continue                                     # phase 39: affirms the modeled domain / ordering
+        elif conjunct.lstrip().startswith("!"):
+            # A NEGATED conjunct that is not domain-affirming/value-irrelevant is unmodeled: the
+            # fact vocabulary matches by substring, so feeding it `!isKnownNonNegative(X)` would
+            # silently bind the POSITIVE premise -- an inverted guard and a false-proof vector
+            # (a latent hole that predates phase 39, found while widening _bail_atoms). Decline.
+            return []
         elif _TYPE_EQ_RE.search(conjunct):
             has_type_eq = True                           # licenses a cast round-trip's width equality
         elif _NOTUNDEFPOISON_RE.search(conjunct):        # X is a DEFINITE value (not undef, not poison)
@@ -713,88 +771,147 @@ def recover_pair(predicate_source: str, rewrite_source: str,
         elif _PRED_GUARD_RE.match(conjunct):
             ident, pred_name = _PRED_GUARD_RE.match(conjunct).groups()
             if pred_name not in _ICMP_PRED:
-                return None                              # unmodeled predicate -> decline
+                return []                                # unmodeled predicate -> decline
             pred_binds[ident.lower()] = _ICMP_PRED[pred_name]
+        elif _PRED_SET_RE.match(conjunct):               # phase 39: explicit predicate-set guard
+            setname, ident = _PRED_SET_RE.match(conjunct).groups()
+            pred_sets[ident.lower()] = _PRED_SETS[setname]
+        elif _PRED_SET_SUBJ_RE.match(conjunct):          # phase 39: subject form, binder resolved below
+            subj_sets.append(_PRED_SET_SUBJ_RE.match(conjunct).group(2))
         else:
             recovered = fact_to_assumptions(conjunct)
             if recovered is None:
-                return None                              # unmodeled precondition -> decline
+                return []                                # unmodeled precondition -> decline
             facts.extend(recovered)
     if matcher_tree is None and matcher_src is None:
-        return None
-    try:
-        binds: set[str] = set()
-        widths: dict[str, int] = {}
-        m_node = matcher_tree if matcher_tree is not None else _parse(matcher_src)
-        r_node = rewrite_tree if rewrite_tree is not None else _parse(_unwrap(rm.group(1)))
-        before = lower_matcher(m_node, binds, widths, pred_binds)
-        after = lower_rewrite(r_node, binds, widths)
-    except Unsupported:
-        return None
-    if not binds:
-        return None
-    # A cast changes width, so `replaceInstUsesWith(I, X)` is well-typed only when the result width
-    # equals X's -- expressed in an explicit `X->getType() == I.getType()` guard, not the matcher tree.
-    # Without that guard we cannot license the representative widths, so decline (a sound bound).
-    if (_contains_cast(before) or _contains_cast(after)) and not has_type_eq:
-        return None
-    # Poison: a value under a `freeze` must be poison-declared (else freeze is a no-op and an unguarded
-    # `freeze(X) -> X` would falsely prove); a `not-poison` guard is asserted over its bound value. Both
-    # kinds of poison-relevant value must be matcher-bound.
-    poison_vars = _poison_relevant_vars(before) | _poison_relevant_vars(after) | poison_free
-    if not poison_vars <= binds:
-        return None                                      # freeze/poison guard on an unbound value
-    # Two-level lattice: dropping a `freeze` (frozen in `before`, used bare in `after`) is sound only
-    # if the value is DEFINITE. A poison-only `not-poison` guard rules out poison but NOT undef, and
-    # O2T's model has no undef -- so it would falsely prove. Require the definite guard, else decline.
-    freeze_dropped = _poison_relevant_vars(before) & _bare_vars(after)
-    if freeze_dropped & (poison_free - definite):
-        return None
-    facts = facts + [{"op": "not-poison", "name": v} for v in poison_free]
-    assumptions = []
-    for fact in facts:
-        fact = dict(fact)
-        if fact.get("op") == "mask-pair":                # two-operand disjointness (X & Y) == 0
-            fact["left"] = str(fact.get("left", "")).lower()
-            fact["right"] = str(fact.get("right", "")).lower()
-            if fact["left"] not in binds or fact["right"] not in binds:
-                return None                              # guard on a value the matcher never bound
-        else:
-            fact["name"] = str(fact.get("name", "")).lower()
-            if fact["name"] not in binds:                # guard on a value the matcher never bound
-                return None
-        assumptions.append(fact)
-    result = {
-        "domain": "scalar-bv32",
-        "marker": marker,
-        "variables": sorted(binds),
-        "before": before,
-        "after": after,
-        "equivalence": "result",
-        "assumptions": assumptions,
-    }
-    # Non-uniform widths (from casts) declared explicitly; a uniform-32 fold omits this and is
-    # byte-identical to before this phase.
-    non_uniform = {v: w for v, w in widths.items() if w != _WIDTH}
-    if non_uniform:
-        result["variable_bits"] = non_uniform
-    if poison_vars:
-        result["poison_variables"] = sorted(poison_vars)
-    # Refinement is the true soundness criterion for `before -> after` (any behaviour of `after` is
-    # allowed for `before`); we used value-equality as a conservative proxy. It coincides with equality
-    # on poison-free folds, but a poison-relevant rewrite may legitimately be MORE defined: introducing
-    # a `freeze` or DROPPING a no-wrap flag is sound yet value-unequal. Those are discharged as a
-    # refinement (which still refutes adding a flag or a poison-unsound freeze).
-    if poison_vars or _contains_flags(before) or _contains_flags(after):
-        result["refinement"] = "refinement"
-    # Safety net: never emit a malformed obligation (e.g. an inconsistent-width cast mix). A formal
-    # that the IR builder rejects is declined here rather than raised later at prove time.
-    from o2t.formal_ir import FormalIrError, pair_for_formal
-    try:
-        pair_for_formal(result)
-    except FormalIrError:
-        return None
-    return result
+        return []
+    if subj_sets:
+        # `Cmp.isEquality()` names the INSTRUCTION; the constrained variable is the matcher's
+        # m_ICmp predicate binder. Resolvable only when exactly one such binder exists.
+        binders = (_pred_binder_names(matcher_tree) if matcher_tree is not None
+                   else set(re.findall(r"m_(?:c_)?ICmp\s*\(\s*(\w+)", matcher_src)))
+        if len(binders) != 1:
+            return []
+        binder = next(iter(binders)).lower()
+        for setname in subj_sets:
+            pred_sets[binder] = _PRED_SETS[setname]
+    def _lower(case_binds: dict[str, str]) -> dict | None:
+        try:
+            binds: set[str] = set()
+            widths: dict[str, int] = {}
+            m_node = matcher_tree if matcher_tree is not None else _parse(matcher_src)
+            r_node = rewrite_tree if rewrite_tree is not None else _parse(_unwrap(rm.group(1)))
+            before = lower_matcher(m_node, binds, widths, case_binds)
+            after = lower_rewrite(r_node, binds, widths, pred_binds=case_binds)
+        except Unsupported:
+            return None
+        if not binds:
+            return None
+        # A cast changes width, so `replaceInstUsesWith(I, X)` is well-typed only when the result
+        # width equals X's -- expressed in an explicit `X->getType() == I.getType()` guard, not the
+        # matcher tree. Without that guard we cannot license the representative widths, so decline.
+        if (_contains_cast(before) or _contains_cast(after)) and not has_type_eq:
+            return None
+        # Poison: a value under a `freeze` must be poison-declared (else freeze is a no-op and an
+        # unguarded `freeze(X) -> X` would falsely prove); a `not-poison` guard is asserted over its
+        # bound value. Both kinds of poison-relevant value must be matcher-bound.
+        poison_vars = _poison_relevant_vars(before) | _poison_relevant_vars(after) | poison_free
+        if not poison_vars <= binds:
+            return None                                  # freeze/poison guard on an unbound value
+        # Two-level lattice: dropping a `freeze` (frozen in `before`, used bare in `after`) is sound
+        # only if the value is DEFINITE. A poison-only `not-poison` guard rules out poison but NOT
+        # undef, and O2T's model has no undef -- so it would falsely prove.
+        freeze_dropped = _poison_relevant_vars(before) & _bare_vars(after)
+        if freeze_dropped & (poison_free - definite):
+            return None
+        assumptions = []
+        for fact in facts + [{"op": "not-poison", "name": v} for v in poison_free]:
+            fact = dict(fact)
+            if fact.get("op") == "mask-pair":            # two-operand disjointness (X & Y) == 0
+                fact["left"] = str(fact.get("left", "")).lower()
+                fact["right"] = str(fact.get("right", "")).lower()
+                if fact["left"] not in binds or fact["right"] not in binds:
+                    return None                          # guard on a value the matcher never bound
+            else:
+                fact["name"] = str(fact.get("name", "")).lower()
+                if fact["name"] not in binds:            # guard on a value the matcher never bound
+                    return None
+            assumptions.append(fact)
+        result = {
+            "domain": "scalar-bv32",
+            "marker": marker,
+            "variables": sorted(binds),
+            "before": before,
+            "after": after,
+            "equivalence": "result",
+            "assumptions": assumptions,
+        }
+        # Non-uniform widths (from casts) declared explicitly; a uniform-32 fold omits this and is
+        # byte-identical to before this phase.
+        non_uniform = {v: w for v, w in widths.items() if w != _WIDTH}
+        if non_uniform:
+            result["variable_bits"] = non_uniform
+        if poison_vars:
+            result["poison_variables"] = sorted(poison_vars)
+        # Refinement is the true soundness criterion for `before -> after` (any behaviour of `after`
+        # is allowed for `before`); we used value-equality as a conservative proxy. It coincides with
+        # equality on poison-free folds, but a poison-relevant rewrite may legitimately be MORE
+        # defined: introducing a `freeze` or DROPPING a no-wrap flag is sound yet value-unequal.
+        # Those are discharged as a refinement (which still refutes adding a flag or a poison-unsound
+        # freeze).
+        if poison_vars or _contains_flags(before) or _contains_flags(after):
+            result["refinement"] = "refinement"
+        # Safety net: never emit a malformed obligation (e.g. an inconsistent-width cast mix). A
+        # formal that the IR builder rejects is declined here rather than raised later at prove time.
+        from o2t.formal_ir import FormalIrError, pair_for_formal
+        try:
+            pair_for_formal(result)
+        except FormalIrError:
+            return None
+        return result
+
+    if not pred_sets:
+        single = _lower(pred_binds)
+        return [single] if single is not None else []
+    # phase 39: expand the cartesian product of the predicate sets; every member must recover, and
+    # (at prove time) every case must prove -- any refuted case refutes the arm.
+    from itertools import product as _product
+    names = sorted(pred_sets)
+    cases = []
+    for combo in _product(*(pred_sets[n] for n in names)):
+        case = dict(zip(names, combo))
+        pair = _lower({**pred_binds, **case})
+        if pair is None:
+            return []                                    # partial case coverage could mask overreach
+        pair["case"] = case
+        pair["marker"] = f"{marker}.case-{'-'.join(combo)}"
+        cases.append(pair)
+    return cases
+
+
+def _pred_binder_names(tree: dict) -> set:
+    """Names bound as m_ICmp predicate binders in a matcher tree."""
+    out: set = set()
+    if tree.get("kind") == "call":
+        if tree.get("name") in ("m_ICmp", "m_c_ICmp") and tree.get("args"):
+            first = tree["args"][0]
+            if first.get("kind") == "name":
+                out.add(first["name"])
+        for a in tree.get("args", []):
+            out |= _pred_binder_names(a)
+    return out
+
+
+def recover_pair(predicate_source: str, rewrite_source: str,
+                 marker: str = "probe.recovered.fold",
+                 matcher_tree: dict | None = None, rewrite_tree: dict | None = None) -> dict | None:
+    """Single-obligation view of recover_pair_cases (the pre-phase-39 contract): exactly one case
+    and no set expansion, else None -- a predicate-set fold must be consumed through the cases API
+    so no caller can silently prove just one member."""
+    cases = recover_pair_cases(predicate_source, rewrite_source, marker, matcher_tree, rewrite_tree)
+    if len(cases) == 1 and "case" not in cases[0]:
+        return cases[0]
+    return None
 
 
 # --- phase 15: bridge the AST miner's operand-level finding schema to recover_pair --------------
@@ -899,8 +1016,11 @@ def _unwrap(s: str) -> str:
 
 def _bail_atoms(cond: str) -> list[str] | None:
     """Path contribution of an early-return-to-bail guard `if (COND) return bail;` -- i.e. NOT COND.
-    Handles the real idiom `!A || !B || ...` (De Morgan -> A && B && ...); each disjunct must be a
-    negated atom, else we cannot model the precondition and decline (None)."""
+    Handles the real idiom `!A || !B || ...` (De Morgan -> A && B && ...); a POSITIVE disjunct D
+    contributes the textually-negated atom `!D` (phase 39) -- the conjunct ladder then decides:
+    a domain-affirming `!D` drops, anything else declines that ARM (per-arm, not the whole walk).
+    A single positive disjunct alone cannot make the recovery unsound: the atom must still be
+    recognized by the ladder or the arm declines."""
     atoms = []
     for disjunct in _split_top(_unwrap(cond), "||"):
         disjunct = _unwrap(disjunct.strip())
@@ -908,7 +1028,7 @@ def _bail_atoms(cond: str) -> list[str] | None:
             # `!A` -> A ; an inlined helper guard `!(A && B)` -> A, B (each conjunct a positive fact).
             atoms.extend(_split_top(_unwrap(disjunct[1:].strip()), "&&"))
         else:
-            return None                       # a positive disjunct in a bail -> unmodeled
+            atoms.append("!" + disjunct)      # NOT(D): modeled or per-arm declined downstream
     return atoms
 
 
@@ -1245,10 +1365,11 @@ def _normalize_rewrite(rewrite: str) -> str:
     return _TY_CHAIN_RE.sub("Ty", " ".join(rewrite.split()))
 
 
-def _finish_fold(found, marker: str) -> dict | None:
-    """Normalize a (path_atoms, rewrite) fold arm and recover its obligation (None on decline)."""
+def _finish_fold(found, marker: str) -> list[dict]:
+    """Normalize a (path_atoms, rewrite) fold arm and recover its obligation CASES ([] on decline;
+    several entries when a predicate-set guard expands, phase 39)."""
     if found is None:
-        return None
+        return []
     atoms, fold_rewrite = found
     # Real sources wrap matchers/rewrites over many lines; the conjunct/rewrite regexes are
     # line-oriented, so collapse runs of whitespace (never inside the token vocabulary).
@@ -1256,9 +1377,9 @@ def _finish_fold(found, marker: str) -> dict | None:
     fold_rewrite = _normalize_rewrite(fold_rewrite)
     match_atoms = [a for a in atoms if a.startswith("match")]
     if len(match_atoms) != 1:
-        return None
+        return []
     predicate = " && ".join([match_atoms[0]] + [a for a in atoms if not a.startswith("match")])
-    return recover_pair(predicate, fold_rewrite, marker)
+    return recover_pair_cases(predicate, fold_rewrite, marker)
 
 
 def _subject_gated(found, instr_params: set) -> bool:
@@ -1283,7 +1404,7 @@ _GETOP_MATCH_RE = re.compile(
     r"^match\s*\(\s*(\w+)\s*(?:\.|->|::)\s*getOperand\s*\(\s*(\d+)\s*\)\s*,\s*(.+)\)\s*$", re.S)
 
 
-def _compose_fold(found, instr_params: set, marker: str) -> dict | None:
+def _compose_fold(found, instr_params: set, marker: str) -> list[dict]:
     """Compose an arm's multiple match conjuncts into one obligation: exactly ONE primary match on
     an instruction-typed parameter, plus secondary matches on `I.getOperand(K)` of the SAME
     instruction, spliced into slot K of the primary tree. Sound bounds (each declines):
@@ -1306,31 +1427,31 @@ def _compose_fold(found, instr_params: set, marker: str) -> dict | None:
         if pm and pm.group(1) in instr_params and primary_src is None:
             primary_src = pm.group(2)
             continue
-        return None                                  # second primary / foreign subject: decline
+        return []                                  # second primary / foreign subject: decline
     if primary_src is None or not secondaries:
-        return None
+        return []
     try:
         tree = _parse(primary_src)
         subtrees = [(k, _parse(src)) for k, src in secondaries]
     except Unsupported:
-        return None
+        return []
     elsewhere = " ".join(others + [rewrite])
     for k, subtree in subtrees:
         args = tree.get("args", [])
         if k >= len(args):
-            return None
+            return []
         slot = args[k]
         if not (slot.get("kind") == "call" and slot.get("name") == "m_Value"
                 and slot.get("args") and slot["args"][0].get("kind") == "name"):
-            return None                              # slot is not a bound value: cannot splice
+            return []                              # slot is not a bound value: cannot splice
         name = slot["args"][0]["name"]
         # the splice retires NAME: it must not be referenced by the primary tree again
         # (m_Deferred/m_Specific), by other guards, or by the rewrite.
         if len(re.findall(rf"\b{re.escape(name)}\b", primary_src)) != 1 \
                 or re.search(rf"\b{re.escape(name)}\b", elsewhere):
-            return None
+            return []
         args[k] = subtree
-    return recover_pair(" && ".join(others), rewrite, marker, matcher_tree=tree)
+    return recover_pair_cases(" && ".join(others), rewrite, marker, matcher_tree=tree)
 
 
 # --- phase 37: the simplifyXInst caller contract --------------------------------------------------
@@ -1350,7 +1471,7 @@ _OP_TO_MATCHER = {"Add": "m_Add", "Sub": "m_Sub", "Mul": "m_Mul", "And": "m_And"
                   "SDiv": "m_SDiv", "UDiv": "m_UDiv", "SRem": "m_SRem", "URem": "m_URem"}
 
 
-def _contract_arm(found, opname: str, p0: str, p1: str, marker: str) -> dict | None:
+def _contract_arm(found, opname: str, p0: str, p1: str, marker: str) -> list[dict]:
     """Recover one simplifyXInst arm under the name-declared contract, via the phase-38 composer."""
     def _to_operand_form(atom: str) -> str:
         atom = re.sub(rf"match\s*\(\s*{re.escape(p0)}\s*,", "match(__P.getOperand(0),", atom)
@@ -1407,15 +1528,15 @@ def recover_folds_from_function(source: str, marker: str = "probe.recovered.fold
             return []
         arms = []
         for idx, found in enumerate(founds):
-            if instr_params is None:
-                pair = _finish_fold(found, marker)
-            elif _subject_gated(found, instr_params):
-                pair = _finish_fold(found, marker)
+            if instr_params is None or _subject_gated(found, instr_params):
+                cases = _finish_fold(found, marker)
             else:
                 # phase 38: conjuncts on I.getOperand(K) compose into the primary tree; any other
                 # off-subject shape stays a misattribution decline.
-                pair = _compose_fold(found, instr_params, marker)
-            if pair is not None:
+                cases = _compose_fold(found, instr_params, marker)
+            # phase 39: a predicate-set arm expands into one entry per case (same arm index); ALL
+            # must prove -- any refuted case refutes the arm.
+            for pair in cases:
                 arms.append({**pair, "arm": idx, "standalone": idx > 0})
         return arms
 
@@ -1451,8 +1572,7 @@ def recover_folds_from_function(source: str, marker: str = "probe.recovered.fold
         return []
     arms = []
     for idx, found in enumerate(founds):
-        pair = _contract_arm(found, cm.group(1), vparams[0], vparams[1], marker)
-        if pair is not None:
+        for pair in _contract_arm(found, cm.group(1), vparams[0], vparams[1], marker):
             arms.append({**pair, "arm": idx, "standalone": idx > 0})
     return arms
 
@@ -1469,7 +1589,10 @@ def recover_from_function(source: str, marker: str = "probe.recovered.fold",
     outside the modeled fragment (a sound bound). This is the FIRST-arm view of the cascade; use
     recover_folds_from_function to slice every arm."""
     arms = recover_folds_from_function(source, marker, helpers_source, max_arms=1)
-    if arms and arms[0]["arm"] == 0:
+    # phase 39: a predicate-set arm expands into MULTIPLE cases that must all prove; the singular
+    # view cannot represent that (returning one case would let a caller silently prove only one
+    # member), so multi-case arms are None here -- consume them through recover_folds_from_function.
+    if len(arms) == 1 and arms[0]["arm"] == 0 and "case" not in arms[0]:
         return {k: v for k, v in arms[0].items() if k not in ("arm", "standalone")}
     return None
 
