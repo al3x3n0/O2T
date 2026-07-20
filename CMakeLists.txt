@@ -569,6 +569,35 @@ if(O2T_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pass_graph_fixture.py
     )
     add_test(
+        NAME pass_graph_operand_loop_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pass_graph_operand_loop_fixture.py; else echo 'pass_graph_operand_loop_fixture: z3 not found, skipped'; fi"
+    )
+    # Pass IR phase fixtures (phases 15-33): each was committed with its phase but not gated. Register
+    # them here so their soundness claims -- memory/theory-of-arrays, 2QBF refinement, second-solver
+    # cross-check, structured-tree recovery, compiler-grounding, re-checkable certificates, cross-width
+    # -- are enforced by CI. z3 required; each fixture self-skips its optional clang++/bitwuzla.
+    foreach(_pg_fixture
+        pass_graph_width_fixture
+        pass_graph_ir_fixture
+        pass_graph_miner_fixture
+        pass_graph_certificate_fixture
+        pass_graph_synthesis_fixture
+        pass_graph_memory_fixture
+        pass_graph_refinement_fixture
+        pass_graph_solver_fixture
+        pass_graph_structured_fixture
+        pass_graph_grounding_fixture
+        pass_graph_reduction_loop_fixture)
+        add_test(
+            NAME ${_pg_fixture}
+            COMMAND
+                /bin/sh -c
+                "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${_pg_fixture}.py; else echo '${_pg_fixture}: z3 not found, skipped'; fi"
+        )
+    endforeach()
+    add_test(
         NAME symexec_real_pass_fixture
         COMMAND
             /bin/sh -c

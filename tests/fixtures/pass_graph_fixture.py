@@ -249,6 +249,54 @@ def main() -> int:
                    "  return nullptr; }")
     assert fn(inline_loop)[1][0] == "proved", "loop + nested-identity statement rewrite not proved"
 
+    # 12b) OPERAND-LIST LOOP (phase 34): a loop over an instruction's OWN operands whose iterations are
+    #      NOT independent -- SimplifyPHINode's `for (In : PN->incoming_values()) if (In != First)
+    #      return nullptr;` then `phi [x,x,..,x] -> First`. The guard is `forall i>0. op_i == op_0`,
+    #      a quantifier the flat/independent-iteration path cannot express. Recovered at a bounded arity
+    #      and proved; the recovered precondition is the pairwise equality of every operand.
+    phi_fn = ("Value *f(PHINode *PN){\n"
+              "  Value *First = PN->getIncomingValue(0);\n"
+              "  for (Value *In : PN->incoming_values())\n"
+              "    if (In != First) return nullptr;\n"
+              "  return replaceInstUsesWith(*PN, First); }")
+    pair, (status, _) = fn(phi_fn)
+    assert status == "proved" and pair["assumptions"] == [
+        {"op": "rel", "predicate": "eq", "left": "op0", "right": "op1"},
+        {"op": "rel", "predicate": "eq", "left": "op0", "right": "op2"}], (status, pair["assumptions"])
+    # TEETH + arity corroboration: an UNDER-recovered guard (only op1 equated, not op2) is sound at
+    # arity 2 but REFUTES at 3+ -- the corroboration flags it arity-specific where a single arity-2
+    # proof would have missed the dropped precondition.
+    st, cex = ma.prove(pg._phi_collapse_obligation(3, drop_equalities=[2]), z3)
+    assert st == "refuted" and cex and cex["inputs"]["op2"] != cex["inputs"]["op0"], ("under-recovery must refute", st)
+    sound = pg.corroborate_arity(lambda k: pg._phi_collapse_obligation(k), z3)
+    buggy = pg.corroborate_arity(lambda k: pg._phi_collapse_obligation(k, drop_equalities=range(2, k)), z3)
+    assert sound["status"] == "proved" and buggy["status"] == "arity-specific", (sound, buggy)
+    # SOUND DECLINE: a worklist-push / side-effecting body is never mis-modeled as a collapse.
+    assert pg.recover_operand_loop("Value *f(Instruction *I){\n"
+                                   "  for (User *U : I->users()) Worklist.push(U);\n"
+                                   "  return replaceInstUsesWith(*I, First); }") is None
+
+    # 12c) REDUCTION-REBUILD LOOP (phase 35): the dual -- a loop that ACCUMULATES a reduction, rebuilding
+    #      an n-ary op from its operand list (reassociate style). The rewrite emits a LEFT fold; the
+    #      instruction it replaces is the same operands under I's own nesting, so the obligation is
+    #      `right-fold(OP_before) == left-fold(OP_after)` -- sound iff the op is associative and matches.
+    reassoc = ("Value *foldReassoc(BinaryOperator &I){\n"
+               "  if (I.getOpcode() != Instruction::Or) return nullptr;\n"
+               "  Value *Acc = I.getOperand(0);\n"
+               "  for (unsigned i = 1; i < I.getNumOperands(); ++i)\n"
+               "    Acc = Builder.CreateOr(Acc, I.getOperand(i));\n"
+               "  return replaceInstUsesWith(I, Acc); }")
+    pair, (status, _) = fn(reassoc)
+    assert status == "proved" and pair["variables"] == ["op0", "op1", "op2"], (status, pair["variables"])
+    # ASSOCIATIVITY teeth: a non-associative reducer (sub) is value-equal at arity 2 but REFUTES at 3+ --
+    # the corroboration flags it arity-specific where a single arity-2 proof would have blessed it.
+    sub = pg.corroborate_arity(lambda k: pg._reduction_obligation(k, "bvsub", "bvsub"), z3)
+    assert sub["status"] == "arity-specific" and sub["verdicts"] == {2: "proved", 3: "refuted", 4: "refuted"}, sub
+    # a reducer that does not match I's op (Or instr, And fold) refutes; missing opcode cue declines.
+    assert fn(reassoc.replace("CreateOr", "CreateAnd"))[1][0] == "refuted", "mismatched reducer must refute"
+    assert pg.recover_reduction_loop(reassoc.replace(
+        "  if (I.getOpcode() != Instruction::Or) return nullptr;\n", "")) is None
+
     # 13) RELATIONAL PRECONDITIONS (phase 6): a guard relating TWO bound operands -- disjointness
     #     `haveNoCommonBitsSet(X, Y)` / `MaskedValueIsZero`. `add X,Y -> or X,Y` is UNSOUND in general
     #     but sound when the operands share no set bits. This closes a prover-drift gap: the two-operand

@@ -1101,6 +1101,12 @@ def recover_from_function(source: str, marker: str = "probe.recovered.fold",
     bailouts (negated, De Morgan) and enclosing positive `if` guards, at arbitrary nesting. Single-
     return helper calls in guards/rewrites are inlined first (interprocedural). Declines on any
     guard/return shape outside the modeled fragment (a sound bound)."""
+    loop_pair = recover_operand_loop(source, marker)                # phase 34: operand-list collapse loop
+    if loop_pair is not None:
+        return loop_pair
+    reduction_pair = recover_reduction_loop(source, marker)         # phase 35: reduction-rebuild loop
+    if reduction_pair is not None:
+        return reduction_pair
     helpers = _parse_helpers(source + "\n" + helpers_source)
     body = _fold_body(source)                          # the function body that performs the rewrite
     if helpers:
@@ -1169,6 +1175,12 @@ def reconcile(pair: dict, z3_bin: str, width: int = 8) -> dict:
         # is not a faithful oracle for a refinement obligation -- abstain rather than (dis)agree.
         return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": 0}
     variables = pair["variables"]
+    if len(variables) > 3:
+        # Concrete enumeration is `(1<<width)`^|vars|; beyond 3 variables it is intractable (a phase-34
+        # operand-loop merge carries selector vars, for instance). Mirror `brute_force`'s own cap and
+        # abstain -- the symbolic z3 proof and `reconcile_solver` (a second SMT solver) remain the
+        # cross-checks, never a hang.
+        return {"z3": z3_status, "concrete": "skipped", "agree": True, "checked": 0}
     assumptions = pair.get("assumptions", [])
     counterexample = None
     checked = 0
@@ -1884,3 +1896,215 @@ def ground_recovery(pair: dict, rewrite_source: str, z3_bin: str, clang: str = "
             .splitlines() or ["error"])[0]
     return {"grounded": head == "unsat", "divergence": head == "sat",
             "source_smt": source_smt, "recovered_smt": recovered_smt}
+
+
+# --- phase 34: bounded loops over an operand list (non-independent iterations) --------------------
+# The only prior loop handling (`_find_fold_path`) treats a `for (Instruction &I : BB)` header as
+# TRANSPARENT -- sound only when each iteration is an INDEPENDENT per-instruction fold. A loop over an
+# instruction's OWN operand list, where the iterations are not independent -- a guard quantified over
+# every operand, or a reduction accumulated across them -- fell outside that and declined. The canonical
+# value-relevant instance is SimplifyPHINode:
+#     Value *First = PN->getIncomingValue(0);
+#     for (Value *In : PN->incoming_values()) if (In != First) return nullptr;  // bail unless ALL equal
+#     return replaceInstUsesWith(*PN, First);                                    // phi [x,x,..,x] -> x
+# The guard is `forall i>0. op_i == op_0` over an UNBOUNDED list. We recover it soundly at a BOUNDED
+# arity and corroborate the verdict is arity-UNIFORM (so it generalizes to all N), mirroring how
+# `corroborate_widths` (phase 28) licenses a bv32 verdict as width-uniform.
+def _phi_collapse_obligation(arity: int, marker: str = "probe.recovered.fold",
+                             drop_equalities=()) -> dict | None:
+    """The `phi [x,x,..,x] -> x` obligation at a bounded `arity`. A phi is a NONDETERMINISTIC merge --
+    it takes some predecessor's incoming value -- so `before` is `op_0` overwritten by any later `op_i`
+    under a fresh 1-bit selector (`ite(s_i, op_i, ...)`), universally quantified = "the phi may take any
+    incoming value"; `after` is the representative `op_0`. The recovered guard is the pairwise equality
+    `op_0 == op_i` for every i>0. Under it the merge provably collapses to `op_0`; `drop_equalities`
+    (a set of indices) models an UNDER-recovered guard -- a dropped `op_j == op_0` leaves a selector
+    path free to pick a differing `op_j`, which REFUTES with a witness. This is the teeth: recovering
+    the RIGHT universal guard, not a weaker one, is what the arity corroboration below enforces."""
+    if arity < 2:
+        return None
+    drop = set(drop_equalities)
+    ops = [f"op{i}" for i in range(arity)]
+    sels = [f"s{i}" for i in range(1, arity)]
+    before = _var(ops[0])
+    for i in range(1, arity):
+        before = _select(_var(sels[i - 1]), _var(ops[i]), before)   # ite(s_i, op_i, <merge so far>)
+    after = _var(ops[0])
+    assumptions = [{"op": "rel", "predicate": "eq", "left": ops[0], "right": ops[i]}
+                   for i in range(1, arity) if i not in drop]
+    result = {
+        "domain": "scalar-bv32",
+        "marker": marker,
+        "variables": sorted(ops + sels),
+        "before": before,
+        "after": after,
+        "equivalence": "result",
+        "assumptions": assumptions,
+    }
+    from o2t.formal_ir import FormalIrError, pair_for_formal
+    try:
+        pair_for_formal(result)
+    except FormalIrError:
+        return None
+    return result
+
+
+# A loop over the matched instruction's own operand list: `for (X : V->operands()/incoming_values()/
+# indices())`. The container method distinguishes this from a basic-block instruction loop (whose
+# iterations ARE independent and are handled transparently by `_find_fold_path`).
+_OPLOOP_RE = re.compile(
+    r"\bfor\s*\(\s*[^:;{}]*?\b(\w+)\s*:\s*(\w+)\s*(?:->|\.|::)\s*"
+    r"(operands|incoming_values|indices)\s*\(\s*\)\s*\)")
+
+
+def _is_pure_neq_bail(body: str, loop_var: str, rep: str) -> bool:
+    """True iff `body` is EXACTLY the all-equal guard `if (In != First) <bail>;` (bail = a bailout
+    return or `continue`) over the loop variable and the representative operand -- nothing else. Any
+    other statement (a worklist push, a second `Builder.Create*`, a further accumulator) fails the
+    `$` anchor and is declined, so a non-collapse loop is never mis-recovered as one."""
+    s = body.strip()
+    if s.startswith("{") and s.endswith("}"):
+        s = s[1:-1].strip()
+    mm = re.match(r"if\s*\(\s*(\w+)\s*!=\s*(\w+)\s*\)\s*(return\s+[^;]+;|continue\s*;)\s*$", s, re.S)
+    if not mm or {mm.group(1), mm.group(2)} != {loop_var, rep}:
+        return False
+    bail = mm.group(3).strip()
+    if bail.startswith("return"):
+        return bail[len("return"):].rstrip(";").strip() in _BAIL_RETURNS
+    return True                                                     # `continue` -> per-iteration bail
+
+
+def recover_operand_loop(source: str, marker: str = "probe.recovered.fold",
+                         arity: int = 3) -> dict | None:
+    """Recover the `phi [x,x,..,x] -> x` (all-incoming-equal collapse) idiom from a fold FUNCTION that
+    loops over an instruction's operand list guarding on every element, at a bounded `arity`. Returns a
+    standard obligation dict (same schema `recover_pair` emits, provable by `mini_alive.prove` and
+    checkable by `reconcile`/`reconcile_solver`), or None on any loop outside the recognized shape --
+    a sound decline. Only the guarded collapse is recovered; a bare/side-effecting/worklist loop body
+    declines rather than risk mis-modeling an unbounded iteration."""
+    m = _OPLOOP_RE.search(source)
+    if m is None:
+        return None
+    loop_var = m.group(1)
+    tail = source[m.end():]
+    lead = len(tail) - len(tail.lstrip())
+    if tail.lstrip().startswith("{"):
+        try:
+            body, _ = _balanced_brace(source, m.end() + lead)
+        except Unsupported:
+            return None
+    else:
+        semi = source.find(";", m.end())
+        if semi < 0:
+            return None
+        body = source[m.end():semi + 1]
+    rv = re.search(r"replaceInstUsesWith\s*\(\s*[^,]+,\s*(\w+)\s*\)", source)
+    if rv is None:
+        return None
+    if not _is_pure_neq_bail(body, loop_var, rv.group(1)):
+        return None
+    return _phi_collapse_obligation(arity, marker)
+
+
+def corroborate_arity(recover_fn, z3_bin: str, arities=(2, 3, 4)) -> dict:
+    """Re-recover and prove a bounded operand-loop obligation at several arities to corroborate its
+    verdict is arity-UNIFORM rather than a coincidence of the representative bound. A genuine universal
+    identity holds at EVERY operand count, so the verdicts must agree; an UNDER-recovered guard (sound
+    at arity 2 where the single equality is the whole guard, but unsound at 3+ where a dropped equality
+    frees an operand) diverges and is flagged `arity-specific` -- exactly as `corroborate_widths` flags
+    `width-specific`. This is what licenses the "for all N" claim from a bounded proof. `recover_fn(k)`
+    returns the obligation at arity k (None -> `unsupported`)."""
+    verdicts: dict = {}
+    for k in arities:
+        pair = recover_fn(k)
+        verdicts[k] = "unsupported" if pair is None else ma.prove(pair, z3_bin)[0]
+    statuses = set(verdicts.values())
+    return {"verdicts": verdicts, "agree": len(statuses) == 1,
+            "status": next(iter(statuses)) if len(statuses) == 1 else "arity-specific"}
+
+
+# --- phase 35: reduction-rebuild loops over an operand list --------------------------------------
+# A different non-independent operand loop: one that ACCUMULATES a reduction across the iterations,
+# rebuilding an n-ary instruction from its operand list (reassociate / SimplifyAssociative style):
+#     if (I.getOpcode() != Instruction::Or) return nullptr;   // I is an Or  (OP_before)
+#     Value *Acc = I.getOperand(0);
+#     for (unsigned i = 1; i < I.getNumOperands(); ++i)
+#       Acc = Builder.CreateOr(Acc, I.getOperand(i));          // left-fold reducer (OP_after)
+#     return replaceInstUsesWith(I, Acc);
+# The rewrite emits a LEFT-associated fold `((op0 . op1) . op2)...`; the instruction it replaces is the
+# SAME operands under I's own (here right-associated, representative) nesting `op0 . (op1 . op2)`. They
+# are equal IFF the operator is ASSOCIATIVE and OP_after == OP_before -- so the obligation is exactly
+# `right-fold(OP_before) == left-fold(OP_after)`. Associativity is INVISIBLE at arity 2 (`a.b == a.b`
+# for any op) and only bites at arity 3+, so `corroborate_arity` is what catches a non-associative
+# reducer -- the same "bug hidden at the representative bound" story as phase 34's under-recovered guard.
+OPCODE_BINOP = {
+    "Add": "bvadd", "Sub": "bvsub", "Mul": "bvmul", "And": "bvand", "Or": "bvor", "Xor": "bvxor",
+    "Shl": "bvshl", "LShr": "bvlshr", "AShr": "bvashr", "UDiv": "bvudiv", "SDiv": "bvsdiv",
+    "URem": "bvurem", "SRem": "bvsrem",
+}
+
+
+def _reduction_obligation(arity: int, op_before: str, op_after: str,
+                          marker: str = "probe.recovered.fold") -> dict | None:
+    """The reduction-rebuild obligation at a bounded `arity`: `before` is the RIGHT-associated fold of
+    k operands under `op_before` (the instruction's own nesting), `after` is the LEFT-associated fold
+    the loop emits under `op_after` (the reducer). Equal iff the operator is associative and the two
+    ops agree; a non-associative `op_before`/`op_after` (e.g. `bvsub`) or a mismatched reducer refutes,
+    at arity >= 3 for associativity or at any arity for an op mismatch. No value precondition."""
+    if arity < 2:
+        return None
+    ops = [_var(f"op{i}") for i in range(arity)]
+    before = ops[-1]                                                # op0 . (op1 . (op2 . ...))
+    for o in reversed(ops[:-1]):
+        before = {"op": op_before, "args": [o, before]}
+    after = ops[0]                                                  # ((op0 . op1) . op2) . ...
+    for o in ops[1:]:
+        after = {"op": op_after, "args": [after, o]}
+    result = {
+        "domain": "scalar-bv32",
+        "marker": marker,
+        "variables": sorted(f"op{i}" for i in range(arity)),
+        "before": before,
+        "after": after,
+        "equivalence": "result",
+        "assumptions": [],
+    }
+    from o2t.formal_ir import FormalIrError, pair_for_formal
+    try:
+        pair_for_formal(result)
+    except FormalIrError:
+        return None
+    return result
+
+
+# The instruction's operation, named explicitly by an opcode guard (`I.getOpcode() == Instruction::Or`
+# or the `!= ... return nullptr;` bail). A bare reduction loop over `I.getOperand(i)` does NOT state
+# I's opcode, so without this cue we cannot form `before` and decline.
+_OPCODE_RE = re.compile(r"getOpcode\s*\(\s*\)\s*[=!]=\s*(?:\w+::)?Instruction::(\w+)")
+# The left-fold reducer update `Acc = Builder.Create<Op>(Acc, <operand>)` -- the accumulator must be
+# both the assignment target and the FIRST argument of the emitter (that is what makes it a fold).
+_REDUCER_RE = re.compile(r"(\w+)\s*=\s*\w+\s*(?:->|\.|::)\s*Create(\w+)\s*\(\s*(\w+)\s*,")
+
+
+def recover_reduction_loop(source: str, marker: str = "probe.recovered.fold",
+                           arity: int = 3) -> dict | None:
+    """Recover a reduction-rebuild fold: a loop that left-folds an instruction's operand list with a
+    Builder emitter and replaces the instruction with the accumulator. Returns the associativity
+    obligation at a bounded `arity`, or None on any shape outside the recognized form (missing opcode
+    cue, a reducer whose accumulator is not threaded, a side-effecting body) -- a sound decline."""
+    if "for" not in source:
+        return None                                              # must actually be a loop
+    oc = _OPCODE_RE.search(source)
+    if oc is None or oc.group(1) not in OPCODE_BINOP:
+        return None                                              # I's opcode unknown/unmodeled -> decline
+    op_before = OPCODE_BINOP[oc.group(1)]
+    red = _REDUCER_RE.search(source)
+    if red is None:
+        return None
+    acc, create_op, first_arg = red.group(1), "Create" + red.group(2), red.group(3)
+    if acc != first_arg or create_op not in BUILDER_BINOP:       # not `Acc = Create(Acc, ...)` fold
+        return None
+    op_after = BUILDER_BINOP[create_op]
+    rv = re.search(r"replaceInstUsesWith\s*\(\s*[^,]+,\s*(\w+)\s*\)", source)
+    if rv is None or rv.group(1) != acc:                         # must replace I with the accumulator
+        return None
+    return _reduction_obligation(arity, op_before, op_after, marker)

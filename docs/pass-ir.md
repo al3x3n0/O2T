@@ -69,7 +69,9 @@ the "no silent mis-model" invariant.
 | 3b | Reconciliation, compiled half: `to_shim_harness` realizes a recovered fold as a `symbolic_llvm.h` harness, compiles it, and symbolically executes it through its real branches (`symexec/real_pass`); the compiled-path verdict must match z3 -- an independent compiled oracle (`reconcile_compiled`, graceful skip without clang++) | **Done** (same module) |
 | 3c | Full source-parse independence: generate the shim harness directly from the C++ source (not the recovered pair), so a front-end parse bug diverges | Next |
 | 4 | Interprocedural: single-return guard + value helpers (incl. chained) inlined before recovery, retiring the "blocked helper slice"; multi-statement helpers decline (`_parse_helpers`/`_inline_calls`) | **Done** (same module) |
-| 5 | Loops over IR (`for (I : BB)`, `users()`): bounded unroll vs summarize | Planned |
+| 5 | Loops over IR, INDEPENDENT iterations: a `for (Instruction &I : BB)` header is a universal quantifier over instructions (no value precondition) -- skipped transparently, the per-instruction body fold recovered under its guards (`_find_fold_path`) | **Done** (same module) |
+| 34 | Loops over an OPERAND list, NON-independent iterations (the GUARD case): `for (In : PN->incoming_values()/operands())` whose guard is quantified over every operand (`SimplifyPHINode`'s `phi [x,x,..,x] -> x`). Recovered at a BOUNDED arity -- the phi as a nondeterministic selector-merge that must collapse under the recovered pairwise-equality guard -- and **arity-corroborated** (`recover_operand_loop`, `corroborate_arity`) | **Done** (same module) |
+| 35 | Loops over an operand list, NON-independent iterations (the REDUCTION case): a loop that ACCUMULATES a fold, rebuilding an n-ary op from its operands (reassociate style). Obligation `right-fold(OP_before) == left-fold(OP_after)` -- sound iff the operator is associative and the reducer matches I's op. Associativity is invisible at arity 2 and only bites at 3+, so `corroborate_arity` catches a non-associative reducer where a single arity-2 proof would bless it (`recover_reduction_loop`, `_reduction_obligation`) | **Done** (same module) |
 
 ### What phase 2-core already buys
 
@@ -89,8 +91,18 @@ precondition could turn an unsound fold into a false `proved`.
 
 ## Hard parts (named honestly)
 
-1. **Loops over IR** — the pass-CFG has loops; bound against a fixed input-IR shape (like
-   `loop_cfg_ir`) or summarize per-matching-instruction. Main decline frontier.
+1. **Loops over IR** — the pass-CFG has loops. Two cases now handled: a loop with **independent**
+   iterations (`for (I : BB)`) is a universal quantifier over instructions, skipped transparently
+   (phase 5); a loop over an instruction's **own operand list** with **non-independent** iterations
+   (a guard quantified over every operand, `SimplifyPHINode`) is recovered at a **bounded arity** and
+   **arity-corroborated** — a genuine universal identity holds at every operand count, so an
+   under-recovered guard that is sound at arity 2 diverges (`arity-specific`) at arity 3+, exactly as
+   `corroborate_widths` flags a width-32 coincidence (phase 34). Its dual, a loop that **accumulates a
+   reduction** to rebuild an n-ary op (reassociate style), is the same bounded+corroborated obligation
+   `right-fold == left-fold`, where the corroboration catches a **non-associative** reducer that is
+   value-equal at arity 2 (phase 35). Still declining: worklist **fixpoints**, cross-instruction
+   accumulation across DISTINCT instructions, and unbounded/data-dependent trip counts (sound declines,
+   not silent). Remaining decline frontier.
 2. **In-place mutation semantics** — the `after` is a mutation of the IR graph (RAUW/erase/setOperand),
    needing a small IR-state semantics (the memory-model work gestures at this).
 3. **Recovery soundness** — a mis-recovered DFG edge silently changes the obligation; the bitcode
