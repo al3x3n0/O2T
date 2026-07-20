@@ -614,6 +614,12 @@ if(O2T_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/cv-agent.py --selftest
     )
     add_test(
+        NAME passir_corpus_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/passir_corpus_fixture.py; else echo 'passir_corpus_fixture: z3 not found, skipped'; fi"
+    )
+    add_test(
         NAME symexec_real_pass_fixture
         COMMAND
             /bin/sh -c

@@ -184,7 +184,7 @@ for E4), but the **aggregate result tables/figures with measured numbers are not
 | E3 performance (integer vs bv32; batch vs per-candidate; per-obligation Z3 time) | `closed_form_fixture`, multi-width proofs | ☐ TODO — no timing table |
 | E4 frontend robustness (SCEV succeeds where regex fails) | SCEV frontend fixtures (C3/C4) | ☐ TODO — no comparative study |
 | E5 case studies (LSR from source; a found discrepancy) | `symexec_real_pass_fixture`, `extract_*` fixtures | ◐ Partial — LSR source model exists; no closed-loop LSR validator |
-| E6 Pass-IR corpus coverage (upstream InstCombine/InstSimplify → recovered/proved/declined/refuted by ladder rung) | the C6 recovery fixtures (mechanisms) | ☐ TODO — no corpus run yet; the headline "X% recovered, zero false proofs" is unmeasured |
+| E6 Pass-IR corpus coverage (upstream InstCombine/InstSimplify → recovered/proved/declined/refuted by ladder rung) | `passir_corpus_fixture` (runner mechanics: taxonomy, reconcile-gated proved, oversize accounting) | ◐ **Measured initial run** ([e6-passir-corpus.md](e6-passir-corpus.md)): 441 candidates, 0 recovered / **0 false proofs** / 441 declined with taxonomy; frontier quantified (103 return-form rewrite targets = the phase-36 case) |
 | E7 recovery-soundness ablation (seeded misrecoveries × catching layer) | the C7 stack fixtures (each layer's teeth are gated point-wise) | ☐ TODO — per-layer teeth exist as fixtures; no aggregate ablation matrix |
 | E8 agent triage (residue reduction, budget vs upgrades, zero gate violations) | `agent_fixture` (mechanisms + trust invariants) | ☐ TODO — no vendor-tree run with a live LLM yet |
 

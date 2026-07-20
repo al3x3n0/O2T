@@ -33,6 +33,9 @@ into a recurrence DSL and discharging soundness with Z3.
   orchestrator's residue via a whitelisted action registry, with the trust quarantine (formal
   verifiers decide every verdict; agent output is provenance-tagged or advisory) and the
   tool-synthesis staging procedure.
+- **[e6-passir-corpus.md](e6-passir-corpus.md)** — the first measured E6 run: the Pass-IR recovery
+  over 441 upstream InstCombine/InstSimplify fold functions — 0 false proofs, the decline taxonomy
+  as the coverage frontier, and the quantified case for a return-form rewrite anchor (phase 36).
 
 ## Reproducing
 

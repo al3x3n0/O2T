@@ -78,6 +78,9 @@ Per-family model extractors that lift a pass into a verifiable model.
   `extract_cfg_model.py`, `extract_loop_structural_model.py` (LICM).
 - `pass_graph.py` — the typed **Pass IR** DFG/CFG model (see
   [`docs/pass-ir.md`](docs/pass-ir.md)).
+- `corpus.py` — the E6 corpus runner (`tools/cv-passir-corpus.py`): the Pass-IR recovery over a
+  real pass-source tree, with the decline taxonomy and the reconcile-gated zero-false-proof
+  discipline (measured results: [`docs/e6-passir-corpus.md`](docs/e6-passir-corpus.md)).
 - `infer.py`, `validate_registry.py` — intent inference + registry validation.
 
 ### Facts / analysis grounding — `o2t/facts/`
