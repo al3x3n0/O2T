@@ -333,8 +333,19 @@ function is not a soundness event. The matrix is complemented by six *field* spe
 bugs caught during development, each by a different mechanism, two of which would have produced
 false refutations of upstream LLVM and one of which was a direct false-proof vector.
 
-**Pending (mechanism-gated).** E1–E5 (loop-track coverage, mutation catch-rates, timing, frontend
-robustness, case studies) have their mechanisms gated by fixtures but no aggregate tables yet.
+**E2 — mutation catch-rate (measured).** Across three independent teeth tiers — 34 single-point
+corruptions of the deep family contracts (each killed with a witness, premises satisfiable), the 7
+recovery misrecovery classes of E7, and 11 perturbed registry intents — **52 of 52 seeded
+corruptions are caught, zero survivors**. Witness *minimality* (minimal trip count, |params|) is a
+property of the loop-track CEGAR witnesses, measured with the loop fixtures rather than these
+point mutations, and is not claimed here.
+
+**E3 — performance (measured).** The nonlinear Faulhaber STEP proves over ℤ in 0.105 s while its
+bit-blasted bv32 twin exhausts a 10 s cap; batched synthesis discharge runs 19.5× faster than
+per-candidate while agreeing candidate-by-candidate; recovered fold obligations prove in 12–83 ms.
+
+**Pending (mechanism-gated).** E1, E4, E5 (loop-track coverage, frontend robustness, case studies)
+have their mechanisms gated by fixtures but no aggregate tables yet.
 E8 (live agent triage of a vendor tree) has its trust invariants gated with a deterministic stub
 but no live-model run.
 

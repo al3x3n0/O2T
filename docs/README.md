@@ -42,6 +42,8 @@ into a recurrence DSL and discharging soundness with Z3.
   catching layers, zero escapes, two uniquely-load-bearing layers, and the six field specimens.
 - **[e3-timing.md](e3-timing.md)** — the measured E3 performance table: the integer-ring discharge
   vs bit-blasting (0.105 s vs a 10 s timeout), 19.5× batched synthesis, per-obligation times.
+- **[e2-mutation.md](e2-mutation.md)** — the measured E2 mutation catch-rate: 52/52 seeded
+  corruptions caught, zero survivors across the deep-contract, recovery, and registry teeth tiers.
 
 ## Reproducing
 
