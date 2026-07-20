@@ -15,6 +15,8 @@ into a recurrence DSL and discharging soundness with Z3.
   optional CBMC/ESBMC model-checking cross-check, the precondition + poison + theory matrix, the
   source-derived `--modelcheck-intents` deep-audit bridge, the recipe for adding a fold, and the honest scope. *(Start here to catch up on the
   implementation-verification track.)*
+- **[paper-draft.md](paper-draft.md)** — the working PROSE draft (v1): every quantitative claim
+  gated by the fixture named in the claim map; E6/E7 measured, E1–E5/E8 honestly pending.
 - **[arxiv-outline.md](arxiv-outline.md)** — skeleton for the planned arXiv paper, reframed around
   the unifying thesis *verify the pass, not the pair*: the Pass-IR structural-recovery track and its
   recovery-certifying cross-check stack lead, with the all-trip-count loop track, closed-loop TV,

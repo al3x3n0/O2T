@@ -5,7 +5,8 @@ Working title options:
 - *From Pass Source to Proof: Recovering, Cross-Checking, and Discharging Optimization Intent*
 - *O2T: Formal Validation of LLVM Optimization Passes from Their Source*
 
-Target: arXiv `cs.PL` (cross-list `cs.LO`, `cs.SE`). Companion artifact: this repository
+Target: arXiv `cs.PL` (cross-list `cs.LO`, `cs.SE`). **Prose draft: [paper-draft.md](paper-draft.md).**
+Companion artifact: this repository
 (438-fixture gate; every claim maps to a fixture — [claim-fixture-map.md](claim-fixture-map.md)).
 
 > Reframe note (2026-07): the original outline presented only the loop/recurrence track. The system
