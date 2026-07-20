@@ -593,7 +593,8 @@ if(O2T_BUILD_TESTS)
         pass_graph_return_form_fixture
         pass_graph_compose_fixture
         pass_graph_contract_fixture
-        pass_graph_predset_fixture)
+        pass_graph_predset_fixture
+        pass_graph_twoicmp_fixture)
         add_test(
             NAME ${_pg_fixture}
             COMMAND

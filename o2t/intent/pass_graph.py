@@ -31,7 +31,7 @@ MATCHER_BINOP = {
     "m_UDiv": "bvudiv", "m_SDiv": "bvsdiv", "m_URem": "bvurem", "m_SRem": "bvsrem",
 }
 # Constant matchers -> concrete 32-bit value.
-MATCHER_CONST = {"m_Zero": 0, "m_One": 1, "m_AllOnes": 0xFFFFFFFF}
+MATCHER_CONST = {"m_Zero": 0, "m_ZeroInt": 0, "m_One": 1, "m_AllOnes": 0xFFFFFFFF}
 # Value binders: bind a name to a symbolic operand.
 MATCHER_VALUE = {"m_Value", "m_Specific", "m_Deferred"}
 # IRBuilder emission calls -> formal-IR op (the `after`/DFG side).
@@ -713,7 +713,8 @@ def _split_and(text: str) -> list[str]:
 def recover_pair_cases(predicate_source: str, rewrite_source: str,
                        marker: str = "probe.recovered.fold",
                        matcher_tree: dict | None = None,
-                       rewrite_tree: dict | None = None) -> list[dict]:
+                       rewrite_tree: dict | None = None,
+                       projections: dict | None = None) -> list[dict]:
     """Recover a compositional formal obligation from a fold's guard conjunction and its
     `replaceInstUsesWith(I, <expr>)` rewrite. The guard's `match(...)` conjunct becomes `before`; its
     analysis-query conjuncts (`isKnownNonZero`/`isKnownNonNegative`/...) become the PRECONDITION under
@@ -802,7 +803,19 @@ def recover_pair_cases(predicate_source: str, rewrite_source: str,
             m_node = matcher_tree if matcher_tree is not None else _parse(matcher_src)
             r_node = rewrite_tree if rewrite_tree is not None else _parse(_unwrap(rm.group(1)))
             before = lower_matcher(m_node, binds, widths, case_binds)
+            # phase 40: rewrite-side operand PROJECTIONS -- a synthetic name stands for a matched
+            # operand subtree (`Cmp0->getOperand(0)` -> the lowered ctpop(X) node). The subtree is
+            # lowered against the SAME binds (idempotent re-lower), the name admitted for the
+            # rewrite pass, then substituted structurally and retired from the variable set.
+            proj_nodes = {}
+            for pname, subtree in (projections or {}).items():
+                proj_nodes[pname.lower()] = lower_matcher(subtree, binds, widths, case_binds)
+                binds.add(pname.lower())
             after = lower_rewrite(r_node, binds, widths, pred_binds=case_binds)
+            if proj_nodes:
+                after = _subst_vars(after, proj_nodes)
+                before = _subst_vars(before, proj_nodes)   # no-op unless a proj name collides
+                binds -= set(proj_nodes)
         except Unsupported:
             return None
         if not binds:
@@ -887,6 +900,17 @@ def recover_pair_cases(predicate_source: str, rewrite_source: str,
         pair["marker"] = f"{marker}.case-{'-'.join(combo)}"
         cases.append(pair)
     return cases
+
+
+
+
+def _subst_vars(node: dict, repl: dict) -> dict:
+    """Structurally replace var nodes whose name is in `repl` with the mapped formal node."""
+    if node.get("op") == "var" and node.get("name") in repl:
+        return repl[node["name"]]
+    if "args" in node:
+        return {**node, "args": [_subst_vars(a, repl) for a in node["args"]]}
+    return node
 
 
 def _pred_binder_names(tree: dict) -> set:
@@ -1345,8 +1369,11 @@ def _inline_lets(body: str) -> str | None:
             if expr == "nullptr":
                 continue                             # sentinel init, not a value binding
             rest = body[stmt_end:]
-            if re.search(rf"\b{re.escape(name)}\s*->", rest):
-                continue                             # mutated/dereferenced: skip this name
+            # Only a MUTATING dereference blocks substitution (BOp->setHasNoSignedWrap()); benign
+            # reads (CtPop->getType()) are fine -- the global _MUTATES_IR_RE screen already
+            # declines known mutators anywhere in the body.
+            if re.search(rf"\b{re.escape(name)}\s*->\s*(?:set|drop|mutate|copy|and)\w*\s*\(", rest):
+                continue                             # mutated after binding: skip this name
             if re.search(rf"\b{re.escape(name)}\s*=[^=]", rest):
                 continue                             # reassigned -> not a let: skip this name
             body = body[:stmt_end] + re.sub(rf"\b{re.escape(name)}\b", lambda _: expr, rest)
@@ -1482,6 +1509,74 @@ def _contract_arm(found, opname: str, p0: str, p1: str, marker: str) -> list[dic
     return _compose_fold((atoms + [primary], found[1]), {"__P"}, marker)
 
 
+# --- phase 40: the two-icmp caller contract (and/or of icmp pairs) --------------------------------
+# InstCombine's logical-combination folds take TWO icmp instructions plus a combiner selector:
+# `foldX(ICmpInst *Cmp0, ICmpInst *Cmp1, bool IsAnd, ...)` -- the caller (visitAnd/visitOr)
+# guarantees the replaced value is `and(Cmp0, Cmp1)` when IsAnd else `or(Cmp0, Cmp1)`. Per IsAnd
+# case: an `IsAnd` guard conjunct is SATISFIED in the true case and makes the arm UNREACHABLE in
+# the false case (and inversely for `!IsAnd`); the reachable case's obligation combines both
+# matched icmp trees under the case's combiner. Rewrite-side operand PROJECTIONS
+# (`Cmp0->getOperand(J)`) become synthetic names lowered from the matched subtree.
+_TWOICMP_PARAM_RE = re.compile(r"\bICmpInst\s*\*\s*(\w+)\b")
+_ISAND_PARAM_RE = re.compile(r"\bbool\s+(IsAnd)\b")
+
+
+def _two_icmp_arm(found, c0: str, c1: str, band: str, marker: str) -> list[dict]:
+    """Recover one two-icmp arm: one obligation list per REACHABLE IsAnd case."""
+    atoms = [" ".join(a.split()) for a in found[0]]
+    rewrite = " ".join(found[1].split())
+    match_atoms = [a for a in atoms if a.startswith("match")]
+    others = [a for a in atoms if not a.startswith("match")]
+    trees: dict[str, str] = {}
+    for a in match_atoms:
+        pm = _PRIMARY_MATCH_RE.match(a)
+        if pm is None or pm.group(1) not in (c0, c1) or pm.group(1) in trees:
+            return []                                 # both cmps matched exactly once, else decline
+        trees[pm.group(1)] = pm.group(2)
+    if set(trees) != {c0, c1}:
+        return []
+    try:
+        t0, t1 = _parse(trees[c0]), _parse(trees[c1])
+    except Unsupported:
+        return []
+    # rewrite-side operand projections: CmpK->getOperand(J) -> a synthetic name + its subtree.
+    projections: dict[str, dict] = {}
+
+    def _project(m: re.Match) -> str:
+        which, j = m.group(1), int(m.group(2))
+        tree = t0 if which == c0 else t1
+        if tree.get("name") not in ("m_ICmp", "m_c_ICmp") or len(tree.get("args", [])) != 3:
+            return m.group(0)                          # unprojectable: left verbatim -> declines
+        name = f"__proj_{'0' if which == c0 else '1'}_{j}"
+        projections[name] = tree["args"][j + 1]        # m_ICmp args = [pred, op0, op1]
+        return name
+
+    rewrite = re.sub(rf"\b({re.escape(c0)}|{re.escape(c1)})\s*(?:\.|->)\s*getOperand\s*\(\s*(\d)\s*\)",
+                     _project, rewrite)
+    rewrite = _normalize_rewrite(rewrite)              # project FIRST, then `->getType()` -> Ty
+    out: list[dict] = []
+    for is_and in (True, False):
+        kept, reachable = [], True
+        for a in others:
+            stripped = a.strip()
+            if stripped == band:
+                reachable = reachable and is_and
+            elif stripped == "!" + band:
+                reachable = reachable and not is_and
+            else:
+                kept.append(a)
+        if not reachable:
+            continue
+        combined = {"kind": "call", "name": "m_And" if is_and else "m_Or", "template": None,
+                    "args": [t0, t1]}
+        for pair in recover_pair_cases(" && ".join(kept), rewrite, marker,
+                                       matcher_tree=combined, projections=projections):
+            pair.setdefault("case", {})[band] = is_and
+            pair["marker"] = f"{pair['marker']}.{'and' if is_and else 'or'}"
+            out.append(pair)
+    return out
+
+
 # In-place INSTRUCTION mutation is invisible to the keyword-driven walker but changes what a
 # later match/rewrite means (`I.setOperand(0, Z); return replaceInstUsesWith(I, X)` replaces a
 # DIFFERENT value than the matched shape). Screen the whole body and decline -- closing a gap
@@ -1555,6 +1650,21 @@ def recover_folds_from_function(source: str, marker: str = "probe.recovered.fold
     instr_params = {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}
     arms = _collect(let_body, return_form=True, instr_params=instr_params)
     if arms:
+        return arms
+    # phase 40: the two-icmp caller contract -- two ICmpInst* params + a bool IsAnd selector; the
+    # caller (visitAnd/visitOr) guarantees the replaced value is the IsAnd-selected combination.
+    icmp_params = _TWOICMP_PARAM_RE.findall(signature)
+    band = _ISAND_PARAM_RE.search(signature)
+    if len(icmp_params) == 2 and band is not None:
+        try:
+            founds = list(islice(_iter_fold_paths(let_body, [], True), max_arms))
+        except Unsupported:
+            return []
+        arms = []
+        for idx, found in enumerate(founds):
+            for pair in _two_icmp_arm(found, icmp_params[0], icmp_params[1],
+                                      band.group(1), marker):
+                arms.append({**pair, "arm": idx, "standalone": idx > 0})
         return arms
     # phase 37: the simplifyXInst caller contract -- the NAME declares the instruction the operand
     # params belong to; synthesize its phantom and hand every arm to the phase-38 composer.

@@ -190,3 +190,20 @@ tools/cv-passir-corpus.py . --report e6.json --summary-text e6.txt
 
 The corpus mechanics (extraction, taxonomy, reconcile-gated `proved`, oversize accounting) are
 gated by `passir_corpus_fixture` in the ctest suite.
+
+## Phase 40 (the two-icmp contract): 10 → 12, and the fold is *mathematics*
+
+`foldX(ICmpInst *Cmp0, ICmpInst *Cmp1, bool IsAnd, …)` carries its contract in the signature: the
+caller (visitAnd/visitOr) guarantees the replaced value is the IsAnd-selected combination.
+Two-primary composition + per-case reachability filters + rewrite-side operand projection
+(`Cmp0->getOperand(0)` → the lowered `ctpop(X)` subtree) recover the VERBATIM upstream
+`foldIsPowerOf2OrZero` — **both arms proved**:
+
+    ctpop(X) ≠ 1  ∧  X ≠ 0   ↔   ctpop(X) > 1        (the IsAnd world)
+    ctpop(X) = 1  ∨  X = 0   ↔   ctpop(X) < 2        (the or world)
+
+real bit-counting theorems discharged through the phase-26 ctpop model, with teeth both ways
+(UGE-for-UGT refutes; a combiner swap refutes in the or case). E6: **12 proved arms across 8
+functions**, still 0 false proofs / 0 false refutations. The remaining two-icmp population (22
+more functions) shares this contract but hits vocabulary walls (KnownBits, APInt arithmetic,
+decomposeBitTestICmp) — the measured next frontier within the class.
