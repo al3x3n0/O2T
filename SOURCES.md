@@ -47,6 +47,18 @@ The pass-aware entry point (`tools/cv-orchestrate.py`). See
 - `brain.py` — optional, advisory LLM tie-breaker for ambiguous classification
   (provider-agnostic; formal verifiers still decide soundness).
 
+### Verification agent — `o2t/agent/`
+LLM-driven **batch triage** of the orchestrator's residue (`tools/cv-agent.py`). See
+[`docs/agent.md`](docs/agent.md). The LLM picks whitelisted actions whose handlers run REAL
+verifiers; everything agent-derived is quarantined under `pass["agent"]` with trust labels —
+formal verifiers still decide every verdict.
+- `actions.py` — the whitelisted action registry (schema-validated args; the LLM never emits shell).
+- `loop.py` — per-pass agent loop (evidence, strikes, budgets, residue selection).
+- `staging.py` — quarantine for synthesized tool candidates (`--enable-synthesis`; human-promoted).
+- `report.py` — trust-quarantined merge into the orchestrator report; provenance-tagged headline.
+- `llm.py` / `o2t/llm_io.py` — budgeted client over the shared provider-agnostic JSON transport
+  (also used by `brain.py`).
+
 ### Ingestion — `o2t/frontend/`
 Turn inputs into internal models.
 - `scev_loop.py` — recover loop recurrences via `opt` SCEV.

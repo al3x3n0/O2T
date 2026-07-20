@@ -12,7 +12,7 @@ All Python tools live in `tools/cv-*.py`; most take `--report out.json` and a
 
 ```sh
 cmake -S . -B build && cmake --build build     # C++ generator/probe side (no LLVM/KLEE needed)
-ctest --test-dir build --output-on-failure     # ~417 fixtures — the whole gate
+ctest --test-dir build --output-on-failure     # ~438 fixtures — the whole gate
 scripts/check-registries.sh                      # registry gate layer (+ JSON reports)
 pip install -e .                                 # optional: import o2t / compilerverif
 ```
@@ -71,6 +71,19 @@ Sweep the built-in multi-family manifest into a coverage matrix:
 ```sh
 tools/cv-orchestrate-sweep.py                  # print the matrix
 tools/cv-orchestrate-sweep.py --report sweep.json
+```
+
+**Agent** — LLM-driven batch triage of the residue (unclassified/advisory/skipped/error/refuted)
+after the deterministic run; formal verifiers still decide every verdict
+(see [`docs/agent.md`](docs/agent.md)):
+
+```sh
+tools/cv-agent.py --source vendor/lib/Transforms \
+  --llm-command 'claude -p --output-format json' \
+  --budget 25 --out-dir agent-out --report agent.json --summary-text agent.txt
+tools/cv-agent.py --selftest                     # no LLM needed
+# --enable-synthesis stages candidate tools under agent-out/agent-staging/ (human-promoted)
+# --resume agent.json skips already-concluded passes on a re-run
 ```
 
 ---

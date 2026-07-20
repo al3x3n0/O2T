@@ -26,13 +26,17 @@ into a recurrence DSL and discharging soundness with Z3.
 - **[pass-ir.md](pass-ir.md)** — design track for formalized DFG/CFG source mining: a typed Pass IR
   the prover consumes, with compositional before/after recovery (phase-2 core implemented) and the
   roadmap to CFG path-conditions, bitcode reconciliation, interprocedural helpers, and IR loops.
+- **[agent.md](agent.md)** — the verification agent (`cv-agent.py`): LLM-driven batch triage of the
+  orchestrator's residue via a whitelisted action registry, with the trust quarantine (formal
+  verifiers decide every verdict; agent output is provenance-tagged or advisory) and the
+  tool-synthesis staging procedure.
 
 ## Reproducing
 
 Everything is gated by an executable suite:
 
 ```sh
-cmake -S . -B build && ctest --test-dir build      # 417 fixtures
+cmake -S . -B build && ctest --test-dir build      # ~438 fixtures
 scripts/check-registries.sh                         # the gate layer, with JSON reports
 ```
 

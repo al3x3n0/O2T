@@ -597,6 +597,22 @@ if(O2T_BUILD_TESTS)
                 "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${_pg_fixture}.py; else echo '${_pg_fixture}: z3 not found, skipped'; fi"
         )
     endforeach()
+    # Verification agent: the LLM-driven batch-triage loop (deterministic scenario stub; the
+    # z3-guarded fixture dispatches REAL verifiers, the synthesis fixture is pure quarantine).
+    add_test(
+        NAME agent_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_fixture.py; else echo 'agent_fixture: z3 not found, skipped'; fi"
+    )
+    add_test(
+        NAME agent_synthesis_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_synthesis_fixture.py
+    )
+    add_test(
+        NAME agent_selftest
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/cv-agent.py --selftest
+    )
     add_test(
         NAME symexec_real_pass_fixture
         COMMAND

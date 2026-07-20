@@ -194,6 +194,10 @@ with the deterministic primary is surfaced as a note — never silently applied.
 `--llm-command`, or on any failure, the deterministic classification stands. The trust model
 is unchanged: **formal verifiers decide soundness; the LLM only helps route.**
 
+For a whole-tree workflow, `tools/cv-agent.py` ([`docs/agent.md`](agent.md)) consumes this
+report's `summary.attention` residue and drives an LLM-in-the-loop investigation of each open
+pass — dispatching the same real verifiers via whitelisted actions, under the same trust model.
+
 ## Status
 
 Gated by `orchestrate_fixture` (classify → plan → dispatch + the LLM-brain hook, with a stub
