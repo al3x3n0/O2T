@@ -40,6 +40,8 @@ into a recurrence DSL and discharging soundness with Z3.
   arms, 0 false proofs / 0 false refutations, the decline taxonomy as the coverage frontier.
 - **[e7-ablation.md](e7-ablation.md)** — the measured E7 ablation: seeded misrecovery classes ×
   catching layers, zero escapes, two uniquely-load-bearing layers, and the six field specimens.
+- **[e3-timing.md](e3-timing.md)** — the measured E3 performance table: the integer-ring discharge
+  vs bit-blasting (0.105 s vs a 10 s timeout), 19.5× batched synthesis, per-obligation times.
 
 ## Reproducing
 

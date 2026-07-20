@@ -220,7 +220,8 @@ direct false-proof vector.
 multiplication forces bit-blasting — a single 32-bit `i·i` identity does not terminate in
 practice. O2T proves the polynomial identity over ℤ instead. Because the reduction ℤ → ℤ/2ⁿ is a
 ring homomorphism for `+`, `−`, `×`, an integer identity holds in ℤ/2ⁿ for every n: one proof
-certifies all bitwidths, returning in ~0.02 s where bv32 does not return. The homomorphism does
+certifies all bitwidths. Measured (E3): the nonlinear Faulhaber STEP proves over ℤ in 0.105 s
+while its bit-blasted bv32 twin exhausts a 10 s cap. The homomorphism does
 not cover width-changing operations, which remain a stated boundary.
 
 **Invariant synthesis and induction.** A loop accumulator is a recurrence; O2T proves a claimed

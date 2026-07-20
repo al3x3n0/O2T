@@ -625,6 +625,12 @@ if(O2T_BUILD_TESTS)
             "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/passir_corpus_fixture.py; else echo 'passir_corpus_fixture: z3 not found, skipped'; fi"
     )
     add_test(
+        NAME prove_timing_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prove_timing_fixture.py; else echo 'prove_timing_fixture: z3 not found, skipped'; fi"
+    )
+    add_test(
         NAME passir_ablation_fixture
         COMMAND
             /bin/sh -c
