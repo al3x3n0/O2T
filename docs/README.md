@@ -15,12 +15,15 @@ into a recurrence DSL and discharging soundness with Z3.
   optional CBMC/ESBMC model-checking cross-check, the precondition + poison + theory matrix, the
   source-derived `--modelcheck-intents` deep-audit bridge, the recipe for adding a fold, and the honest scope. *(Start here to catch up on the
   implementation-verification track.)*
-- **[arxiv-outline.md](arxiv-outline.md)** — skeleton for the planned arXiv paper: abstract draft,
-  contributions, section plan, evaluation experiments, related work, limitations, and the artifact
-  appendix mapping each claim to the fixture that gates it.
+- **[arxiv-outline.md](arxiv-outline.md)** — skeleton for the planned arXiv paper, reframed around
+  the unifying thesis *verify the pass, not the pair*: the Pass-IR structural-recovery track and its
+  recovery-certifying cross-check stack lead, with the all-trip-count loop track, closed-loop TV,
+  and the trust-modeled verification agent as co-contributions; abstract draft, section plan,
+  evaluation experiments (E1–E8), related work, and the artifact appendix.
 - **[claim-fixture-map.md](claim-fixture-map.md)** — the artifact-appendix table itself: each paper
-  claim and ledger row → the executable fixture(s) that gate it, plus the honest status of the
-  E1–E5 evaluation experiments.
+  claim and ledger row → the executable fixture(s) that gate it (C1–C8, now including the Pass-IR
+  recovery track, its cross-check stack, and the verification agent), plus the honest status of the
+  E1–E8 evaluation experiments.
 - **[verification-flow.md](verification-flow.md)** — the pipeline diagram (paper Figure 2): input →
   frontend → parser-agnostic prover → {proved | witness | unsupported} → meta-verification.
 - **[pass-ir.md](pass-ir.md)** — design track for formalized DFG/CFG source mining: a typed Pass IR

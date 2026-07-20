@@ -8,7 +8,7 @@ so a reviewer can re-run any single claim.
 ## Reproducing
 
 ```sh
-cmake -S . -B build && ctest --test-dir build      # 417 fixtures (the full suite)
+cmake -S . -B build && ctest --test-dir build      # 438 fixtures (the full suite)
 scripts/check-registries.sh                         # the formal proof gate (Z3), with JSON reports
 ```
 
@@ -89,7 +89,54 @@ equivalent to the input — with a minimized concrete counterexample on failure.
 | Pass-aware orchestrator: classify → plan → dispatch across every validator | `orchestrate_fixture`, `orchestrate_sweep_fixture` |
 | Provider-agnostic LLM brain hook (deterministic stub) | `orchestrate_llm_stub`, `orchestrate_fixture` |
 | Reproducible packaging: offline wheel, renamed/compat packages | `python_package_wheel_fixture`, `cmake_legacy_with_llvm_fixture` |
-| Full reproducibility: the whole suite is executable and deterministic | the 417-fixture `ctest` run |
+| Full reproducibility: the whole suite is executable and deterministic | the 438-fixture `ctest` run |
+
+### C6 — Pass IR: structural peephole-intent recovery from pass source (paper §3)
+
+Recovering a fold's `before ≡ after` obligation STRUCTURALLY from its C++ — matcher trees, rewrite
+DFGs, path conditions, helpers, operand-list loops — with everything unmodeled declined, never
+mis-modeled.
+
+| Claim | Gating fixture(s) |
+| --- | --- |
+| Compositional matcher-tree + rewrite-DFG recovery; nested folds the flat triple cannot express; recovered preconditions load-bearing (`sdiv→udiv` refuted unguarded / proved guarded / vacuous caught); teeth (wrong fold refuted with witness); unmodeled matchers and misparse-prone operators decline | `pass_graph_fixture` |
+| Function-level path conditions: early-return bailouts (De Morgan), positive guards, arbitrary nesting; interprocedural single-return helper inlining (multi-statement declines) | `pass_graph_fixture` |
+| Poison/undef two-level lattice, freeze guards, no-wrap/exact/disjoint flags as refinement obligations; icmp predicates, min/max & bit-manipulation intrinsics, cast round-trips | `pass_graph_fixture` |
+| Refinement via the existential (2QBF) encoding — freeze idempotence proved where the single-quantifier check declines | `pass_graph_refinement_fixture` |
+| Memory obligations over the theory of arrays: store-to-load forwarding / DSE proved, unsound-without-aliasing-guard refuted | `pass_graph_memory_fixture` |
+| Operand-list loops, NON-independent iterations (guard case): `phi [x,x,…,x] → x` recovered with its quantified all-equal guard; under-recovered guard refutes; worklist/side-effect bodies decline | `pass_graph_operand_loop_fixture` |
+| Operand-list loops (reduction case): left-fold rebuild recovered as the associativity obligation; mismatched reducer refuted; non-associative reducer caught by arity corroboration | `pass_graph_reduction_loop_fixture` |
+| The AST-miner finding schema bridges into the same recovery (operand-level findings) | `pass_graph_miner_fixture` |
+
+### C7 — Certifying the recovery itself: the cross-check stack (paper §4)
+
+A mis-recovery is as dangerous as a miscompile; each layer independently checks the *reading* of
+the source, shrinking the trusted base.
+
+| Claim | Gating fixture(s) |
+| --- | --- |
+| Engine reconciliation: symbolic z3 vs exhaustive concrete enumeration must agree (divergence = untrustworthy) | `pass_graph_fixture` (`reconcile` cases) |
+| Compiled-oracle reconciliation: the fold realized as a shim harness, compiled, and symbolically executed must agree with z3 | `pass_graph_fixture` (phase 3b cases) |
+| Independent second SMT solver (bitwuzla) on the identical SMT-LIB | `pass_graph_solver_fixture` |
+| Width-parametric corroboration: verdicts at {8,16,32,64} must agree, else `width-specific` (byte masks, 32-bit closed forms flagged); cast folds cross-width reconciled | `pass_graph_width_fixture` |
+| Arity-parametric corroboration: verdicts at arities {2,3,4} must agree, else `arity-specific` — catches under-recovered guards and non-associative reducers invisible at the representative bound | `pass_graph_operand_loop_fixture`, `pass_graph_reduction_loop_fixture` |
+| Compiler-grounded recovery: the VERBATIM source rewrite compiled through an independent shim must compute the recovered `after` (a self-consistent-but-unfaithful recovery diverges and is caught) | `pass_graph_grounding_fixture` |
+| Structured-tree front-end: pre-parsed matcher/rewrite trees recover the IDENTICAL obligation, removing the tokenizer/parser from the TCB | `pass_graph_structured_fixture` |
+| Re-checkable verdict certificates | `pass_graph_certificate_fixture` |
+| Precondition abduction: an unsound fold's MISSING guard is synthesized (diagnosis, not just rejection) | `pass_graph_synthesis_fixture`, `pass_graph_memory_fixture` (aliasing guard) |
+| Obligations lowered to real LLVM IR for a machine-checked interpreter oracle (Vellvm-ready) | `pass_graph_ir_fixture` |
+
+### C8 — The verification agent: LLM-in-the-loop under a strict trust model (paper §7)
+
+The LLM routes, proposes, and stages; formal verifiers decide every verdict.
+
+| Claim | Gating fixture(s) |
+| --- | --- |
+| A scripted LLM drives an unclassified residue pass to a REAL Z3-proved verdict via whitelisted actions; the deterministic headline is byte-preserved; agent formal verdicts are provenance-tagged (`origin: agent`) in a separate headline | `agent_fixture` |
+| An advisory LLM "refuted" conclusion changes no headline and trips no fail gate; gates split deterministic vs agent-formal | `agent_fixture` |
+| Invalid/malformed LLM replies execute NOTHING (observation + strike; two strikes degrade); budget exhaustion winds down cleanly; resume skips settled passes (sha256-guarded) | `agent_fixture` |
+| Tool synthesis is opt-in and quarantined: staged only under agent-staging/ (hash-pinned manifest, unsafe names refused), fixtures run isolated (`python -I`, temp cwd), results advisory-staged with zero verdict weight, tools/ untouched | `agent_synthesis_fixture` |
+| The action registry whitelists and schema-validates; unknown actions and out-of-enum strategies rejected; no shell from the LLM | `agent_selftest`, `agent_fixture` |
 
 ---
 
@@ -137,7 +184,11 @@ for E4), but the **aggregate result tables/figures with measured numbers are not
 | E3 performance (integer vs bv32; batch vs per-candidate; per-obligation Z3 time) | `closed_form_fixture`, multi-width proofs | ☐ TODO — no timing table |
 | E4 frontend robustness (SCEV succeeds where regex fails) | SCEV frontend fixtures (C3/C4) | ☐ TODO — no comparative study |
 | E5 case studies (LSR from source; a found discrepancy) | `symexec_real_pass_fixture`, `extract_*` fixtures | ◐ Partial — LSR source model exists; no closed-loop LSR validator |
+| E6 Pass-IR corpus coverage (upstream InstCombine/InstSimplify → recovered/proved/declined/refuted by ladder rung) | the C6 recovery fixtures (mechanisms) | ☐ TODO — no corpus run yet; the headline "X% recovered, zero false proofs" is unmeasured |
+| E7 recovery-soundness ablation (seeded misrecoveries × catching layer) | the C7 stack fixtures (each layer's teeth are gated point-wise) | ☐ TODO — per-layer teeth exist as fixtures; no aggregate ablation matrix |
+| E8 agent triage (residue reduction, budget vs upgrades, zero gate violations) | `agent_fixture` (mechanisms + trust invariants) | ☐ TODO — no vendor-tree run with a live LLM yet |
 
-> Note (LSR scope): the abstract lists LSR among "proved" passes, but the current evidence is
-> source-model recovery (design §5), not closed-loop TV of real `opt -passes=lsr` output. This is an
-> open item — either implement the validator or soften the abstract's wording.
+> Note (LSR scope): an earlier abstract draft listed LSR among "proved" passes; the current
+> evidence remains source-model recovery (design §5), not closed-loop TV of real `opt -passes=lsr`
+> output. The reframed abstract no longer makes the claim; implementing the closed-loop LSR
+> validator stays an open E5 item.
