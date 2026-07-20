@@ -119,6 +119,28 @@ The pre-implementation decomposition of the 69 (read-only analysis) reshaped the
 | dynamic-opcode folds (`CreateBinOp(BO.getOpcode(), …)`) | 5 | needs op-parametric obligations (stated) |
 | two-instruction folds (icmp pairs under and/or) | 2 | needs multi-instruction before (stated) |
 
+## Phase 37 (the simplifyXInst half of the caller contract): 1 → 10 proved arms
+
+`simplify<Op>Inst(Value *Op0, Value *Op1, …)` is *documented* as "simplify `<op> Op0, Op1`" — the
+name declares both the phantom instruction and the operand **orientation** (the property that
+makes `foldX` arg-order binding unsound without call-site verification: callers commute those).
+The phantom primary is synthesized and each arm handed to the phase-38 composer; orientation is
+fixture-pinned on non-commutative sub (`0 - X → X` refutes with a witness — the swapped-reading
+false proof is structurally impossible).
+
+| metric | phase 36 | phase 37 |
+| --- | ---: | ---: |
+| upstream functions recovered | 1 | **7** |
+| upstream fold arms **proved** (all reconcile-cross-checked) | 1 | **10** |
+| false proofs / false refutations | 0 / 0 | **0 / 0** |
+
+The 10: `combineAddSubWithShlAddSub` (1), **`foldXorToXor` (3 arms — the cascade-slicing
+multiplier live on upstream)**, `simplifyAdd/Sub/Mul/Xor Inst` (1 each), `simplifyAndInst` (2).
+Two more recovery bugs were caught by the discipline while building this phase (a return-type
+token parsed as the first operand param; a `getType()` normalization that clobbered the cast
+folds' type-equality guard — caught by the gated fixture suite immediately) — E7 specimens four
+and five.
+
 ## Reproducing
 
 ```sh

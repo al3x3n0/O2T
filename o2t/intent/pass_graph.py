@@ -1205,10 +1205,13 @@ def _decl_bindings(body: str, start: int):
 
 def _inline_lets(body: str) -> str | None:
     """Substitute single-assignment `Value *T = <expr>;` bindings into later uses (a pure let).
-    Declines (None) when a bound name is MUTATED or method-dereferenced after binding
-    (`T->setHasNoSignedWrap()`, `dyn_cast<..>(T)->...`) -- the rewrite would then depend on state
-    the substitution cannot see -- or when the name is reassigned (not an SSA let). Substitution
-    only ever edits text AFTER the current statement, so scan positions stay stable."""
+    A name that is MUTATED or method-dereferenced after binding (`T->setHasNoSignedWrap()`),
+    REASSIGNED (`X = Op0;` later -- real cascades reuse locals), or initialized with the `nullptr`
+    sentinel is SKIPPED, not substituted: arms that use it decline naturally (unbound name /
+    unmodeled), while the rest of the cascade stays recoverable. Substituting a sentinel would be
+    actively wrong -- `m_Value(X)` with X:=nullptr would create a false shared variable. The
+    None return is kept for future hard-decline cases; today every path degrades per-name.
+    Substitution only ever edits text AFTER the current statement, so scan positions stay stable."""
     pos = 0
     while True:
         m = _DECL_START_RE.search(body, pos)
@@ -1219,13 +1222,27 @@ def _inline_lets(body: str) -> str | None:
             return body
         bindings, stmt_end = parsed
         for name, expr in bindings:
+            if expr == "nullptr":
+                continue                             # sentinel init, not a value binding
             rest = body[stmt_end:]
             if re.search(rf"\b{re.escape(name)}\s*->", rest):
-                return None                          # mutated / dereferenced after binding
+                continue                             # mutated/dereferenced: skip this name
             if re.search(rf"\b{re.escape(name)}\s*=[^=]", rest):
-                return None                          # reassigned -> not a let
+                continue                             # reassigned -> not a let: skip this name
             body = body[:stmt_end] + re.sub(rf"\b{re.escape(name)}\b", lambda _: expr, rest)
         pos = stmt_end
+
+
+# A `X->getType()` argument chain (`Constant::getNullValue(Op0->getType())`) is a TYPE token with
+# no value semantics in the fragment -- in a REWRITE it normalizes to the opaque name `Ty` so the
+# value-level parse succeeds (the const emitters ignore their type argument). Applied to rewrites
+# ONLY: guard atoms keep `getType()` verbatim, because the type-EQUALITY guard
+# (`X->getType() == I.getType()`) is load-bearing for cast folds and must stay recognizable.
+_TY_CHAIN_RE = re.compile(r"\w+\s*(?:->|\.)\s*getType\s*\(\s*\)")
+
+
+def _normalize_rewrite(rewrite: str) -> str:
+    return _TY_CHAIN_RE.sub("Ty", " ".join(rewrite.split()))
 
 
 def _finish_fold(found, marker: str) -> dict | None:
@@ -1236,7 +1253,7 @@ def _finish_fold(found, marker: str) -> dict | None:
     # Real sources wrap matchers/rewrites over many lines; the conjunct/rewrite regexes are
     # line-oriented, so collapse runs of whitespace (never inside the token vocabulary).
     atoms = [" ".join(a.split()) for a in atoms]
-    fold_rewrite = " ".join(fold_rewrite.split())
+    fold_rewrite = _normalize_rewrite(fold_rewrite)
     match_atoms = [a for a in atoms if a.startswith("match")]
     if len(match_atoms) != 1:
         return None
@@ -1275,7 +1292,7 @@ def _compose_fold(found, instr_params: set, marker: str) -> dict | None:
     - any other subject shape (a different instruction, a Value* parameter) is a misattribution
       risk -- the subject gate's reasoning applies conjunct-wise."""
     atoms = [" ".join(a.split()) for a in found[0]]
-    rewrite = " ".join(found[1].split())
+    rewrite = _normalize_rewrite(found[1])
     match_atoms = [a for a in atoms if a.startswith("match")]
     others = [a for a in atoms if not a.startswith("match")]
     primary_src = None
@@ -1314,6 +1331,34 @@ def _compose_fold(found, instr_params: set, marker: str) -> dict | None:
             return None
         args[k] = subtree
     return recover_pair(" && ".join(others), rewrite, marker, matcher_tree=tree)
+
+
+# --- phase 37: the simplifyXInst caller contract --------------------------------------------------
+# InstructionSimplify's entry points carry their instruction in the NAME: `simplifySubInst(Value
+# *Op0, Value *Op1, ...)` is DOCUMENTED as "simplify `sub Op0, Op1`" -- the operand orientation is
+# the API's semantics, not a call-site accident (unlike foldX helper arg order, which callers
+# commute -- that class needs call-site verification and stays out of scope, stated). The contract
+# lets us synthesize the PHANTOM instruction the name declares and hand the arm to the phase-38
+# composer: primary `match(&__P, m_<Op>(m_Value(Op0), m_Value(Op1)))`, with the arm's
+# `match(Op0/Op1, ...)` conjuncts normalized to `__P.getOperand(k)` form. All splice/retire/alias
+# discipline is inherited; guards outside the fact vocabulary decline per arm.
+_SIMPLIFY_CONTRACT_RE = re.compile(
+    r"\bsimplify(Add|Sub|Mul|And|Or|Xor|Shl|LShr|AShr|SDiv|UDiv|SRem|URem)Inst\s*\(")
+_VALUE_PARAM_RE = re.compile(r"\bValue\s*\*\s*(\w+)\b")
+_OP_TO_MATCHER = {"Add": "m_Add", "Sub": "m_Sub", "Mul": "m_Mul", "And": "m_And", "Or": "m_Or",
+                  "Xor": "m_Xor", "Shl": "m_Shl", "LShr": "m_LShr", "AShr": "m_AShr",
+                  "SDiv": "m_SDiv", "UDiv": "m_UDiv", "SRem": "m_SRem", "URem": "m_URem"}
+
+
+def _contract_arm(found, opname: str, p0: str, p1: str, marker: str) -> dict | None:
+    """Recover one simplifyXInst arm under the name-declared contract, via the phase-38 composer."""
+    def _to_operand_form(atom: str) -> str:
+        atom = re.sub(rf"match\s*\(\s*{re.escape(p0)}\s*,", "match(__P.getOperand(0),", atom)
+        return re.sub(rf"match\s*\(\s*{re.escape(p1)}\s*,", "match(__P.getOperand(1),", atom)
+
+    atoms = [_to_operand_form(a) for a in found[0]]
+    primary = f"match(&__P, {_OP_TO_MATCHER[opname]}(m_Value({p0}), m_Value({p1})))"
+    return _compose_fold((atoms + [primary], found[1]), {"__P"}, marker)
 
 
 # In-place INSTRUCTION mutation is invisible to the keyword-driven walker but changes what a
@@ -1387,7 +1432,29 @@ def recover_folds_from_function(source: str, marker: str = "probe.recovered.fold
         return []
     signature = source[:source.find("{")] if "{" in source else source
     instr_params = {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}
-    return _collect(let_body, return_form=True, instr_params=instr_params)
+    arms = _collect(let_body, return_form=True, instr_params=instr_params)
+    if arms:
+        return arms
+    # phase 37: the simplifyXInst caller contract -- the NAME declares the instruction the operand
+    # params belong to; synthesize its phantom and hand every arm to the phase-38 composer.
+    cm = _SIMPLIFY_CONTRACT_RE.search(signature)
+    if cm is None:
+        return []
+    # params live in the paren list; scanning the whole signature would catch the return type
+    # (`Value *simplifySubInst`) as a bogus first param.
+    vparams = _VALUE_PARAM_RE.findall(signature[cm.end() - 1:])
+    if len(vparams) < 2:
+        return []
+    try:
+        founds = list(islice(_iter_fold_paths(let_body, [], True), max_arms))
+    except Unsupported:
+        return []
+    arms = []
+    for idx, found in enumerate(founds):
+        pair = _contract_arm(found, cm.group(1), vparams[0], vparams[1], marker)
+        if pair is not None:
+            arms.append({**pair, "arm": idx, "standalone": idx > 0})
+    return arms
 
 
 def recover_from_function(source: str, marker: str = "probe.recovered.fold",
