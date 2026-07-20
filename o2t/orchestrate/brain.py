@@ -16,9 +16,7 @@ trust model intact -- formal verifiers still decide soundness; the LLM only help
 
 from __future__ import annotations
 
-import json
-import subprocess
-
+from o2t.llm_io import call_json_command
 from o2t.orchestrate.classify import FAMILIES
 
 _FAMILY_NAMES = [f.name for f in FAMILIES]
@@ -52,13 +50,10 @@ def _build_request(entry: dict, source_excerpt: str) -> dict:
 
 def call_llm(request: dict, llm_command: str, timeout: int = 60) -> dict | None:
     """Run the provider-agnostic LLM command (JSON request on stdin -> JSON verdict on stdout).
-    Returns the parsed, validated verdict, or None on any failure (advisory, never fatal)."""
-    try:
-        proc = subprocess.run(llm_command, shell=True, input=json.dumps(request),
-                              capture_output=True, text=True, timeout=timeout)
-        out = proc.stdout.strip()
-        verdict = json.loads(out[out.index("{"):out.rindex("}") + 1]) if "{" in out else {}
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
+    Transport lives in `o2t.llm_io` (shared with the verification agent); this validates the
+    verdict's family. Returns the validated verdict, or None on any failure (advisory, never fatal)."""
+    verdict = call_json_command(request, llm_command, timeout=timeout)
+    if verdict is None:
         return None
     fam = verdict.get("family")
     if fam not in _FAMILY_NAMES:
