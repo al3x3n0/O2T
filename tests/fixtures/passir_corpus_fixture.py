@@ -105,6 +105,31 @@ static Value *foldUnknownGuard(BinaryOperator &I) {
     return nullptr;
   return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));
 }
+
+// recovered, THREE arms (cascade slicing): arm 0 proved, arm 1 proved, arm 2 deliberately WRONG.
+// Arm 2's refutation is STANDALONE (arm > 0): the witness may be excluded by an earlier arm, so
+// it is an advisory frontier marker, never a pass-level unsoundness claim.
+static Value *foldAddCascade(BinaryOperator &I) {
+  Value *X, *Y;
+  if (match(&I, m_Add(m_Value(X), m_Zero())))
+    return X;
+  if (match(&I, m_Sub(m_Value(X), m_Deferred(X))))
+    return ConstantInt::getNullValue(Ty);
+  if (match(&I, m_Mul(m_Value(X), m_One())))
+    return Builder.CreateAdd(X, X);
+  return nullptr;
+}
+
+// declined / in-fragment-shape: IN-PLACE MUTATION between match and rewrite -- the replaced value
+// is no longer the matched shape. The mutation screen declines the WHOLE cascade (closing a gap
+// that predates slicing).
+static Value *foldWithMutation(BinaryOperator &I) {
+  Value *X, *Y;
+  if (!match(&I, m_Add(m_Value(X), m_Value(Y))))
+    return nullptr;
+  I.setOperand(0, Y);
+  return replaceInstUsesWith(I, Builder.CreateAdd(X, Y));
+}
 """
 
 
@@ -123,41 +148,63 @@ def main() -> int:
         assert [f["name"] for f in fns] == [
             "foldMulAddZero", "foldSubWrong", "simplifyPHI", "bookkeeping",
             "foldByCreate", "getScaledOperand", "worklistFixpoint", "foldAccumulate",
-            "foldUnknownGuard"], [f["name"] for f in fns]
+            "foldUnknownGuard", "foldAddCascade", "foldWithMutation"], [f["name"] for f in fns]
 
-        # 2) The taxonomy lands every function in its designed outcome.
+        # 2) The taxonomy lands every function in its designed outcome (fold-arm granularity).
         report = corpus.run_corpus([src], z3)
         by_name = {r["function"]: r for r in report["results"]}
-        assert by_name["foldMulAddZero"]["outcome"] == "recovered-proved", by_name["foldMulAddZero"]
+
+        def arm(name, idx=0):
+            return by_name[name]["arms"][idx]
+
+        assert arm("foldMulAddZero")["outcome"] == "recovered-proved", by_name["foldMulAddZero"]
         assert by_name["foldMulAddZero"]["rung"] == "function-path"
-        assert by_name["foldSubWrong"]["outcome"] == "recovered-refuted" \
-            and by_name["foldSubWrong"]["witness"], by_name["foldSubWrong"]
-        assert by_name["simplifyPHI"]["outcome"] == "recovered-proved" \
+        assert arm("foldSubWrong")["outcome"] == "recovered-refuted" \
+            and arm("foldSubWrong")["witness"], by_name["foldSubWrong"]
+        assert arm("simplifyPHI")["outcome"] == "recovered-proved" \
             and by_name["simplifyPHI"]["rung"] == "operand-loop", by_name["simplifyPHI"]
         assert by_name["bookkeeping"] == {**by_name["bookkeeping"], "outcome": "declined",
                                           "bucket": "no-match-call"}
         # phase 36: the RETURN-form anchor recovers the fold-named helper (and refutes the wrong
         # fold -- teeth), while the query-named helper stays a name-gated sound decline.
-        assert by_name["foldByCreate"]["outcome"] == "recovered-refuted" \
+        assert arm("foldByCreate")["outcome"] == "recovered-refuted" \
             and by_name["foldByCreate"]["rung"] == "return-form", by_name["foldByCreate"]
         assert by_name["getScaledOperand"]["outcome"] == "declined" \
             and by_name["getScaledOperand"]["bucket"] == "no-riuw-rewrite", by_name["getScaledOperand"]
         # iteration BOOKKEEPING does not block recovery (the loop is value-irrelevant to the
         # rewrite); value-relevant cross-iteration state DOES decline.
-        assert by_name["worklistFixpoint"]["outcome"] == "recovered-proved" \
+        assert arm("worklistFixpoint")["outcome"] == "recovered-proved" \
             and by_name["worklistFixpoint"]["rung"] == "function-path", by_name["worklistFixpoint"]
         assert by_name["foldAccumulate"]["outcome"] == "declined" \
             and by_name["foldAccumulate"]["bucket"] == "loop-over-ir", by_name["foldAccumulate"]
         assert by_name["foldUnknownGuard"]["bucket"] == "in-fragment-shape"
-        assert report["outcomes"] == {"recovered-proved": 3, "recovered-refuted": 2, "declined": 4}
-        # the rung labels every RECOVERED function (the refuted ones included).
-        assert report["rungs"] == {"function-path": 3, "operand-loop": 1, "return-form": 1}
+
+        # 2b) CASCADE SLICING: three arms from one function, each an independent obligation. The
+        #     wrong LATER arm is `refuted-standalone` -- earlier-arm exclusions are unmodeled, so
+        #     it is an advisory frontier marker, never a pass-level unsoundness claim; only an
+        #     arm-0 refutation (foldSubWrong / foldByCreate above) is a pass-level refutation.
+        cascade = by_name["foldAddCascade"]
+        assert [a["outcome"] for a in cascade["arms"]] == \
+            ["recovered-proved", "recovered-proved", "refuted-standalone"], cascade["arms"]
+        assert [a["standalone"] for a in cascade["arms"]] == [False, True, True]
+        # 2c) MUTATION SCREEN: in-place mutation between match and rewrite declines the WHOLE
+        #     cascade -- the replaced value is no longer the matched shape.
+        assert by_name["foldWithMutation"]["outcome"] == "declined" \
+            and by_name["foldWithMutation"]["bucket"] == "in-fragment-shape"
+
+        assert report["outcomes"] == {"recovered": 6, "declined": 5}, report["outcomes"]
+        assert report["fold_arms"] == 8, report["fold_arms"]
+        assert report["arm_outcomes"] == {"recovered-proved": 5, "recovered-refuted": 2,
+                                          "refuted-standalone": 1}, report["arm_outcomes"]
+        # the rung labels every RECOVERED function (the refuted ones included); the cascade is
+        # return-form (its arms return replacement values directly).
+        assert report["rungs"] == {"function-path": 3, "operand-loop": 1, "return-form": 2}
 
         # 3) ZERO-FALSE-PROOF discipline: `recovered-proved` required the reconcile cross-check.
         #    The scalar fold ran the concrete engine; the phi fold's 5-var obligation is beyond the
         #    enumeration cap, so its reconcile abstained (skipped) -- both recorded, neither silent.
-        assert by_name["foldMulAddZero"]["reconcile"] == "proved"
-        assert by_name["simplifyPHI"]["reconcile"] == "skipped"
+        assert arm("foldMulAddZero")["reconcile"] == "proved"
+        assert arm("simplifyPHI")["reconcile"] == "skipped"
 
         # 4) Oversize bodies are skipped-and-counted, never silently dropped.
         capped = corpus.run_corpus([src], z3, max_lines=3)

@@ -74,37 +74,48 @@ def _rung(full: str) -> str:
     return "function-path"
 
 
+def _arm_outcome(arm: dict, z3: str) -> dict:
+    """Prove + cross-check one fold ARM. The zero-false-proof discipline: `proved` requires BOTH
+    the z3 verdict and (where the concrete engine covers the obligation) reconcile agreement; any
+    disagreement or unsupported verdict lands in `recovered-untrusted`. The zero-false-REFUTATION
+    discipline: a STANDALONE arm (arm > 0) is proved over a superset of its reachable inputs, so
+    its refutation is `refuted-standalone` -- the witness may be excluded by an earlier arm; it is
+    an advisory frontier marker, NEVER a pass-level unsoundness claim."""
+    out = {"arm": arm["arm"], "standalone": arm["standalone"]}
+    from o2t import mini_alive as ma
+    status, cex = ma.prove(arm, z3)
+    if status == "refuted":
+        out["outcome"] = "refuted-standalone" if arm["standalone"] else "recovered-refuted"
+        out["witness"] = bool(cex)
+        return out
+    if status != "proved":
+        out.update({"outcome": "recovered-untrusted", "reason": f"prove: {status}"})
+        return out
+    rec = pg.reconcile(arm, z3)
+    if not rec.get("agree", False):
+        out.update({"outcome": "recovered-untrusted", "reason": "reconcile disagreement",
+                    "reconcile": {k: rec.get(k) for k in ("z3", "concrete", "checked")}})
+        return out
+    out.update({"outcome": "recovered-proved", "reconcile": rec.get("concrete", "skipped")})
+    return out
+
+
 def run_function(fn: dict, z3: str | None) -> dict:
-    """Recover + prove + cross-check one candidate. The zero-false-proof discipline: `proved`
-    requires BOTH the z3 verdict and (where the concrete engine covers the obligation) reconcile
-    agreement; any disagreement or unsupported verdict lands in `recovered-untrusted`."""
+    """Slice one candidate function into its fold arms and drive each to a verdict."""
     result = {"function": fn["name"], "lines": fn["lines"]}
     if fn["skipped-oversize"]:
         result.update({"outcome": "skipped-oversize"})
         return result
-    pair = pg.recover_from_function(fn["full"])
-    if pair is None:
+    arms = pg.recover_folds_from_function(fn["full"])
+    if not arms:
         result.update({"outcome": "declined", "bucket": _decline_bucket(fn["full"])})
         return result
     result["rung"] = _rung(fn["full"])
     if z3 is None:
-        result.update({"outcome": "recovered-unproved", "reason": "no z3"})
+        result.update({"outcome": "recovered-unproved", "reason": "no z3", "arms": len(arms)})
         return result
-    from o2t import mini_alive as ma
-    status, cex = ma.prove(pair, z3)
-    if status == "refuted":
-        result.update({"outcome": "recovered-refuted", "witness": bool(cex)})
-        return result
-    if status != "proved":
-        result.update({"outcome": "recovered-untrusted", "reason": f"prove: {status}"})
-        return result
-    rec = pg.reconcile(pair, z3)
-    if not rec.get("agree", False):
-        result.update({"outcome": "recovered-untrusted", "reason": "reconcile disagreement",
-                       "reconcile": {k: rec.get(k) for k in ("z3", "concrete", "checked")}})
-        return result
-    result.update({"outcome": "recovered-proved",
-                   "reconcile": rec.get("concrete", "skipped")})
+    result["arms"] = [_arm_outcome(a, z3) for a in arms]
+    result["outcome"] = "recovered"
     return result
 
 
@@ -125,27 +136,39 @@ def run_corpus(paths: list[Path], z3: str | None, max_lines: int | None = None) 
             r["file"] = f.name
             per_fn.append(r)
         per_file.append({"file": str(f), "functions": len(fns)})
-    counts: dict[str, int] = {}
+    counts: dict[str, int] = {}          # function-level outcomes (declined / recovered / skipped)
+    arm_counts: dict[str, int] = {}      # fold-arm-level outcomes
     buckets: dict[str, int] = {}
     rungs: dict[str, int] = {}
+    total_arms = 0
     for r in per_fn:
         counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
         if r["outcome"] == "declined":
             buckets[r["bucket"]] = buckets.get(r["bucket"], 0) + 1
         if "rung" in r:
             rungs[r["rung"]] = rungs.get(r["rung"], 0) + 1
+        for arm in r.get("arms", []):
+            total_arms += 1
+            arm_counts[arm["outcome"]] = arm_counts.get(arm["outcome"], 0) + 1
     return {"files": per_file, "functions": len(per_fn), "outcomes": counts,
+            "fold_arms": total_arms, "arm_outcomes": arm_counts,
             "decline_buckets": buckets, "rungs": rungs, "results": per_fn,
-            "invariant": "every proved fold survived the reconcile cross-check; "
-                         "disagreements land in recovered-untrusted, never proved"}
+            "invariant": "every proved arm survived the reconcile cross-check (disagreements land "
+                         "in recovered-untrusted, never proved); a standalone arm's refutation is "
+                         "advisory (earlier-arm exclusions unmodeled), never a pass-level claim"}
 
 
 def render_table(report: dict) -> str:
     lines = ["== E6: Pass-IR corpus coverage ==",
-             f"files: {len(report['files'])}   candidate fold functions: {report['functions']}",
-             "outcomes:"]
+             f"files: {len(report['files'])}   candidate fold functions: {report['functions']}"
+             f"   fold arms recovered: {report.get('fold_arms', 0)}",
+             "function outcomes:"]
     for k in sorted(report["outcomes"]):
         lines.append(f"  {k:22s} {report['outcomes'][k]}")
+    if report.get("arm_outcomes"):
+        lines.append("fold-arm outcomes:")
+        for k in sorted(report["arm_outcomes"]):
+            lines.append(f"  {k:22s} {report['arm_outcomes'][k]}")
     if report["decline_buckets"]:
         lines.append("decline taxonomy (the coverage frontier):")
         for k in DECLINE_BUCKETS:

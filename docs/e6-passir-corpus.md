@@ -78,6 +78,21 @@ the matched pattern as `before` produced the false obligation `~X ≡ -1`. The f
 gate**: the fold-path match must inspect the function's *instruction-typed parameter* (what the
 returned value replaces); operand-subject helpers decline. The gate is pinned by the fixture.
 
+## Cascade slicing (same day): fold-granular accounting, ready for the multiplier
+
+The corpus now slices every function into its fold ARMS (`recover_folds_from_function`) and counts
+at fold granularity. Discipline: arm 0's refutation is a pass-level claim; a **later** arm's
+refutation is `refuted-standalone` — earlier-arm exclusions are unmodeled, so the witness may be
+unreachable; it is an advisory frontier marker, never "the pass is unsound". A new **in-place
+mutation screen** (`setOperand`/`swapOperands`/flag setters between match and rewrite decline the
+whole cascade) closes a silent misattribution gap that predates slicing.
+
+Upstream yield today: unchanged (1 arm — the one recovered fold is single-arm; the multi-arm
+cascades are precisely the phase-37/38 populations). Slicing is the **multiplier**: when those
+phases convert a cascade function, every arm becomes an obligation instead of only the first.
+The machinery is gated synthetically (`passir_corpus_fixture`: a 3-arm cascade slices to
+proved/proved/refuted-standalone; the mutation screen declines).
+
 **Residual frontier, measured** (why the other ~102 return-form targets still decline):
 
 | sub-population of the 103 | n | next capability |

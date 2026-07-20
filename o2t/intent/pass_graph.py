@@ -952,14 +952,29 @@ _KW_RE = re.compile(r"\b(if|return|for|while|replaceInstUsesWith)\b")
 _RIUW_STMT_RE = re.compile(r"(replaceInstUsesWith\s*\(.+?\)\s*;)", re.S)
 
 
-def _find_fold_path(body: str, path: list[str],
-                    return_form: bool = False) -> tuple[list[str], str] | None:
-    """Walk a block's statements in order, threading the accumulated path condition, and return
-    (path_atoms, fold_rewrite) at the `return replaceInstUsesWith(...)`. Handles nested `if (G){..}`
-    blocks (descend under G), early-return bailouts (`if (B) return null;` -> path gains NOT B for
-    later siblings), and positive `if (G) return fold;`. Declines (None) on unmodeled shapes.
+def _iter_fold_paths(body: str, path: list[str], return_form: bool = False):
+    """Walk a block's statements in order, threading the accumulated path condition, and YIELD
+    (path_atoms, fold_rewrite) for EVERY fold arm found -- a real fold function is a CASCADE of
+    sequential `if (match...) return <rewrite>;` arms, and each arm is an independent obligation.
+    Handles nested `if (G){..}` blocks (descend under G), early-return bailouts (`if (B) return
+    null;` -> path gains NOT B for later siblings), and positive `if (G) return fold;`.
 
-    `return_form` (phase 36) treats a non-bail `return <expr>;` as THE rewrite -- the upstream
+    Enumeration semantics (each rule is a sound bound):
+    - a guarded fold arm (`if (G) return R;` / a fold inside `if (G){..}`) yields and enumeration
+      CONTINUES -- control falls through when the arm does not fire. The negation of an earlier
+      arm's guard is NOT modeled into later arms' premises; the CALLER must treat a later arm's
+      refutation as standalone-only (see recover_folds_from_function).
+    - an UNCONDITIONAL fold return yields and STOPS (everything after is dead code).
+    - a statement-form `replaceInstUsesWith(...)` yields and STOPS -- the IR is mutated in place,
+      so any later arm would read state the recovery cannot see.
+    - an unmodeled KEYWORD shape (a non-bail non-fold return, an unparseable condition) STOPS
+      enumeration (arms found before it remain valid).
+    - keyword-less statements (declarations, Worklist bookkeeping, statistics) are transparently
+      skipped, exactly as before slicing. In-place INSTRUCTION mutation is keyword-less too and
+      would silently change what a later match/rewrite means -- callers must screen for it
+      (`_MUTATES_IR_RE` in recover_folds_from_function) before walking.
+
+    `return_form` (phase 36) treats a non-bail `return <expr>;` as a rewrite -- the upstream
     InstCombine/InstSimplify contract for a Value*/Instruction*-returning fold helper is "return the
     replacement (nullptr for no fold)". The expr is synthesized into the RIUW form so the entire
     downstream recovery (recover_pair, lowering, cross-checks) is byte-identical."""
@@ -967,19 +982,22 @@ def _find_fold_path(body: str, path: list[str],
     while True:
         kw = _KW_RE.search(body, i)
         if not kw:
-            return None
+            return
         if kw.group(1) == "return":
             rm = re.match(r"return\s+(.+?)\s*;", body[kw.start():], re.S)
             if rm and "replaceInstUsesWith" in rm.group(1):
-                return path, "return " + rm.group(1).strip() + ";"
+                yield path, "return " + rm.group(1).strip() + ";"
+                return                                        # unconditional: dead code follows
             if return_form and rm and rm.group(1).strip() not in _BAIL_RETURNS:
-                return path, f"return replaceInstUsesWith(I, {rm.group(1).strip()});"
+                yield path, f"return replaceInstUsesWith(I, {rm.group(1).strip()});"
+                return                                        # unconditional: dead code follows
             i = kw.end()
             continue
         if kw.group(1) == "replaceInstUsesWith":              # a bare (unguarded) statement rewrite
             sm = _RIUW_STMT_RE.match(body[kw.start():])
             if sm:
-                return path, "return " + sm.group(1).rstrip(";").strip() + ";"
+                yield path, "return " + sm.group(1).rstrip(";").strip() + ";"
+                return                                        # IR mutated in place: stop
             i = kw.end()
             continue
         if kw.group(1) in ("for", "while"):
@@ -988,58 +1006,67 @@ def _find_fold_path(body: str, path: list[str],
             # header adds NO value precondition. Skip it and recover the body fold.
             paren = body.find("(", kw.end())
             if paren < 0:
-                return None
+                return
             try:
                 _, after = _balanced(body, paren)
             except Unsupported:
-                return None
+                return
             i = after                                          # scan the body statements transparently
             continue
         # an `if`: parse the balanced condition, then dispatch on what follows.
         paren = body.find("(", kw.end())
         if paren < 0:
-            return None
+            return
         try:
             cond, after = _balanced(body, paren)
         except Unsupported:
-            return None
+            return
         rest = body[after:]
         lead = len(rest) - len(rest.lstrip())
         rest = rest.lstrip()
         if rest.startswith("{"):                                  # nested block: descend under COND
             block, blk_end = _balanced_brace(body, after + lead)
-            sub = _find_fold_path(block, path + _positive_atoms(cond), return_form)
-            if sub is not None:
-                return sub
-            i = blk_end                                            # fold not inside; keep scanning
+            yield from _iter_fold_paths(block, path + _positive_atoms(cond), return_form)
+            i = blk_end                                            # then keep scanning the cascade
             continue
         sm = _RIUW_STMT_RE.match(rest)                             # `if (COND) replaceInstUsesWith(...);`
         if sm:
-            return path + _positive_atoms(cond), "return " + sm.group(1).rstrip(";").strip() + ";"
+            yield path + _positive_atoms(cond), "return " + sm.group(1).rstrip(";").strip() + ";"
+            return                                                 # IR mutated in place: stop
         cb = re.match(r"(?:continue|break)\s*;", rest)             # per-iteration bailout in a loop
         if cb:
             bail = _bail_atoms(cond)
             if bail is None:
-                return None
+                return
             path = path + bail
             i = after + lead + cb.end()
             continue
         rm = re.match(r"return\s+(.+?)\s*;", rest, re.S)
         if not rm:
-            return None
+            return
         retval = rm.group(1).strip()
         if "replaceInstUsesWith" in retval:                        # positive guard returning the fold
-            return path + _positive_atoms(cond), "return " + retval + ";"
+            yield path + _positive_atoms(cond), "return " + retval + ";"
+            i = after + lead + rm.end()                            # arm may not fire: cascade on
+            continue
         if retval.rstrip(";").strip() in _BAIL_RETURNS:            # bailout: add NOT(cond) for siblings
             bail = _bail_atoms(cond)
             if bail is None:
-                return None
+                return
             path = path + bail
             i = after + lead + rm.end()
             continue
         if return_form:                                            # positive guard returning the value
-            return path + _positive_atoms(cond), f"return replaceInstUsesWith(I, {retval});"
-        return None                                                # non-bail, non-fold return
+            yield path + _positive_atoms(cond), f"return replaceInstUsesWith(I, {retval});"
+            i = after + lead + rm.end()                            # arm may not fire: cascade on
+            continue
+        return                                                     # non-bail, non-fold return
+
+
+def _find_fold_path(body: str, path: list[str],
+                    return_form: bool = False) -> tuple[list[str], str] | None:
+    """First fold arm of the cascade (the pre-slicing behavior), or None."""
+    return next(_iter_fold_paths(body, path, return_form), None)
 
 
 # --- phase 4: interprocedural helper inlining ---------------------------------------------------
@@ -1159,6 +1186,101 @@ def _inline_lets(body: str) -> str | None:
     return body
 
 
+def _finish_fold(found, marker: str) -> dict | None:
+    """Normalize a (path_atoms, rewrite) fold arm and recover its obligation (None on decline)."""
+    if found is None:
+        return None
+    atoms, fold_rewrite = found
+    # Real sources wrap matchers/rewrites over many lines; the conjunct/rewrite regexes are
+    # line-oriented, so collapse runs of whitespace (never inside the token vocabulary).
+    atoms = [" ".join(a.split()) for a in atoms]
+    fold_rewrite = " ".join(fold_rewrite.split())
+    match_atoms = [a for a in atoms if a.startswith("match")]
+    if len(match_atoms) != 1:
+        return None
+    predicate = " && ".join([match_atoms[0]] + [a for a in atoms if not a.startswith("match")])
+    return recover_pair(predicate, fold_rewrite, marker)
+
+
+def _subject_gated(found, instr_params: set) -> bool:
+    """True iff every match atom on this arm's path inspects an instruction-typed parameter --
+    what the returned value replaces. An operand-subject match (`simplifyOrLogic(Value *X,
+    Value *Y)` matching on Y) simplifies an implicit outer op the recovery cannot see; accepting
+    it would misattribute the fold (found as a false refutation on upstream InstructionSimplify)."""
+    match_atoms = [a for a in found[0] if a.lstrip("!").strip().startswith("match")]
+    subjects = [_MATCH_SUBJECT_RE.search(a) for a in match_atoms]
+    return bool(subjects) and all(s is not None and s.group(1) in instr_params for s in subjects)
+
+
+# In-place INSTRUCTION mutation is invisible to the keyword-driven walker but changes what a
+# later match/rewrite means (`I.setOperand(0, Z); return replaceInstUsesWith(I, X)` replaces a
+# DIFFERENT value than the matched shape). Screen the whole body and decline -- closing a gap
+# that predates slicing (mutation before the single fold was equally silent).
+_MUTATES_IR_RE = re.compile(
+    r"\b(?:setOperand|swapOperands|replaceOperand|replaceUsesOfWith|setHasNoSignedWrap|"
+    r"setHasNoUnsignedWrap|setIsExact|setPredicate|dropPoisonGeneratingFlags|mutateType|"
+    r"copyIRFlags|andIRFlags|setFastMathFlags)\s*\(")
+
+
+def recover_folds_from_function(source: str, marker: str = "probe.recovered.fold",
+                                helpers_source: str = "", max_arms: int = 16) -> list[dict]:
+    """Reconstruct EVERY fold arm of a function's cascade. A real fold function is a sequence of
+    `if (match...) return <rewrite>;` arms; each is recovered as an independent obligation with
+    its own path condition, tagged `arm` (yield order) and `standalone`:
+
+    - `standalone: False` (the FIRST arm): no earlier arm can fire, so a refutation is a
+      pass-level claim, exactly as before slicing.
+    - `standalone: True` (later arms): the negations of earlier arms' guards are NOT modeled into
+      the premise. A `proved` is still sound (proved over a SUPERSET of the reachable inputs); a
+      refutation is NOT a pass-level claim -- the witness may be excluded by an earlier arm. The
+      caller must report it as standalone-only, never as "the pass is unsound".
+
+    Anchors and gates are those of recover_from_function; enumeration stops at unmodeled or
+    IR-mutating statements (arms found before remain valid). At most `max_arms` arms are taken."""
+    from itertools import islice
+    loop_pair = recover_operand_loop(source, marker)                # phase 34: operand-list collapse loop
+    if loop_pair is not None:
+        return [{**loop_pair, "arm": 0, "standalone": False}]
+    reduction_pair = recover_reduction_loop(source, marker)         # phase 35: reduction-rebuild loop
+    if reduction_pair is not None:
+        return [{**reduction_pair, "arm": 0, "standalone": False}]
+    helpers = _parse_helpers(source + "\n" + helpers_source)
+    body = _fold_body(source)                          # the function body that performs the rewrite
+    if helpers:
+        body = _inline_calls(body, helpers)
+    if _MUTATES_IR_RE.search(body):
+        return []                                      # in-place mutation: the walk would misattribute
+
+    def _collect(walk_body: str, return_form: bool, instr_params: set | None) -> list[dict]:
+        try:
+            founds = list(islice(_iter_fold_paths(walk_body, [], return_form), max_arms))
+        except Unsupported:
+            return []
+        arms = []
+        for idx, found in enumerate(founds):
+            if instr_params is not None and not _subject_gated(found, instr_params):
+                continue                                  # misattribution risk: this arm declines
+            pair = _finish_fold(found, marker)
+            if pair is not None:
+                arms.append({**pair, "arm": idx, "standalone": idx > 0})
+        return arms
+
+    arms = _collect(body, return_form=False, instr_params=None)
+    if arms:
+        return arms
+    # phase 36: return-form retry, gated on the fold-contract name + per-arm subject gate. The
+    # RIUW path above is untouched -- this only widens coverage where it recovered nothing.
+    fn_name = _FOLD_NAME_RE.search(source)
+    if fn_name is None or not _FOLD_CONTRACT_RE.search(fn_name.group(1)):
+        return []
+    let_body = _inline_lets(body)
+    if let_body is None:
+        return []
+    signature = source[:source.find("{")] if "{" in source else source
+    instr_params = {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}
+    return _collect(let_body, return_form=True, instr_params=instr_params)
+
+
 def recover_from_function(source: str, marker: str = "probe.recovered.fold",
                           helpers_source: str = "") -> dict | None:
     """Reconstruct a fold's obligation from its FUNCTION source by walking the control flow to the
@@ -1168,63 +1290,12 @@ def recover_from_function(source: str, marker: str = "probe.recovered.fold",
     `return replaceInstUsesWith(I, <expr>)`, and (phase 36) the upstream RETURN-form contract --
     a fold-named Value*/Instruction* helper returning the replacement value directly, with local
     single-assignment `Value *T = ...;` bindings inlined. Declines on any guard/return shape
-    outside the modeled fragment (a sound bound)."""
-    loop_pair = recover_operand_loop(source, marker)                # phase 34: operand-list collapse loop
-    if loop_pair is not None:
-        return loop_pair
-    reduction_pair = recover_reduction_loop(source, marker)         # phase 35: reduction-rebuild loop
-    if reduction_pair is not None:
-        return reduction_pair
-    helpers = _parse_helpers(source + "\n" + helpers_source)
-    body = _fold_body(source)                          # the function body that performs the rewrite
-    if helpers:
-        body = _inline_calls(body, helpers)
-
-    def _finish(found) -> dict | None:
-        if found is None:
-            return None
-        atoms, fold_rewrite = found
-        # Real sources wrap matchers/rewrites over many lines; the conjunct/rewrite regexes are
-        # line-oriented, so collapse runs of whitespace (never inside the token vocabulary).
-        atoms = [" ".join(a.split()) for a in atoms]
-        fold_rewrite = " ".join(fold_rewrite.split())
-        match_atoms = [a for a in atoms if a.startswith("match")]
-        if len(match_atoms) != 1:
-            return None
-        predicate = " && ".join([match_atoms[0]] + [a for a in atoms if not a.startswith("match")])
-        return recover_pair(predicate, fold_rewrite, marker)
-
-    try:
-        pair = _finish(_find_fold_path(body, []))
-    except Unsupported:
-        pair = None
-    if pair is not None:
-        return pair
-    # phase 36: return-form retry, gated on the fold-contract name. The RIUW path above is
-    # untouched -- this only widens coverage where the explicit anchor found nothing.
-    fn_name = _FOLD_NAME_RE.search(source)
-    if fn_name is None or not _FOLD_CONTRACT_RE.search(fn_name.group(1)):
-        return None
-    let_body = _inline_lets(body)
-    if let_body is None:
-        return None
-    try:
-        found = _find_fold_path(let_body, [], return_form=True)
-    except Unsupported:
-        return None
-    if found is None:
-        return None
-    # Subject gate: the fold path's match must inspect the function's INSTRUCTION-typed parameter
-    # -- that is what the returned value replaces. An operand-subject match (`simplifyOrLogic(
-    # Value *X, Value *Y)` matching on Y) simplifies an implicit outer op the recovery cannot see;
-    # accepting it would misattribute the fold. Decline.
-    signature = source[:source.find("{")] if "{" in source else source
-    instr_params = {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}
-    match_atoms = [a for a in found[0] if a.lstrip("!").strip().startswith("match")]
-    subjects = [_MATCH_SUBJECT_RE.search(a) for a in match_atoms]
-    if not subjects or any(s is None or s.group(1) not in instr_params for s in subjects):
-        return None
-    return _finish(found)
+    outside the modeled fragment (a sound bound). This is the FIRST-arm view of the cascade; use
+    recover_folds_from_function to slice every arm."""
+    arms = recover_folds_from_function(source, marker, helpers_source, max_arms=1)
+    if arms and arms[0]["arm"] == 0:
+        return {k: v for k, v in arms[0].items() if k not in ("arm", "standalone")}
+    return None
 
 
 # --- phase 3: reconcile the recovered obligation across two independent engines ----------------
