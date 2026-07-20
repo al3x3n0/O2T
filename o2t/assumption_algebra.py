@@ -28,6 +28,13 @@ def _key(assumption: dict[str, Any]) -> tuple[Any, ...]:
         if isinstance(left, str) and isinstance(right, str) and right < left:
             left, right = right, left
         return (op, left, right)
+    if op == "rel":
+        # A relational guard between two operands (`isKnownNonEqual(A,B)`, a dominating icmp).
+        # It has no `name`, so keying on `(op, name)` would collapse EVERY rel fact onto
+        # `("rel", None)` and silently drop all but the first -- dropping a value-relevant
+        # precondition (soundness hole). Key on the predicate and BOTH operands instead; the
+        # comparison is ordered (slt/sgt), so do NOT order-normalize the pair.
+        return (op, assumption.get("predicate"), assumption.get("left"), assumption.get("right"))
     return (op, name)
 
 
