@@ -50,12 +50,22 @@ static Value *bookkeeping(Instruction *I) {
   return nullptr;
 }
 
-// declined / no-riuw-rewrite: matches but rewrites by constructing a new instruction.
+// recovered-refuted via the RETURN-form anchor (phase 36): a fold-named helper returning the
+// replacement directly -- and this one is deliberately WRONG (X+0 is not X*X), so it refutes.
 static Instruction *foldByCreate(BinaryOperator &I) {
   Value *X;
   if (!match(&I, m_Add(m_Value(X), m_Zero())))
     return nullptr;
   return BinaryOperator::CreateMul(X, X);
+}
+
+// declined / no-riuw-rewrite: a QUERY helper -- returns an answer, not a rewrite. The return-form
+// anchor is name-gated to the fold contract, so this stays a sound decline.
+static Value *getScaledOperand(BinaryOperator &I) {
+  Value *X;
+  if (!match(&I, m_Mul(m_Value(X), m_One())))
+    return nullptr;
+  return BinaryOperator::CreateShl(X, X);
 }
 
 // recovered-proved DESPITE the loop: the users() walk is value-IRRELEVANT bookkeeping (it drives
@@ -112,7 +122,7 @@ def main() -> int:
         fns = corpus.extract_functions(CORPUS)
         assert [f["name"] for f in fns] == [
             "foldMulAddZero", "foldSubWrong", "simplifyPHI", "bookkeeping",
-            "foldByCreate", "worklistFixpoint", "foldAccumulate",
+            "foldByCreate", "getScaledOperand", "worklistFixpoint", "foldAccumulate",
             "foldUnknownGuard"], [f["name"] for f in fns]
 
         # 2) The taxonomy lands every function in its designed outcome.
@@ -126,7 +136,12 @@ def main() -> int:
             and by_name["simplifyPHI"]["rung"] == "operand-loop", by_name["simplifyPHI"]
         assert by_name["bookkeeping"] == {**by_name["bookkeeping"], "outcome": "declined",
                                           "bucket": "no-match-call"}
-        assert by_name["foldByCreate"]["bucket"] == "no-riuw-rewrite"
+        # phase 36: the RETURN-form anchor recovers the fold-named helper (and refutes the wrong
+        # fold -- teeth), while the query-named helper stays a name-gated sound decline.
+        assert by_name["foldByCreate"]["outcome"] == "recovered-refuted" \
+            and by_name["foldByCreate"]["rung"] == "return-form", by_name["foldByCreate"]
+        assert by_name["getScaledOperand"]["outcome"] == "declined" \
+            and by_name["getScaledOperand"]["bucket"] == "no-riuw-rewrite", by_name["getScaledOperand"]
         # iteration BOOKKEEPING does not block recovery (the loop is value-irrelevant to the
         # rewrite); value-relevant cross-iteration state DOES decline.
         assert by_name["worklistFixpoint"]["outcome"] == "recovered-proved" \
@@ -134,9 +149,9 @@ def main() -> int:
         assert by_name["foldAccumulate"]["outcome"] == "declined" \
             and by_name["foldAccumulate"]["bucket"] == "loop-over-ir", by_name["foldAccumulate"]
         assert by_name["foldUnknownGuard"]["bucket"] == "in-fragment-shape"
-        assert report["outcomes"] == {"recovered-proved": 3, "recovered-refuted": 1, "declined": 4}
-        # the rung labels every RECOVERED function (the refuted one included).
-        assert report["rungs"] == {"function-path": 3, "operand-loop": 1}
+        assert report["outcomes"] == {"recovered-proved": 3, "recovered-refuted": 2, "declined": 4}
+        # the rung labels every RECOVERED function (the refuted ones included).
+        assert report["rungs"] == {"function-path": 3, "operand-loop": 1, "return-form": 1}
 
         # 3) ZERO-FALSE-PROOF discipline: `recovered-proved` required the reconcile cross-check.
         #    The scalar fold ran the concrete engine; the phi fold's 5-var obligation is beyond the

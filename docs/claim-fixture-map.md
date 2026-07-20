@@ -107,6 +107,7 @@ mis-modeled.
 | Operand-list loops, NON-independent iterations (guard case): `phi [x,x,…,x] → x` recovered with its quantified all-equal guard; under-recovered guard refutes; worklist/side-effect bodies decline | `pass_graph_operand_loop_fixture` |
 | Operand-list loops (reduction case): left-fold rebuild recovered as the associativity obligation; mismatched reducer refuted; non-associative reducer caught by arity corroboration | `pass_graph_reduction_loop_fixture` |
 | The AST-miner finding schema bridges into the same recovery (operand-level findings) | `pass_graph_miner_fixture` |
+| RETURN-form rewrite anchor (upstream's "return the replacement" contract): a VERBATIM LLVM 18 fold recovered + proved + exhaustively reconciled; teeth (mutated reducer refutes); name gate, instruction-subject gate (pins the operand-subject false-refutation found on upstream), let-mutation guard, in-place/unbound returns decline; RIUW anchor byte-unchanged | `pass_graph_return_form_fixture` |
 
 ### C7 — Certifying the recovery itself: the cross-check stack (paper §4)
 
@@ -184,7 +185,7 @@ for E4), but the **aggregate result tables/figures with measured numbers are not
 | E3 performance (integer vs bv32; batch vs per-candidate; per-obligation Z3 time) | `closed_form_fixture`, multi-width proofs | ☐ TODO — no timing table |
 | E4 frontend robustness (SCEV succeeds where regex fails) | SCEV frontend fixtures (C3/C4) | ☐ TODO — no comparative study |
 | E5 case studies (LSR from source; a found discrepancy) | `symexec_real_pass_fixture`, `extract_*` fixtures | ◐ Partial — LSR source model exists; no closed-loop LSR validator |
-| E6 Pass-IR corpus coverage (upstream InstCombine/InstSimplify → recovered/proved/declined/refuted by ladder rung) | `passir_corpus_fixture` (runner mechanics: taxonomy, reconcile-gated proved, oversize accounting) | ◐ **Measured initial run** ([e6-passir-corpus.md](e6-passir-corpus.md)): 441 candidates, 0 recovered / **0 false proofs** / 441 declined with taxonomy; frontier quantified (103 return-form rewrite targets = the phase-36 case) |
+| E6 Pass-IR corpus coverage (upstream InstCombine/InstSimplify → recovered/proved/declined/refuted by ladder rung) | `passir_corpus_fixture` (runner mechanics), `pass_graph_return_form_fixture` (the phase-36 anchor) | ◐ **Measured, two runs** ([e6-passir-corpus.md](e6-passir-corpus.md)): 441 candidates; phase 36 lifts recovered-proved 0 → 1 (a VERBATIM upstream fold, exhaustively reconciled) with **0 false proofs / 0 false refutations** — the run itself caught an operand-subject misattribution, now gate-pinned; residual frontier decomposed (69 multi-match, 27 operand-only, 13 FP) |
 | E7 recovery-soundness ablation (seeded misrecoveries × catching layer) | the C7 stack fixtures (each layer's teeth are gated point-wise) | ☐ TODO — per-layer teeth exist as fixtures; no aggregate ablation matrix |
 | E8 agent triage (residue reduction, budget vs upgrades, zero gate violations) | `agent_fixture` (mechanisms + trust invariants) | ☐ TODO — no vendor-tree run with a live LLM yet |
 

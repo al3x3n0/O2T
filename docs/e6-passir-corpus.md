@@ -59,6 +59,33 @@ candidates from anchor-declines into recovery *attempts*, each still subject to 
 guard/lowering fragment and the C7 cross-check stack. The 55 `in-fragment-shape` functions need
 the orthogonal capability: slicing multi-fold visit methods into per-fold obligations.
 
+## Phase-36 re-run (same day): the anchor lands, and the run catches a bug
+
+With the return-form anchor implemented (name-gated, subject-gated, let-inlining,
++`m_OneUse`/`m_Neg`/`m_Not` vocabulary — `pass_graph_return_form_fixture`):
+
+| metric | before (RIUW-only) | after (phase 36) |
+| --- | ---: | ---: |
+| recovered + **proved** | 0 | **1** — `combineAddSubWithShlAddSub` (InstCombineAddSub.cpp), a VERBATIM upstream fold: `(-B << Cnt) + A → A - (B << Cnt)`, proved and confirmed by exhaustive bv8 enumeration (16.7M inputs) |
+| false proofs | 0 | **0** |
+| false refutations | 0 | **0** — but only after a catch (below) |
+
+**The run caught a recovery bug immediately** — the E7 story in live action: the first phase-36
+run reported `simplifyOrLogic` (InstructionSimplify.cpp) as `recovered-refuted`. Investigation
+showed a *misattribution*, not an LLVM bug: `simplifyOrLogic(Value *X, Value *Y)` simplifies the
+**implicit outer** `X | Y`; its `match(Y, m_Not(m_Specific(X)))` inspects an *operand*, so taking
+the matched pattern as `before` produced the false obligation `~X ≡ -1`. The fix is a **subject
+gate**: the fold-path match must inspect the function's *instruction-typed parameter* (what the
+returned value replaces); operand-subject helpers decline. The gate is pinned by the fixture.
+
+**Residual frontier, measured** (why the other ~102 return-form targets still decline):
+
+| sub-population of the 103 | n | next capability |
+| --- | ---: | --- |
+| multi-match conjuncts on the instruction's operands (`match(&I, …) && match(I.getOperand(1), …)`) | 69 | compose conjunct subjects into ONE before-tree (phase-38 candidate) |
+| operand-only signatures (`simplifyXInst(Op0, Op1)` — the implicit op is named by the FUNCTION) | 27 | function-name-implied `before` (phase-37 candidate) |
+| FP matchers/builders (outside the bitvector fragment) | 13 | out of scope (stated) |
+
 ## Reproducing
 
 ```sh

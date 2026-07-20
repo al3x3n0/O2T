@@ -480,6 +480,17 @@ def lower_matcher(node: dict, binds: set[str], widths: dict[str, int],
         if inner.get("op") not in _EXACT_OPS:
             raise Unsupported("m_Exact only models lshr/ashr")
         return {**inner, "flags": inner.get("flags", []) + ["exact"]}
+    if name == "m_OneUse":                                   # phase 36: use-count is legality, not value
+        if len(args) != 1:
+            raise Unsupported("m_OneUse needs one operand")
+        return lower_matcher(args[0], binds, widths, pred_binds, hint)
+    if name in ("m_Neg", "m_Not"):                           # phase 36: sub-0/xor-allones sugar
+        if len(args) != 1:
+            raise Unsupported(f"{name} needs one operand")
+        inner = lower_matcher(args[0], binds, widths, pred_binds, hint)
+        if name == "m_Neg":
+            return {"op": "bvsub", "args": [_const(0, hint), inner]}
+        return {"op": "bvxor", "args": [inner, _const(0xFFFFFFFF, hint)]}
     if name in ("m_ICmp", "m_c_ICmp", "m_SpecificICmp"):
         if len(args) != 3 or args[0]["kind"] != "name":
             raise Unsupported(f"{name} needs a predicate and two operands")
@@ -576,6 +587,14 @@ def lower_rewrite(node: dict, binds: set[str], widths: dict[str, int], hint: int
         if len(args) != 1:
             raise Unsupported("CreateFreeze needs one operand")
         return {"op": "freeze", "args": [lower_rewrite(args[0], binds, widths, hint)]}
+    if name in ("CreateNeg", "CreateNot"):
+        # phase 36: unary sugar. A second arg is only ever the twine NAME (API contract) -- ignored.
+        if len(args) not in (1, 2):
+            raise Unsupported(f"{name} needs one operand")
+        inner = lower_rewrite(args[0], binds, widths, hint)
+        if name == "CreateNeg":
+            return {"op": "bvsub", "args": [_const(0, hint), inner]}
+        return {"op": "bvxor", "args": [inner, _const(0xFFFFFFFF, hint)]}
     if name == "CreateBinaryIntrinsic":                             # first arg is the Intrinsic:: id
         if len(args) < 2 or args[0]["kind"] != "name":
             raise Unsupported("CreateBinaryIntrinsic needs an intrinsic id and operands")
@@ -933,11 +952,17 @@ _KW_RE = re.compile(r"\b(if|return|for|while|replaceInstUsesWith)\b")
 _RIUW_STMT_RE = re.compile(r"(replaceInstUsesWith\s*\(.+?\)\s*;)", re.S)
 
 
-def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
+def _find_fold_path(body: str, path: list[str],
+                    return_form: bool = False) -> tuple[list[str], str] | None:
     """Walk a block's statements in order, threading the accumulated path condition, and return
     (path_atoms, fold_rewrite) at the `return replaceInstUsesWith(...)`. Handles nested `if (G){..}`
     blocks (descend under G), early-return bailouts (`if (B) return null;` -> path gains NOT B for
-    later siblings), and positive `if (G) return fold;`. Declines (None) on unmodeled shapes."""
+    later siblings), and positive `if (G) return fold;`. Declines (None) on unmodeled shapes.
+
+    `return_form` (phase 36) treats a non-bail `return <expr>;` as THE rewrite -- the upstream
+    InstCombine/InstSimplify contract for a Value*/Instruction*-returning fold helper is "return the
+    replacement (nullptr for no fold)". The expr is synthesized into the RIUW form so the entire
+    downstream recovery (recover_pair, lowering, cross-checks) is byte-identical."""
     i = 0
     while True:
         kw = _KW_RE.search(body, i)
@@ -947,6 +972,8 @@ def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
             rm = re.match(r"return\s+(.+?)\s*;", body[kw.start():], re.S)
             if rm and "replaceInstUsesWith" in rm.group(1):
                 return path, "return " + rm.group(1).strip() + ";"
+            if return_form and rm and rm.group(1).strip() not in _BAIL_RETURNS:
+                return path, f"return replaceInstUsesWith(I, {rm.group(1).strip()});"
             i = kw.end()
             continue
         if kw.group(1) == "replaceInstUsesWith":              # a bare (unguarded) statement rewrite
@@ -981,7 +1008,7 @@ def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
         rest = rest.lstrip()
         if rest.startswith("{"):                                  # nested block: descend under COND
             block, blk_end = _balanced_brace(body, after + lead)
-            sub = _find_fold_path(block, path + _positive_atoms(cond))
+            sub = _find_fold_path(block, path + _positive_atoms(cond), return_form)
             if sub is not None:
                 return sub
             i = blk_end                                            # fold not inside; keep scanning
@@ -1010,6 +1037,8 @@ def _find_fold_path(body: str, path: list[str]) -> tuple[list[str], str] | None:
             path = path + bail
             i = after + lead + rm.end()
             continue
+        if return_form:                                            # positive guard returning the value
+            return path + _positive_atoms(cond), f"return replaceInstUsesWith(I, {retval});"
         return None                                                # non-bail, non-fold return
 
 
@@ -1094,13 +1123,52 @@ def _inline_calls(text: str, helpers: dict[str, tuple[list[str], str]], depth: i
     return text
 
 
+# phase 36: the return-form anchor applies only to functions whose NAME carries the fold contract
+# ("return the replacement value") -- a query helper (dyn_castNegVal, getComplexity, ...) also
+# returns a Value* but its return is an ANSWER, not a rewrite; recovering it would misattribute a
+# fold (a false alarm on refute). Sound bound: unnamed-contract functions decline.
+_FOLD_NAME_RE = re.compile(r"(?:Value|Instruction)\s*\*\s*(?:\w+::)?(\w+)\s*\(")
+_FOLD_CONTRACT_RE = re.compile(r"(?i)(fold|simplif|visit|combine|canonicaliz)")
+# The match SUBJECT must be the function's INSTRUCTION-typed parameter: `match(&I, ...)` with
+# `BinaryOperator &I`. A helper that matches an OPERAND parameter (`simplifyOrLogic(Value *X,
+# Value *Y)` matching on Y) simplifies an IMPLICIT outer operation the signature does not name --
+# taking the operand pattern as `before` would misattribute the fold (found as a false refutation
+# on upstream InstructionSimplify in the first E6 run with this anchor). Sound bound: decline.
+_INSTR_PARAM_RE = re.compile(
+    r"(?:BinaryOperator|Instruction|UnaryOperator|ICmpInst|CmpInst|SelectInst|PHINode|"
+    r"GetElementPtrInst|CastInst|Operator)\s*[&*]\s*(\w+)\b")
+_MATCH_SUBJECT_RE = re.compile(r"match\s*\(\s*&?\s*(\w+)")
+# A local single-assignment binding of a value the rewrite later uses:
+# `Value *NewShl = Builder.CreateShl(B, Cnt);` -- a pure SSA let.
+_LET_RE = re.compile(r"\b(?:Value|Constant)\s*\*\s*(\w+)\s*=\s*([^;]+);")
+
+
+def _inline_lets(body: str) -> str | None:
+    """Substitute single-assignment `Value *T = <expr>;` bindings into later uses (a pure let).
+    Declines (None) when the bound name is MUTATED or method-dereferenced after binding
+    (`T->setHasNoSignedWrap()`, `dyn_cast<..>(T)->...`) -- the rewrite would then depend on state
+    the substitution cannot see -- or when the name is reassigned (not an SSA let)."""
+    for m in list(_LET_RE.finditer(body)):
+        name, expr = m.group(1), m.group(2).strip()
+        rest = body[m.end():]
+        if re.search(rf"\b{re.escape(name)}\s*->", rest):
+            return None                              # mutated / dereferenced after binding
+        if re.search(rf"\b{re.escape(name)}\s*=[^=]", rest):
+            return None                              # reassigned -> not a let
+        body = body[:m.end()] + re.sub(rf"\b{re.escape(name)}\b", expr, rest)
+    return body
+
+
 def recover_from_function(source: str, marker: str = "probe.recovered.fold",
                           helpers_source: str = "") -> dict | None:
     """Reconstruct a fold's obligation from its FUNCTION source by walking the control flow to the
-    `return replaceInstUsesWith(I, <expr>)` and collecting the full path condition -- early-return
-    bailouts (negated, De Morgan) and enclosing positive `if` guards, at arbitrary nesting. Single-
-    return helper calls in guards/rewrites are inlined first (interprocedural). Declines on any
-    guard/return shape outside the modeled fragment (a sound bound)."""
+    rewrite and collecting the full path condition -- early-return bailouts (negated, De Morgan)
+    and enclosing positive `if` guards, at arbitrary nesting. Single-return helper calls in
+    guards/rewrites are inlined first (interprocedural). Two rewrite anchors: the explicit
+    `return replaceInstUsesWith(I, <expr>)`, and (phase 36) the upstream RETURN-form contract --
+    a fold-named Value*/Instruction* helper returning the replacement value directly, with local
+    single-assignment `Value *T = ...;` bindings inlined. Declines on any guard/return shape
+    outside the modeled fragment (a sound bound)."""
     loop_pair = recover_operand_loop(source, marker)                # phase 34: operand-list collapse loop
     if loop_pair is not None:
         return loop_pair
@@ -1111,18 +1179,52 @@ def recover_from_function(source: str, marker: str = "probe.recovered.fold",
     body = _fold_body(source)                          # the function body that performs the rewrite
     if helpers:
         body = _inline_calls(body, helpers)
+
+    def _finish(found) -> dict | None:
+        if found is None:
+            return None
+        atoms, fold_rewrite = found
+        # Real sources wrap matchers/rewrites over many lines; the conjunct/rewrite regexes are
+        # line-oriented, so collapse runs of whitespace (never inside the token vocabulary).
+        atoms = [" ".join(a.split()) for a in atoms]
+        fold_rewrite = " ".join(fold_rewrite.split())
+        match_atoms = [a for a in atoms if a.startswith("match")]
+        if len(match_atoms) != 1:
+            return None
+        predicate = " && ".join([match_atoms[0]] + [a for a in atoms if not a.startswith("match")])
+        return recover_pair(predicate, fold_rewrite, marker)
+
     try:
-        found = _find_fold_path(body, [])
+        pair = _finish(_find_fold_path(body, []))
+    except Unsupported:
+        pair = None
+    if pair is not None:
+        return pair
+    # phase 36: return-form retry, gated on the fold-contract name. The RIUW path above is
+    # untouched -- this only widens coverage where the explicit anchor found nothing.
+    fn_name = _FOLD_NAME_RE.search(source)
+    if fn_name is None or not _FOLD_CONTRACT_RE.search(fn_name.group(1)):
+        return None
+    let_body = _inline_lets(body)
+    if let_body is None:
+        return None
+    try:
+        found = _find_fold_path(let_body, [], return_form=True)
     except Unsupported:
         return None
     if found is None:
         return None
-    atoms, fold_rewrite = found
-    match_atoms = [a for a in atoms if a.startswith("match")]
-    if len(match_atoms) != 1:
+    # Subject gate: the fold path's match must inspect the function's INSTRUCTION-typed parameter
+    # -- that is what the returned value replaces. An operand-subject match (`simplifyOrLogic(
+    # Value *X, Value *Y)` matching on Y) simplifies an implicit outer op the recovery cannot see;
+    # accepting it would misattribute the fold. Decline.
+    signature = source[:source.find("{")] if "{" in source else source
+    instr_params = {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}
+    match_atoms = [a for a in found[0] if a.lstrip("!").strip().startswith("match")]
+    subjects = [_MATCH_SUBJECT_RE.search(a) for a in match_atoms]
+    if not subjects or any(s is None or s.group(1) not in instr_params for s in subjects):
         return None
-    predicate = " && ".join([match_atoms[0]] + [a for a in atoms if not a.startswith("match")])
-    return recover_pair(predicate, fold_rewrite, marker)
+    return _finish(found)
 
 
 # --- phase 3: reconcile the recovered obligation across two independent engines ----------------

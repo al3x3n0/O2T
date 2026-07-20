@@ -69,6 +69,8 @@ def _rung(full: str) -> str:
         return "operand-loop"
     if pg.recover_reduction_loop(full) is not None:
         return "reduction-loop"
+    if "replaceInstUsesWith" not in full:
+        return "return-form"                # phase 36: the upstream return-the-replacement contract
     return "function-path"
 
 
