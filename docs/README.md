@@ -48,6 +48,8 @@ into a recurrence DSL and discharging soundness with Z3.
   loops, 26 positive verdicts, zero false refutations on sound LLVM, mutated-recurrence teeth.
 - **[e4-robustness.md](e4-robustness.md)** — the measured E4 frontend differential: on rotated/LCSSA
   loops regex recovers 0, SCEV recovers 4 (strict domination), with a simple-loop control.
+- **[e5-case-studies.md](e5-case-studies.md)** — the E5 worked case studies: foldIsPowerOf2OrZero
+  recovered from verbatim upstream source, strength reduction proved relationally, discrepancy scope.
 
 ## Reproducing
 

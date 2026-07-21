@@ -359,9 +359,19 @@ point mutations, and is not claimed here.
 bit-blasted bv32 twin exhausts a 10 s cap; batched synthesis discharge runs 19.5× faster than
 per-candidate while agreeing candidate-by-candidate; recovered fold obligations prove in 12–83 ms.
 
-**Pending.** E5 (source case studies — narrative, e.g. an LSR-from-source walk-through) and E8
-(live-model agent triage — its trust invariants are gated with a deterministic stub, but no run
-with a live model) remain; E8 is bounded by an external dependency rather than missing mechanism.
+**E5 — case studies (worked examples).** Two end-to-end walk-throughs, each traceable to a gated
+fixture: `foldIsPowerOf2OrZero` recovered from unmodified upstream source through nearly the whole
+ladder and proved as two ctpop theorems; and strength reduction proved relationally for all trip
+counts by the inferred relation `{k = c·i, acc = acc}`, with a wrong stride refuted, on both
+hand-written loops and the rotated real-`opt` output shape. On this benchmark O2T finds no
+miscompile — the correct result, matching E1 — so discrepancy *detection* is demonstrated on
+injected miscompiles (E1/E2/E7 teeth); a real class of discrepancy was nonetheless found and fixed
+in development, in O2T's own reading of the source (E7's six field specimens). Closed-loop
+validation of real `opt -passes=lsr` and reproduction of a wild LLVM bug remain open.
+
+**Pending.** E8 (live-model agent triage) is the one remaining experiment: its trust invariants
+are gated with a deterministic stub, but a run with a live model is bounded by an external
+dependency rather than missing mechanism.
 E8 (live agent triage of a vendor tree) has its trust invariants gated with a deterministic stub
 but no live-model run.
 
