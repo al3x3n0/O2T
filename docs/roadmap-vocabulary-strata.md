@@ -45,16 +45,29 @@ Each stratum is gated by the invariant that has held all along: **an assumption'
 sound over-approximation of the predicate** (never assume more than the predicate guarantees), and
 **anything O2T cannot pin to a concrete value DECLINES** — a sound bound, never a mis-model.
 
-### Stratum A — literal-mask KnownBits (LOW risk; recommended first slice)
-Widen the *reconstructor*, not the model. Recognize the two remaining literal-mask idioms and emit
-the `known-bits` assumption the SMT layer already discharges:
-- `MaskedValueIsZero(X, C)` with literal `C` → `{known-bits, name: X, zero_mask: C}` *(already
-  done; extend the parse to the `(X & C) == 0` guard written inline, not only the helper call).*
-- `(X & C) == C` inline, or `MaskedValueIsZero(~X, C)` → `{known-bits, name: X, one_mask: C}`
-  *(new: the one-mask direction the SMT already supports but the reconstructor never emits).*
+### Stratum A — literal-mask KnownBits (LOW risk) — **LANDED (string path)**
+Widen the *reconstructor*, not the model. Done (`pass_graph_inline_mask_fixture`): `fact_to_assumptions`
+now recognizes the inline mask-test forms and emits the `known-bits` assumption the SMT layer already
+discharges:
+- `(X & C) == 0` (literal `C`) → `{known-bits, name: X, zero_mask: C}`.
+- `(X & C) == C` (literal `C`) → `{known-bits, name: X, one_mask: C}` — the one-mask direction the SMT
+  supported but the reconstructor never emitted.
+- `(X & Y) == 0` (both SSA) → the relational `mask-pair` (inline `haveNoCommonBitsSet`).
+- `(X & C) == D`, `D ∉ {0, C}` → declines (not a clean known-bits fact).
 
-Soundness obligation: the mask must be a **literal or a compile-time-constant expression O2T can
-fold** (Stratum C); a computed/SSA mask stays a `mask-pair` (relational) or declines. No new SMT.
+The concrete cross-check engine (`_assumption_holds`) gained the matching `known-bits` filter, so the
+two engines do not drift — `reconcile` agrees on these folds instead of falsely refuting. Proven
+load-bearing (`or(X,8)→xor(X,8)` under `(X&8)==0` proves, refutes unguarded), and a contradictory
+known-both-ways guard is rejected at formal-IR construction (`known-bits facts conflict`), never proved
+vacuously.
+
+**Still open in Stratum A:** (a) wire the inline `(A & B) == C` form through the *Clang-AST* guard
+reconstructor (currently call-only, so the AST front-end still declines inline-mask guards — the
+string path is unaffected and gains the capability now); (b) the common *real-source* idiom is
+`MaskedValueIsZero(X, <mask-expr>)` / `computeKnownBits` where the mask is an **APInt expression**, not
+a bare literal — reconstructing that needs Stratum B's literal APInt evaluator to fold the mask first.
+Soundness obligation (held): the mask must be a **literal or a compile-time-constant O2T can fold**; a
+computed/SSA mask stays a `mask-pair` or declines. No new SMT.
 
 ### Stratum B — APInt literal constant-folding in rewrites (LOW–MEDIUM risk)
 A small, closed evaluator for APInt/ConstantInt methods **when every operand is a literal**:
@@ -74,24 +87,22 @@ increment.
 These return a small struct the fold destructures; recovering them is a *shape* problem (a new
 contract), not a vocabulary one, and belongs with the recovery ladder, not here.
 
-## Recommended first slice + fixture plan
+## First slice — done, and what it taught us
 
-**Do Stratum A (the one-mask direction) first**: it is a pure reconstructor widening over an SMT
-encoding that already exists, it unlocks a real masked-bit-test fold class, and its soundness
-obligation is local. Mirror the existing guard fixtures (`pass_graph_fixture`'s load-bearing-guard
-pattern):
+Stratum A (inline literal-mask reconstruction) is **landed** for the string path, gated by
+`pass_graph_inline_mask_fixture` (z3-guarded, CMake-registered) with the full teeth set:
+reconstructor cases, load-bearing zero- and one-mask folds, and a contradictory guard rejected at
+construction. One design note earned in the doing: the fact was already discharged by the SMT layer,
+but the **concrete cross-check engine had to gain the same `known-bits` filter** or the two engines
+drift and `reconcile` falsely refutes — a reminder that every new fact touches *both* engines, not
+just the SMT.
 
-1. A fold that **proves** under `{known-bits, one_mask: C}` (e.g. a rewrite valid only when the low
-   bits of `X` are known set).
-2. The same fold **refutes with a witness** when the guard is dropped (the fact is load-bearing).
-3. It is **caught vacuous** on a contradictory instantiation (anti-vacuity still bites).
-4. A byte-identical **cross-front-end** check: the AST path reconstructs the same `known-bits`
-   assumption as the regex path (`clang_tree_source_fixture`-style), so the new vocabulary is proven
-   on *both* front-ends at once.
-
-Register the fixture in CMake (z3-gated), as every fact fixture is. Measure the delta in verbatim
-reach honestly — Stratum A likely lifts 3/3 by a small, countable number, not a landslide; the
-majority wall is Stratum C, which stays a decline.
+The honest reach delta: this widens the **string** front-end's guard vocabulary now; it does not yet
+lift the 3/3 verbatim count, because (i) the AST front-end still needs the inline-guard wiring, and
+(ii) real upstream folds write the mask as an APInt expression or a `computeKnownBits` result, which
+needs Stratum B (literal APInt folding) or stays a Stratum C decline. The next concrete slice is
+therefore **Stratum B's literal APInt evaluator**, which both unblocks APInt-mask reconstruction and
+lets rewrites derive constants.
 
 ## Non-goals (stated, so silence is not mistaken for coverage)
 

@@ -1726,6 +1726,10 @@ def _assumption_holds(assumption: dict, env: dict, width: int) -> bool:
     v = env[assumption["name"]] & mask
     if op == "not-eq":
         return v != (int(assumption.get("value", 0)) & mask)
+    if op == "known-bits":                                # (X & zero_mask)==0 and (X & one_mask)==one_mask
+        zero_mask = int(assumption.get("zero_mask", 0)) & mask   # masked to the reconcile width, mirroring
+        one_mask = int(assumption.get("one_mask", 0)) & mask     # scalar_assumption_smt (engines must not drift)
+        return (v & zero_mask) == 0 and (v & one_mask) == one_mask
     if op == "power-of-two":
         return v != 0 and (v & (v - 1)) == 0
     if op == "cmp":

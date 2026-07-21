@@ -49,6 +49,15 @@ _SIGN_RE = {
     "isKnownNegative": ("cmp", "slt"),
     "isKnownNonZero": ("not-eq", None),
 }
+# Inline mask-test guards -- the forms folds write WITHOUT calling a helper (stratum A of
+# docs/roadmap-vocabulary-strata.md). Anchored so it matches only a pure `(A & B) == D` clause:
+#   (X & C) == 0   -> the C bits of X are known ZERO  (= MaskedValueIsZero(X, C), literal C)
+#   (X & C) == C   -> the C bits of X are known ONE   (the one-mask direction; no ValueTracking helper)
+#   (X & Y) == 0   -> X, Y share no set bits           (= haveNoCommonBitsSet(X, Y), SSA masks)
+# Operands may be in either order. A literal mask yields the known-bits fact the SMT already
+# discharges (scalar_assumption_smt handles both masks); two SSA operands with `== 0` yield the
+# relational mask-pair. Every other shape (a non-0/non-mask RHS, `!=`, a relational one-mask) DECLINES.
+_INLINE_MASK_RE = re.compile(r"^\s*\(?\s*(\w+)\s*&\s*(\w+)\s*\)?\s*==\s*(\w+)\s*$")
 
 
 def _hexlit(value: int) -> str:
@@ -81,6 +90,32 @@ def _mask_operand(tok: str):
     return ("var", tok)
 
 
+def _inline_mask_fact(a: str, b: str, rhs: str):
+    """An inline `(A & B) == RHS` clause -> its assumption, or None (decline). A LITERAL mask with a
+    known value/mask on the LHS gives an exact known-bits fact (RHS 0 -> known-zero of that mask;
+    RHS == the mask -> known-one of that mask); two SSA operands with RHS 0 give the relational
+    mask-pair. A non-0 / non-mask RHS, or a relational one-mask, is not a clean fact and declines."""
+    ka, va = _mask_operand(a)
+    kb, vb = _mask_operand(b)
+    rk, rv = _mask_operand(rhs)
+    if ka == "lit" and kb == "var":
+        mask, val = va & MASK32, b
+    elif kb == "lit" and ka == "var":
+        mask, val = vb & MASK32, a
+    else:
+        mask = val = None
+    if mask is not None and rk == "lit":
+        r = rv & MASK32
+        if r == 0:
+            return [{"op": "known-bits", "name": val, "zero_mask": mask}]
+        if r == mask:
+            return [{"op": "known-bits", "name": val, "one_mask": mask}]
+        return None                                   # (X & C) == D, D != 0 and D != C -> not clean
+    if ka == "var" and kb == "var" and rk == "lit" and (rv & MASK32) == 0:
+        return [{"op": "mask-pair", "left": a, "right": b}]
+    return None
+
+
 def fact_to_assumptions(clause: str) -> list[dict[str, Any]] | None:
     """Lower one ValueTracking predicate clause to canonical assumption objects.
 
@@ -103,6 +138,11 @@ def fact_to_assumptions(clause: str) -> list[dict[str, Any]] | None:
             return [{"op": "known-bits", "name": mz.group(1), "zero_mask": operand}]
         # (X & Y) == 0 with Y an SSA value: a two-operand disjointness fact.
         return [{"op": "mask-pair", "left": mz.group(1), "right": operand}]
+    im = _INLINE_MASK_RE.match(clause)
+    if im:
+        inline = _inline_mask_fact(im.group(1), im.group(2), im.group(3))
+        if inline is not None:
+            return inline
     for name, (op, predicate) in _SIGN_RE.items():
         if re.search(name + r"\(\s*&?(\w+)", clause):
             sm = re.search(name + r"\(\s*&?(\w+)", clause)
