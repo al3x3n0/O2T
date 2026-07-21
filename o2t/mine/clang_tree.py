@@ -10,13 +10,14 @@ COMPILER's own parser), walks the CallExpr AST of the `match(...)` pattern and t
 compiler builds the call structure; O2T only relabels it -- removing the regex parser from the
 trusted base (the #1 maturity item in docs/maturity.md).
 
-Scope: matcher tree + RIUW rewrite tree, for a single guarded `if (match(&I, ...) && <guards>)
-return replaceInstUsesWith(...)`. The guard conjuncts are reconstructed from the AST and become the
-recovered PRECONDITION (a guard that cannot be reconstructed declines, never drops). Bailout
-cascades (`if (!match) return null; ...`), the return-form anchor, and templated matchers
-(`m_Intrinsic<...>`) still route through the string path; widening the AST producer to them
-retires more of the parser over time. Anything the AST cannot cleanly map DECLINES -- never a
-mis-mapping, never a dropped premise.
+Scope: (1) a single guarded `if (match(&I, ...) && <guards>) return replaceInstUsesWith(...)` --
+the guard conjuncts are reconstructed from the AST into the recovered PRECONDITION; and (2) the
+RETURN-form anchor (upstream's dominant idiom) -- a fold-named helper that returns the replacement
+value directly, with Builder.Create* lets inlined at the AST level, unguarded/pure-builder only.
+Bailout cascades, guarded return-form, const emitters, and templated matchers (`m_Intrinsic<...>`)
+still route through the string path; widening the AST producer to them retires more of the parser
+over time. Anything the AST cannot cleanly map DECLINES -- never a mis-mapping, never a dropped
+premise.
 """
 
 from __future__ import annotations
@@ -35,8 +36,12 @@ class _Unmappable(Exception):
     """An AST node outside the mapped fragment -- the fold declines rather than mis-map."""
 
 
-def _to_tree(node: dict) -> dict:
-    """Map one clang AST expression node to pass_graph's {kind,name,args,template} tree."""
+def _to_tree(node: dict, lets: dict | None = None) -> dict:
+    """Map one clang AST expression node to pass_graph's {kind,name,args,template} tree. A
+    DeclRefExpr to a local single-assignment `let` (a `Value *T = Builder.Create*(...)` binding) is
+    inlined by recursing into its initializer -- the AST-level equivalent of the string path's
+    let-inlining, so a return-form rewrite that names intermediates recovers compositionally."""
+    lets = lets or {}
     n = cp.strip_casts(node)
     k = n.get("kind")
     if k in ("CallExpr", "CXXMemberCallExpr"):
@@ -44,11 +49,13 @@ def _to_tree(node: dict) -> dict:
         if not name:
             raise _Unmappable("call with no resolvable callee")
         return {"kind": "call", "name": name, "template": None,
-                "args": [_to_tree(a) for a in cp.call_args(n)]}
+                "args": [_to_tree(a, lets) for a in cp.call_args(n)]}
     if k == "DeclRefExpr":
         ref = (n.get("referencedDecl") or {}).get("name")
         if not ref:
             raise _Unmappable("unresolved reference")
+        if ref in lets:
+            return _to_tree(lets[ref], lets)             # inline the SSA let
         return {"kind": "name", "name": ref}
     if k == "IntegerLiteral":
         return {"kind": "int", "value": int(n.get("value", "0"))}
@@ -157,6 +164,91 @@ def extract_trees(source: str,
         return None
 
 
+# --- return-form anchor via the AST (upstream's dominant "return the replacement" idiom) --------
+_BAIL_VALUES = {"nullptr", "false", "0"}
+
+
+def _collect_lets(node: dict, out: dict) -> None:
+    """SSA `let` bindings: a VarDecl `Value *T = Builder.Create*(...)`; name -> the init node.
+    Uninitialized decls (matcher-bound operands) and non-Create* inits are not lets."""
+    if node.get("kind") == "VarDecl":
+        kids = cp.inner(node)
+        if kids:
+            init = cp.strip_casts(kids[-1])
+            if init.get("kind") in ("CallExpr", "CXXMemberCallExpr") \
+                    and (cp.callee_name(init) or "").startswith("Create"):
+                out[node.get("name")] = init
+    for ch in cp.inner(node):
+        _collect_lets(ch, out)
+
+
+def _nonbail_returns(node: dict, out: list) -> None:
+    if node.get("kind") == "ReturnStmt":
+        kids = cp.inner(node)
+        if kids:
+            v = cp.strip_casts(kids[0])
+            if v.get("kind") == "CXXNullPtrLiteralExpr":
+                return
+            if v.get("kind") == "DeclRefExpr" and \
+                    (v.get("referencedDecl") or {}).get("name") in _BAIL_VALUES:
+                return
+            out.append(v)
+    for ch in cp.inner(node):
+        _nonbail_returns(ch, out)
+
+
+def _has_nonvocab_call(node: dict) -> bool:
+    """Any call outside {match, m_*, Create*} -- a guard/analysis-query/const-emitter. The
+    return-form cut is UNGUARDED and pure-builder only, so its presence declines (never drops)."""
+    k = node.get("kind")
+    if k in ("CallExpr", "CXXMemberCallExpr"):
+        name = cp.callee_name(node)
+        if not (name and (name == "match" or name.startswith("m_") or name.startswith("Create"))):
+            return True
+    return any(_has_nonvocab_call(ch) for ch in cp.inner(node))
+
+
+def _return_form_trees(ast: dict, source: str) -> tuple[dict, dict, str] | None:
+    """Return-form recovery: a fold-named helper that RETURNS the replacement value (no RIUW).
+    Scoped to the unguarded, positive-guard, pure-builder shape -- fold-name gated, single match on
+    the instruction parameter, Builder.Create* lets inlined, non-bail return tree-ified. Guards,
+    const emitters, and in-place mutation decline (this cut, never a dropped premise)."""
+    from o2t.intent.pass_graph import (_FOLD_CONTRACT_RE, _FOLD_NAME_RE, _INSTR_PARAM_RE,
+                                       _MUTATES_IR_RE)
+    fn = _FOLD_NAME_RE.search(source)
+    if fn is None or not _FOLD_CONTRACT_RE.search(fn.group(1)):
+        return None                                   # not a fold-contract name -> decline
+    if _MUTATES_IR_RE.search(source):
+        return None                                   # in-place mutation -> decline
+    if _has_nonvocab_call(ast):
+        return None                                   # a guard/const-emitter -> this cut declines
+    matches = []
+    cp.find_member_call(ast, "match", matches)
+    if len(matches) != 1:
+        return None
+    m_args = cp.call_args(matches[0])
+    if len(m_args) != 2:
+        return None
+    # subject gate: the match must inspect the function's instruction-typed parameter.
+    subj = cp.strip_casts(m_args[0])
+    if subj.get("kind") == "UnaryOperator":               # &I
+        subj = cp.strip_casts(cp.inner(subj)[0]) if cp.inner(subj) else {}
+    subj_name = (subj.get("referencedDecl") or {}).get("name") if subj.get("kind") == "DeclRefExpr" else None
+    signature = source[:source.find("{")] if "{" in source else source
+    if subj_name is None or subj_name not in {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}:
+        return None
+    lets: dict = {}
+    _collect_lets(ast, lets)
+    rets: list = []
+    _nonbail_returns(ast, rets)
+    if len(rets) != 1:
+        return None                                   # 0 or many replacement returns -> decline
+    try:
+        return _to_tree(m_args[1]), _to_tree(rets[0], lets), ""
+    except (_Unmappable, IndexError):
+        return None
+
+
 def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
                        clang_bin: str = "clang") -> dict | None:
     """Recover a fold obligation via the Clang-AST front-end -- the regex parser is NOT in the
@@ -165,7 +257,11 @@ def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
     path and so are absent here (unguarded folds only, this cut)."""
     trees = extract_trees(source, clang_bin)
     if trees is None:
-        return None
+        # phase-36 idiom: a fold-named helper that RETURNS the replacement (no replaceInstUsesWith).
+        ast = _dump(source, clang_bin)
+        trees = _return_form_trees(ast, source) if ast is not None else None
+        if trees is None:
+            return None
     matcher_tree, rewrite_tree, guard_source = trees
     return pg.recover_pair(guard_source, "", marker,
                            matcher_tree=matcher_tree, rewrite_tree=rewrite_tree)

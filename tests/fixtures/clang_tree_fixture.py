@@ -93,7 +93,28 @@ def main() -> int:
         else:
             proved += 1
 
-    # 4. GUARD IS LOAD-BEARING: the guarded sdiv->udiv refutes when its guard is DROPPED -- so the
+    # 4. RETURN-FORM anchor (upstream's dominant idiom): a fold-named helper that RETURNS the
+    #    replacement value (no replaceInstUsesWith), with a local Builder let inlined. Recovered
+    #    via the AST parser-free, byte-identical to the regex path, and refuted when mutated.
+    retform = ("Value *combineAddSub(Instruction &I) {\n"
+               "  Value *A, *B, *Cnt;\n"
+               "  if (match(&I, m_Add(m_Shl(m_Neg(m_Value(B)), m_Value(Cnt)), m_Value(A)))) {\n"
+               "    Value *NewShl = Builder.CreateShl(B, Cnt);\n"
+               "    return Builder.CreateSub(A, NewShl);\n  }\n  return nullptr; }")
+    rf_clang = ct.recover_from_clang(retform, clang_bin=clang)
+    rf_regex = pg.recover_from_function(retform)
+    assert rf_clang is not None and rf_regex is not None, "return-form must recover both ways"
+    assert rf_clang["before"] == rf_regex["before"] and rf_clang["after"] == rf_regex["after"], \
+        "return-form obligation diverged from the regex path"
+    assert ma.prove(rf_clang, z3)[0] == "proved", "(-B<<Cnt)+A -> A-(B<<Cnt) must prove"
+    mutated = ct.recover_from_clang(retform.replace("CreateSub", "CreateAdd"), clang_bin=clang)
+    assert mutated is not None and ma.prove(mutated, z3)[0] == "refuted", "mutated reducer must refute"
+    # a query-helper NAME and a guarded return-form both decline (name gate; unguarded cut).
+    assert ct.recover_from_clang(retform.replace("combineAddSub", "dyn_castFoo"), clang_bin=clang) is None
+    proved += 1
+    refuted += 1
+
+    # 5. GUARD IS LOAD-BEARING: the guarded sdiv->udiv refutes when its guard is DROPPED -- so the
     #    reconstructed precondition is genuinely carrying the proof, not decoration.
     unguarded = ("Value *f(Instruction &I){ Value *X, *Y;\n"
                  "  if (match(&I, m_SDiv(m_Value(X), m_Value(Y))))\n"
@@ -101,7 +122,7 @@ def main() -> int:
     up = ct.recover_from_clang(unguarded, clang_bin=clang)
     assert up is not None and ma.prove(up, z3)[0] == "refuted", "unguarded sdiv->udiv must refute"
 
-    # 5. SOUND DECLINE, never a dropped premise: a non-fold declines; a guard that is NOT a flat
+    # 6. SOUND DECLINE, never a dropped premise: a non-fold declines; a guard that is NOT a flat
     #    reconstructible call (a `Pred == ICMP_EQ` compare) declines rather than drop it; a bailout
     #    cascade (multiple ifs) is out of this cut and declines.
     assert ct.recover_from_clang("Value *f(Instruction &I){ return nullptr; }", clang_bin=clang) is None
