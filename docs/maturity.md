@@ -52,7 +52,9 @@ discharge; loop-nest transforms and vectorization are out.
    parser-free -- return-form, a 3-arm cascade, the two-icmp caller contract, and the simplifyXInst
    name contract, predicate-set splits, the collapse loops -- SHAPE PARITY COMPLETE). Remaining:
    (a) lift verbatim reach beyond 3/3 -- the shape renderings prove the AST handles each shape, but
-   most upstream folds need vocabulary O2T does not yet model (KnownBits/APInt); and (b) parse whole
+   most upstream folds need vocabulary O2T does not yet model (KnownBits/APInt); the walls and a
+   bounded first slice are scoped in [roadmap-vocabulary-strata.md](roadmap-vocabulary-strata.md);
+   and (b) parse whole
    upstream `.cpp`s in their lib-internal compile context (compile DB) so every fold's real method
    resolves, not just self-contained free functions (blocked without an LLVM source checkout --
    `InstCombineInternal.h` is not in the release headers).
