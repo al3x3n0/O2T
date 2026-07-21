@@ -61,6 +61,10 @@ discharge; loop-nest transforms and vectorization are out.
    only installed public headers, so the whole `.cpp` compiles against `<llvm-include>` + the
    InstCombine lib dir with NO LLVM build. Methods (`InstCombinerImpl::`) are accepted, not just free
    functions. This makes the verbatim-reach claim about *genuine pass source*, not vendored renderings.
+   A **whole-file sweep** over all 52 fold-shaped functions of the real `InstCombineAndOrXor.cpp`
+   recovers-and-proves **2 (5 arms)** and declines 50, with **0 false proofs and 0 false refutations**
+   — the honest reach-vs-decline picture over a real file (see [e6-passir-corpus.md](e6-passir-corpus.md)).
+   The 50 declines are the vocabulary wall (KnownBits/APInt/ConstantRange/FP), not parser failures.
 2. **Broaden both benchmarks** to LLVM's own test suite (loops for E1/E4; a larger InstCombine
    slice for E6), so coverage and soundness numbers are over a representative corpus.
 3. **Grow the guard vocabulary** (KnownBits/APInt/`decomposeBitTestICmp`) to lift E6 out of single
