@@ -68,6 +68,9 @@ Turn inputs into internal models.
 Recover *what a pass does* from its source.
 - `pass_scev.py`, `scev_relational.py` — SCEV/recurrence intent from pass source.
 - `clang_pass.py` — Clang-AST-driven mining.
+- `clang_tree.py` — the Clang-AST **structured-tree front-end**: produces matcher/rewrite trees
+  from `clang -ast-dump=json` and feeds `recover_pair` with the regex parser OUT of the trusted
+  base (see [`docs/maturity.md`](docs/maturity.md) roadmap #1).
 - `relational.py`, `llvm_relational.py`, `loop_invariant.py`, `shapes.py` —
   relational drivers and shape recognition.
 

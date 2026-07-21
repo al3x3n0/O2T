@@ -127,7 +127,7 @@ the source, shrinking the trusted base.
 | Width-parametric corroboration: verdicts at {8,16,32,64} must agree, else `width-specific` (byte masks, 32-bit closed forms flagged); cast folds cross-width reconciled | `pass_graph_width_fixture` |
 | Arity-parametric corroboration: verdicts at arities {2,3,4} must agree, else `arity-specific` — catches under-recovered guards and non-associative reducers invisible at the representative bound | `pass_graph_operand_loop_fixture`, `pass_graph_reduction_loop_fixture` |
 | Compiler-grounded recovery: the VERBATIM source rewrite compiled through an independent shim must compute the recovered `after` (a self-consistent-but-unfaithful recovery diverges and is caught) | `pass_graph_grounding_fixture` |
-| Structured-tree front-end: pre-parsed matcher/rewrite trees recover the IDENTICAL obligation, removing the tokenizer/parser from the TCB | `pass_graph_structured_fixture` |
+| Structured-tree front-end: pre-parsed matcher/rewrite trees recover the IDENTICAL obligation, removing the tokenizer/parser from the TCB -- realized end-to-end from real C++ by a Clang-AST producer (`clang -ast-dump=json`), the regex parser out of the loop, agreeing byte-for-byte with it | `pass_graph_structured_fixture`, `clang_tree_fixture` |
 | Re-checkable verdict certificates | `pass_graph_certificate_fixture` |
 | Precondition abduction: an unsound fold's MISSING guard is synthesized (diagnosis, not just rejection) | `pass_graph_synthesis_fixture`, `pass_graph_memory_fixture` (aliasing guard) |
 | Obligations lowered to real LLVM IR for a machine-checked interpreter oracle (Vellvm-ready) | `pass_graph_ir_fixture` |
