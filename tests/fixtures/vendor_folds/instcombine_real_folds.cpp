@@ -129,3 +129,26 @@ static Value *foldXorEqualityZero(Instruction &I, IRBuilder<> &Builder) {
     return replaceInstUsesWith(I, Builder.CreateICmp(Pred, A, B));
   return nullptr;
 }
+
+// Operand/reduction collapse LOOPS (phase-34/35 shapes): the obligation is SYNTHESIZED from the loop
+// structure (a phi-all-equal collapse; an associativity rebuild), not lowered from a matcher/rewrite
+// pair. simplifyPHINode is close to genuine upstream InstructionSimplify (all incoming equal -> that
+// value); foldReassoc is an illustrative reduction-rebuild. Faithful renderings -- SHAPE coverage,
+// not counted in verbatim reach.
+static Value *simplifyPHINode(PHINode *PN) {
+  Value *First = PN->getIncomingValue(0);
+  // phi [x, x, .., x] -> x : bail unless every incoming value equals the first (a forall guard)
+  for (Value *In : PN->incoming_values())
+    if (In != First)
+      return nullptr;
+  return replaceInstUsesWith(*PN, First);
+}
+
+static Value *foldReassoc(BinaryOperator &I, IRBuilder<> &Builder) {
+  if (I.getOpcode() != Instruction::Or)
+    return nullptr;
+  Value *Acc = I.getOperand(0);
+  for (unsigned i = 1; i < I.getNumOperands(); ++i)
+    Acc = Builder.CreateOr(Acc, I.getOperand(i));   // left-fold reducer; sound iff Or is associative
+  return replaceInstUsesWith(I, Acc);
+}

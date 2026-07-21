@@ -178,15 +178,56 @@ def main() -> int:
         Path(over_path).unlink(missing_ok=True)
     refuted += 1
 
+    # 11. COLLAPSE LOOPS (pass_graph phases 34-35) from real source -- the LAST string-path shapes. The
+    #     obligation is SYNTHESIZED from the recognized loop structure (not lowered from a matcher pair):
+    #     simplifyPHINode -> the bounded phi-all-equal collapse (pairwise-equality guard); foldReassoc ->
+    #     the associativity obligation (right-fold == left-fold). Both prove, byte-identical to the regex
+    #     path. This COMPLETES the AST front-end's shape parity with the string path.
+    for fn in ("simplifyPHINode", "foldReassoc"):
+        larms = ct.recover_folds_from_source_file(str(VENDOR), fn, [inc], clang_bin=clang)
+        assert len(larms) == 1, (fn, len(larms))
+        assert ma.prove(larms[0], z3)[0] == "proved", (fn, ma.prove(larms[0], z3))
+        lreg = pg.recover_from_function(bodies[fn])
+        for key in ("before", "after", "variables", "assumptions"):
+            assert larms[0][key] == lreg[key], (fn, key, "diverged from the regex path")
+    proved += 2
+
+    # 12. LOOP teeth, both ways: a NON-ASSOCIATIVE reducer (Sub) refutes at the arity-3 bound with a
+    #     witness (associativity is invisible at arity 2); and a NON-collapse loop body (a worklist
+    #     push beside the guard) DECLINES rather than mis-recover an unbounded iteration.
+    sub_src = VENDOR.read_text().replace("Instruction::Or", "Instruction::Sub").replace("CreateOr", "CreateSub")
+    decline_src = ('#include "llvm/IR/Instructions.h"\n#include <vector>\nusing namespace llvm;\n'
+                   "Value *replaceInstUsesWith(Instruction &, Value *);\n"
+                   "static Value *foldReassoc(PHINode *PN, std::vector<Value*> &WL) {\n"
+                   "  Value *First = PN->getIncomingValue(0);\n"
+                   "  for (Value *In : PN->incoming_values()) {\n"
+                   "    if (In != First) return nullptr;\n    WL.push_back(In);\n  }\n"
+                   "  return replaceInstUsesWith(*PN, First);\n}\n")
+    for src, fn, expect in ((sub_src, "foldReassoc", "refuted"), (decline_src, "foldReassoc", "decline")):
+        with tempfile.NamedTemporaryFile("w", suffix=".cpp", delete=False) as tf:
+            tf.write(src)
+            p = tf.name
+        try:
+            got = ct.recover_folds_from_source_file(p, fn, [inc], clang_bin=clang)
+            if expect == "decline":
+                assert got == [], "non-collapse loop (worklist push) must decline"
+            else:
+                st, cex = ma.prove(got[0], z3)
+                assert st == "refuted" and cex, ("non-associative Sub reducer must refute", st)
+                refuted += 1
+        finally:
+            Path(p).unlink(missing_ok=True)
+
     print(f"clang_tree_source_fixture OK: {proved} proved + {refuted} refuted recovered from fold "
           "source parsed against the REAL LLVM 18 headers (no stub) -- including VERBATIM upstream "
           "combineAddSubWithShlAddSub, the foldXorToXor 3-arm cascade, and BOTH arms of the two-icmp "
           "contract foldIsPowerOf2OrZero (ctpop theorems, m_Intrinsic id read at the compiler-pinned "
-          "span) -- plus the simplifyXInst NAME contract (X-0->X, X^0->X, X^X->0) and a "
-          "predicate-SET split (icmp eq/ne (A^B),0 <-> icmp A,B, both members), each obligation "
-          "byte-identical to the regex path, the wrong fold / UGE mutation / swapped 0-X orientation / "
-          "predicate overreach all refuted with a witness. Verbatim reach: the regex parser is out of "
-          "the loop on real compiler-parsed source, not a stub")
+          "span) -- plus the simplifyXInst name contract, a predicate-SET split, and the collapse "
+          "LOOPS (phi-all-equal + associativity rebuild), COMPLETING shape parity with the string "
+          "path. Each obligation byte-identical to the regex path; the wrong fold / UGE mutation / "
+          "swapped orientation / predicate overreach / non-associative reducer all refuted with a "
+          "witness, and a non-collapse loop declines. Verbatim reach: the regex parser is out of the "
+          "loop on real compiler-parsed source, not a stub")
     return 0
 
 

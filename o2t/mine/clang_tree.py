@@ -750,6 +750,138 @@ def _simplify_arms(ast: dict, source, marker: str) -> list[dict]:
     return arms
 
 
+# --- operand/reduction collapse LOOPS via the AST (pass_graph phases 34-35, parser-free) ---------
+# These fold shapes SYNTHESIZE their obligation from structural cues (a phi-all-equal collapse, an
+# associativity rebuild) rather than lowering a matcher/rewrite pair -- so the AST producer only has
+# to RECOGNIZE the loop structure and call the same pass_graph synthesizer; the obligation is then
+# byte-identical to the string path at the same bounded arity.
+def _descendants(node: dict):
+    yield node
+    for c in cp.inner(node):
+        yield from _descendants(c)
+
+
+_OPERAND_CONTAINERS = ("operands", "incoming_values", "indices")
+
+
+def _forrange_loopvar(fr: dict) -> str | None:
+    """The user loop variable of a CXXForRangeStmt (the VarDecl not synthesized as __range/__begin/__end)."""
+    for ch in cp.inner(fr):
+        if ch.get("kind") == "DeclStmt":
+            for vd in cp.inner(ch):
+                nm = vd.get("name")
+                if vd.get("kind") == "VarDecl" and nm and not nm.startswith("__"):
+                    return nm
+    return None
+
+
+def _pure_neq_bail(body: dict, loop_var: str, rep: str) -> bool:
+    """The loop body is EXACTLY `if (loop_var != rep) <bail>;` (bail = a bailout return or continue) --
+    nothing else. Any other statement declines, so a non-collapse loop is never mis-recovered."""
+    stmts = [s for s in cp.inner(body)] if body.get("kind") == "CompoundStmt" else [body]
+    if len(stmts) != 1 or stmts[0].get("kind") != "IfStmt":
+        return False
+    kids = cp.inner(stmts[0])
+    if len(kids) != 2:                                   # an else-branch -> not a pure bail
+        return False
+    cond, then = cp.strip_casts(kids[0]), kids[1]
+    if cond.get("kind") != "BinaryOperator" or cond.get("opcode") != "!=":
+        return False
+    names = {(cp.strip_casts(x).get("referencedDecl") or {}).get("name") for x in cp.inner(cond)}
+    if names != {loop_var, rep}:
+        return False
+    if then.get("kind") == "CompoundStmt":
+        inr = [s for s in cp.inner(then)]
+        if len(inr) != 1:
+            return False
+        then = inr[0]
+    if then.get("kind") == "ContinueStmt":
+        return True
+    if then.get("kind") == "ReturnStmt":
+        nonbail: list = []
+        _nonbail_returns(then, nonbail)
+        return not nonbail                               # a bail return (nullptr/false/0)
+    return False
+
+
+def _operand_loop_arms(ast: dict, marker: str) -> list[dict]:
+    """Phase-34 phi-collapse: `for (In : PN->incoming_values()) if (In != First) return nullptr;` then
+    `replaceInstUsesWith(*PN, First)` -> the bounded phi-all-equal obligation (arity 3). [] otherwise."""
+    body = _body_compound(ast)
+    if body is None:
+        return []
+    frs = [s for s in cp.inner(body) if s.get("kind") == "CXXForRangeStmt"]
+    if len(frs) != 1:
+        return []
+    fr = frs[0]
+    if not any(any(True for _ in _find(fr, c)) for c in _OPERAND_CONTAINERS):
+        return []                                        # range is not the instruction's operand list
+    loop_var = _forrange_loopvar(fr)
+    riuw: list = []
+    cp.find_member_call(ast, "replaceInstUsesWith", riuw)
+    if loop_var is None or len(riuw) != 1 or len(cp.call_args(riuw[0])) != 2:
+        return []
+    rep = cp.strip_casts(cp.call_args(riuw[0])[1])
+    rep_name = (rep.get("referencedDecl") or {}).get("name") if rep.get("kind") == "DeclRefExpr" else None
+    if rep_name is None or not _pure_neq_bail(cp.inner(fr)[-1], loop_var, rep_name):
+        return []
+    ob = pg._phi_collapse_obligation(3, marker)
+    return [{**ob, "arm": 0, "standalone": False}] if ob is not None else []
+
+
+def _find(node: dict, callee: str):
+    out: list = []
+    cp.find_member_call(node, callee, out)
+    return out
+
+
+def _reduction_arms(ast: dict, marker: str) -> list[dict]:
+    """Phase-35 reduction-rebuild: an opcode cue (`I.getOpcode() ==/!= Instruction::<Op>`), a left-fold
+    reducer (`Acc = Builder.Create<Op>(Acc, ...)`), and `replaceInstUsesWith(I, Acc)` -> the
+    associativity obligation (arity 3, `right-fold(op_before) == left-fold(op_after)`). [] otherwise."""
+    from o2t.intent.pass_graph import OPCODE_BINOP, BUILDER_BINOP
+    if not any(n.get("kind") in ("ForStmt", "CXXForRangeStmt", "WhileStmt") for n in _descendants(ast)):
+        return []                                        # must actually be a loop
+    opname = None
+    for cm in _descendants(ast):
+        if cm.get("kind") != "BinaryOperator" or cm.get("opcode") not in ("==", "!="):
+            continue
+        l, r = [cp.strip_casts(x) for x in cp.inner(cm)]
+        for a, b in ((l, r), (r, l)):
+            ac = cp.callee_name(a) if a.get("kind") in ("CallExpr", "CXXMemberCallExpr") else None
+            bn = (b.get("referencedDecl") or {}).get("name") if b.get("kind") == "DeclRefExpr" else None
+            if ac == "getOpcode" and bn in OPCODE_BINOP:
+                opname = bn
+        if opname:
+            break
+    if opname is None:
+        return []
+    acc = create_op = None
+    for a in _descendants(ast):
+        if a.get("kind") != "BinaryOperator" or a.get("opcode") != "=":
+            continue
+        l, r = cp.strip_casts(cp.inner(a)[0]), cp.strip_casts(cp.inner(a)[1])
+        ln = (l.get("referencedDecl") or {}).get("name") if l.get("kind") == "DeclRefExpr" else None
+        rc = cp.callee_name(r) if r.get("kind") in ("CallExpr", "CXXMemberCallExpr") else None
+        if not (ln and rc and rc in BUILDER_BINOP and cp.call_args(r)):
+            continue
+        fa = cp.strip_casts(cp.call_args(r)[0])
+        if fa.get("kind") == "DeclRefExpr" and (fa.get("referencedDecl") or {}).get("name") == ln:
+            acc, create_op = ln, rc                      # `Acc = Create<Op>(Acc, ...)` -- a genuine fold
+            break
+    if acc is None:
+        return []
+    riuw: list = []
+    cp.find_member_call(ast, "replaceInstUsesWith", riuw)
+    if len(riuw) != 1 or len(cp.call_args(riuw[0])) != 2:
+        return []
+    rep = cp.strip_casts(cp.call_args(riuw[0])[1])
+    if (rep.get("referencedDecl") or {}).get("name") != acc:
+        return []                                        # must replace I with the accumulator
+    ob = pg._reduction_obligation(3, OPCODE_BINOP[opname], BUILDER_BINOP[create_op], marker)
+    return [{**ob, "arm": 0, "standalone": False}] if ob is not None else []
+
+
 def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
                                    marker: str = "probe.recovered.fold",
                                    clang_bin: str = "clang") -> list[dict]:
@@ -780,6 +912,11 @@ def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[s
                 arms.append({**pair, "arm": len(arms), "standalone": len(arms) > 0})
     if arms:
         return arms
+    # operand/reduction collapse LOOPS (phases 34-35): synthesized obligations, tried first (as the
+    # string path does) -- distinctive loop shapes the matcher/rewrite paths do not model.
+    loop = _operand_loop_arms(ast, marker) or _reduction_arms(ast, marker)
+    if loop:
+        return loop
     # single fold, cases-aware: a predicate-SET guard (phase 39) yields multiple cases, all under
     # arm 0 (a refutation of any case refutes the fold); an ordinary fold yields exactly one.
     single_cases = _recover_cases_from_ast(ast, name, _instr_params_from_ast(ast), marker)
