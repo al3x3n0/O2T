@@ -31,7 +31,12 @@ FOLDS = [("combineAddSubWithShlAddSub", "proved"),
 
 def main() -> int:
     z3 = shutil.which("z3")
-    clang = shutil.which("clang") or (_HOMEBREW_CLANG if Path(_HOMEBREW_CLANG).exists() else None)
+    # Prefer a clang that ACTUALLY ships the LLVM headers: a PATH `clang` is often Apple clang (no
+    # llvm/IR headers), so fall back to the homebrew llvm@18 clang when the PATH one can't parse the
+    # verbatim folds -- otherwise the fixture skips spuriously on a machine that has the headers.
+    clang = shutil.which("clang")
+    if (clang is None or ct.llvm_include_dir(clang) is None) and Path(_HOMEBREW_CLANG).exists():
+        clang = _HOMEBREW_CLANG
     inc = ct.llvm_include_dir(clang) if clang else None
     if z3 is None or clang is None or inc is None:
         print("clang_tree_source_fixture: needs z3 + clang 18 with LLVM headers, skipped")
@@ -76,11 +81,46 @@ def main() -> int:
         [ma.prove(a, z3)[0] for a in arms]
     proved += 3
 
+    # 5. TWO-ICMP CALLER CONTRACT (pass_graph phase-40 shape) from real source: verbatim upstream
+    #    foldIsPowerOf2OrZero recovers BOTH arms parser-free -- two-primary composition under the
+    #    IsAnd-selected connective, the `PredK == ICMP_*` guards, and `Cmp0->getOperand(0)` projection.
+    #    The ONE datum clang's typed AST elides (the `m_Intrinsic<Intrinsic::ctpop>` id -- it prints
+    #    only IntrinsicID_match) is read at the DeclRefExpr span the compiler itself pins, not by a
+    #    structural parse. Each arm is a real ctpop theorem (ctpop(X)!=1 && X!=0 <-> ctpop(X)>1 and its
+    #    or-dual), byte-identical to the regex path, reconcile-checked.
+    pow2 = ct.recover_folds_from_source_file(str(VENDOR), "foldIsPowerOf2OrZero", [inc], clang_bin=clang)
+    assert [(a["arm"], a["case"]["IsAnd"]) for a in pow2] == [(0, True), (1, False)], pow2
+    two_regex = pg.recover_folds_from_function(bodies["foldIsPowerOf2OrZero"])
+    for a, s in zip(pow2, two_regex):
+        assert ma.prove(a, z3)[0] == "proved", (a["arm"], ma.prove(a, z3))
+        assert pg.reconcile(a, z3)["agree"], ("two-icmp reconcile", a["arm"])
+        for key in ("before", "after", "variables", "assumptions"):
+            assert a[key] == s[key], ("two-icmp", key, "diverged from the regex path")
+    proved += 2
+
+    # 6. TEETH on the two-icmp path: a UGE-for-UGT rewrite (admits ctpop == 1) refutes with a witness
+    #    from the REAL-headers AST -- the source-file path is not vacuously accepting. Mutate a temp
+    #    copy of the vendored source; the -I include path is absolute, so it compiles from anywhere.
+    import tempfile
+    mut_src = VENDOR.read_text().replace("CreateICmpUGT", "CreateICmpUGE")
+    with tempfile.NamedTemporaryFile("w", suffix=".cpp", delete=False) as tf:
+        tf.write(mut_src)
+        mut_path = tf.name
+    try:
+        mut = ct.recover_folds_from_source_file(mut_path, "foldIsPowerOf2OrZero", [inc], clang_bin=clang)
+        mst, mcex = ma.prove(mut[0], z3)
+        assert mst == "refuted" and mcex, ("AST two-icmp UGE mutation must refute with a witness", mst)
+    finally:
+        Path(mut_path).unlink(missing_ok=True)
+    refuted += 1
+
     print(f"clang_tree_source_fixture OK: {proved} proved + {refuted} refuted recovered from fold "
-          "source parsed against the REAL LLVM 18 headers (no stub) -- including a VERBATIM upstream "
-          "combineAddSubWithShlAddSub -- each obligation byte-identical to the regex path, the wrong "
-          "fold refuted with a witness. Verbatim reach: the regex parser is out of the loop on real "
-          "compiler-parsed source, not a stub approximation")
+          "source parsed against the REAL LLVM 18 headers (no stub) -- including VERBATIM upstream "
+          "combineAddSubWithShlAddSub, the foldXorToXor 3-arm cascade, and BOTH arms of the two-icmp "
+          "contract foldIsPowerOf2OrZero (ctpop theorems, m_Intrinsic id read at the compiler-pinned "
+          "span) -- each obligation byte-identical to the regex path, the wrong fold and the UGE "
+          "mutation refuted with a witness. Verbatim reach: the regex parser is out of the loop on "
+          "real compiler-parsed source, not a stub approximation")
     return 0
 
 

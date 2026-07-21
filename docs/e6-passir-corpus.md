@@ -207,3 +207,11 @@ real bit-counting theorems discharged through the phase-26 ctpop model, with tee
 functions**, still 0 false proofs / 0 false refutations. The remaining two-icmp population (22
 more functions) shares this contract but hits vocabulary walls (KnownBits, APInt arithmetic,
 decomposeBitTestICmp) — the measured next frontier within the class.
+
+Both arms of this fold are **also recovered parser-free from the real-headers Clang AST**
+(`clang_tree_source_fixture`, SOURCE-FILE mode): the two-icmp contract is now the third InstCombine
+E6 shape the AST front-end reaches verbatim (3/3), byte-identical to the string path. The one datum
+clang's typed AST elides — the `m_Intrinsic<Intrinsic::ctpop>` id, which prints only as
+`IntrinsicID_match` — is read at the DeclRefExpr source span the compiler itself pins, not by a
+structural parse; the UGE mutation refutes through the real-AST path too. See
+[maturity.md](maturity.md) roadmap #1.

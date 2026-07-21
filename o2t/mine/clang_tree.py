@@ -45,30 +45,97 @@ class _Unmappable(Exception):
     """An AST node outside the mapped fragment -- the fold declines rather than mis-map."""
 
 
-def _to_tree(node: dict, lets: dict | None = None) -> dict:
+def _intrinsic_template(call_node: dict, source) -> str | None:
+    """The non-type template argument of `m_Intrinsic<Intrinsic::ID>` -- the ONE datum clang's typed
+    AST elides (it resolves the call structure but prints only `IntrinsicID_match`, never the ID). The
+    compiler DOES pin the exact source span of the template-id (the callee DeclRefExpr's range), so we
+    read that single token at the coordinate the compiler itself provides -- not a structural parse.
+    Returns the trailing `::`-segment (`ctpop`) or None (declining, e.g. stub mode with no source)."""
+    if source is None or not cp.inner(call_node):
+        return None
+    callee = cp.strip_casts(cp.inner(call_node)[0])
+    rng = callee.get("range") or {}
+    beg = (rng.get("begin") or {}).get("offset")
+    end = rng.get("end") or {}
+    eoff, tok = end.get("offset"), end.get("tokLen", 0)
+    if beg is None or eoff is None:
+        return None
+    span = source[beg:eoff + tok]
+    if isinstance(span, (bytes, bytearray)):
+        span = span.decode("utf-8", "replace")
+    lt, gt = span.find("<"), span.rfind(">")
+    if lt < 0 or gt <= lt:
+        return None
+    return (span[lt + 1:gt].strip().split("::")[-1].strip() or None)
+
+
+def _project_getoperand(call_node: dict, ctx: dict) -> dict | None:
+    """A rewrite-side `CmpK->getOperand(J)` -> a synthetic projection NAME node, registering the
+    matched operand subtree in `ctx['projections']` (mirrors pass_graph._two_icmp_arm._project). J
+    projects m_ICmp arg[J+1] (args = [pred, op0, op1]); an unprojectable shape returns None (decline)."""
+    inr = cp.inner(call_node)
+    if not inr or inr[0].get("kind") != "MemberExpr" or not cp.inner(inr[0]):
+        return None
+    base = cp.strip_casts(cp.inner(inr[0])[0])
+    bname = (base.get("referencedDecl") or {}).get("name") if base.get("kind") == "DeclRefExpr" else None
+    cmp_names = ctx.get("cmp_names") or {}
+    if bname not in cmp_names:
+        return None
+    args = cp.call_args(call_node)
+    if len(args) != 1 or cp.strip_casts(args[0]).get("kind") != "IntegerLiteral":
+        return None
+    j = int(cp.strip_casts(args[0]).get("value", "0"))
+    tree = (ctx.get("cmp_trees") or {}).get(bname)
+    if not tree or tree.get("name") not in ("m_ICmp", "m_c_ICmp") or len(tree.get("args", [])) != 3 \
+            or j not in (0, 1):
+        return None
+    pname = f"__proj_{cmp_names[bname]}_{j}"
+    ctx["projections"][pname] = tree["args"][j + 1]
+    return {"kind": "name", "name": pname}
+
+
+def _to_tree(node: dict, lets: dict | None = None, ctx: dict | None = None) -> dict:
     """Map one clang AST expression node to pass_graph's {kind,name,args,template} tree. A
     DeclRefExpr to a local single-assignment `let` (a `Value *T = Builder.Create*(...)` binding) is
     inlined by recursing into its initializer -- the AST-level equivalent of the string path's
-    let-inlining, so a return-form rewrite that names intermediates recovers compositionally."""
+    let-inlining, so a return-form rewrite that names intermediates recovers compositionally.
+
+    `ctx` (optional) carries the two-icmp contract's rewrite context: `source` (bytes, for the
+    m_Intrinsic template-id read), and in `rewrite` mode `cmp_names`/`cmp_trees`/`projections` (for
+    `CmpK->getOperand(J)` projection) and `getop_lets` (a `Value *CtPop = CmpK->getOperand(J)` binding,
+    inlined like a Create-let). In rewrite mode a `->getType()` chain lowers to the opaque `Ty` name,
+    exactly as the string path's _normalize_rewrite does."""
     lets = lets or {}
+    ctx = ctx or {}
     n = cp.strip_casts(node)
     k = n.get("kind")
     if k in ("CallExpr", "CXXMemberCallExpr"):
         name = cp.callee_name(n)
         if not name:
             raise _Unmappable("call with no resolvable callee")
+        if ctx.get("rewrite"):
+            if name == "getType":
+                return {"kind": "name", "name": "Ty"}    # `X->getType()` -> opaque type token
+            if name == "getOperand":
+                proj = _project_getoperand(n, ctx)
+                if proj is None:
+                    raise _Unmappable("unprojectable getOperand in rewrite")
+                return proj
         # Skip clang-materialized DEFAULT arguments (a Builder emitter's defaulted `Twine` name),
         # so the verbatim call's operand arity matches the source's -- the value operands only.
         args = [a for a in cp.call_args(n)
                 if cp.strip_casts(a).get("kind") != "CXXDefaultArgExpr"]
-        return {"kind": "call", "name": name, "template": None,
-                "args": [_to_tree(a, lets) for a in args]}
+        template = _intrinsic_template(n, ctx.get("source")) if name == "m_Intrinsic" else None
+        return {"kind": "call", "name": name, "template": template,
+                "args": [_to_tree(a, lets, ctx) for a in args]}
     if k == "DeclRefExpr":
         ref = (n.get("referencedDecl") or {}).get("name")
         if not ref:
             raise _Unmappable("unresolved reference")
         if ref in lets:
-            return _to_tree(lets[ref], lets)             # inline the SSA let
+            return _to_tree(lets[ref], lets, ctx)        # inline the SSA let
+        if ref in (ctx.get("getop_lets") or {}):
+            return _to_tree(ctx["getop_lets"][ref], lets, ctx)   # inline the getOperand let
         return {"kind": "name", "name": ref}
     if k == "IntegerLiteral":
         return {"kind": "int", "value": int(n.get("value", "0"))}
@@ -411,6 +478,171 @@ def _recover_arm(if_stmt: dict, marker: str) -> dict | None:
     return pg.recover_pair(" && ".join(guard_srcs), "", marker, matcher_tree=mt, rewrite_tree=rt)
 
 
+# --- the two-icmp caller contract via the AST (pass_graph phase 40, parser-free) -----------------
+# `foldX(ICmpInst *Cmp0, ICmpInst *Cmp1, bool IsAnd, ...)`: a negated-OR BAILOUT establishes both
+# icmp matches, then per-IsAnd-case arms return the combined rewrite. The AST producer mirrors
+# pass_graph._two_icmp_arm on the real-headers tree -- combining the two matched icmp trees under the
+# arm's IsAnd-selected connective (m_And/m_Or), reconstructing the `PredK == ICMP_*` guards, and
+# projecting `CmpK->getOperand(J)` (via the CtPop let) to the matched operand subtree. Anything
+# outside this shape DECLINES.
+def _twoicmp_params(fn_decl: dict) -> tuple[list[str], str | None]:
+    """The fold's two `ICmpInst *` parameter names and its `bool IsAnd` selector name (or None)."""
+    icmps, band = [], None
+    for p in cp.inner(fn_decl):
+        if p.get("kind") != "ParmVarDecl" or not p.get("name"):
+            continue
+        qt = (p.get("type") or {}).get("qualType", "")
+        if "ICmpInst" in qt and "*" in qt:
+            icmps.append(p["name"])
+        elif qt in ("bool", "_Bool") and p["name"] == "IsAnd":
+            band = p["name"]
+    return icmps, band
+
+
+def _getoperand_lets(body: dict) -> dict:
+    """Top-level `Value *CtPop = CmpK->getOperand(J);` bindings -- name -> the getOperand init node."""
+    out: dict = {}
+    for stmt in cp.inner(body):
+        if stmt.get("kind") != "DeclStmt":
+            continue
+        for vd in cp.inner(stmt):
+            if vd.get("kind") != "VarDecl" or not cp.inner(vd):
+                continue
+            init = cp.strip_casts(cp.inner(vd)[-1])
+            if init.get("kind") == "CXXMemberCallExpr" and cp.callee_name(init) == "getOperand":
+                out[vd.get("name")] = init
+    return out
+
+
+def _bailout_matches(if_stmt: dict, icmp_params: list[str]) -> dict | None:
+    """A `if (!match(Cmp0, PAT0) || !match(Cmp1, PAT1)) return nullptr;` bailout -> {subject: pattern}
+    for both icmp params, or None. The then-branch must be a PURE bailout (only bail returns), so
+    reaching past it means both matched -- the precondition every arm builds on."""
+    kids = cp.inner(if_stmt)
+    if len(kids) < 2:
+        return None
+    cond, then = kids[0], kids[1]
+    nonbail: list = []
+    _nonbail_returns(then, nonbail)
+    if nonbail:
+        return None                                    # not a pure bailout -> not the contract shape
+    matches: list = []
+    cp.find_member_call(cond, "match", matches)
+    out: dict = {}
+    for m in matches:
+        margs = cp.call_args(m)
+        if len(margs) != 2:
+            return None
+        subj = cp.strip_casts(margs[0])
+        sname = (subj.get("referencedDecl") or {}).get("name") if subj.get("kind") == "DeclRefExpr" else None
+        if sname not in icmp_params or sname in out:
+            return None
+        out[sname] = margs[1]
+    return out if set(out) == set(icmp_params) else None
+
+
+def _pred_guard_src(node: dict) -> str | None:
+    """A `PredK == ICmpInst::ICMP_*` conjunct -> its `Pred == ICMP_*` source form (which
+    recover_pair_cases' _PRED_GUARD_RE reads), or None for any other shape (decline)."""
+    if node.get("kind") != "BinaryOperator" or node.get("opcode") != "==":
+        return None
+    kids = cp.inner(node)
+    if len(kids) != 2:
+        return None
+    lhs, rhs = cp.strip_casts(kids[0]), cp.strip_casts(kids[1])
+    ln = (lhs.get("referencedDecl") or {}).get("name") if lhs.get("kind") == "DeclRefExpr" else None
+    rn = (rhs.get("referencedDecl") or {}).get("name") if rhs.get("kind") == "DeclRefExpr" else None
+    if ln and rn and rn.startswith("ICMP_"):
+        return f"{ln} == {rn}"
+    if rn and ln and ln.startswith("ICMP_"):             # commuted `ICMP_NE == Pred`
+        return f"{rn} == {ln}"
+    return None
+
+
+def _twoicmp_arm(if_stmt: dict, icmp_params: list[str], band: str, cmp_trees: dict,
+                 getop_lets: dict, source, marker: str) -> list[dict]:
+    """One two-icmp arm `if (IsAnd && PredK == ICMP_* ...) return Builder.Create...;` -> its
+    obligation(s). The `IsAnd`/`!IsAnd` conjunct fixes the reachable case (m_And vs m_Or); the
+    `PredK == ICMP_*` conjuncts become the precondition; the rewrite projects `CmpK->getOperand(J)`.
+    [] for any statement outside the contract shape (never a mis-mapping)."""
+    kids = cp.inner(if_stmt)
+    if len(kids) < 2:
+        return []
+    cond, then = kids[0], kids[1]
+    polarity = None
+    guard_srcs: list[str] = []
+    for c in _flatten_and(cond):
+        if c.get("kind") == "DeclRefExpr" and (c.get("referencedDecl") or {}).get("name") == band:
+            polarity = True                            # `IsAnd` conjunct -> the and-case is reachable
+            continue
+        if c.get("kind") == "UnaryOperator" and c.get("opcode") == "!":
+            inner0 = cp.strip_casts(cp.inner(c)[0]) if cp.inner(c) else {}
+            if (inner0.get("referencedDecl") or {}).get("name") == band:
+                polarity = False                       # `!IsAnd` conjunct -> the or-case is reachable
+                continue
+            return []                                  # other negation -> outside the shape
+        g = _pred_guard_src(c)
+        if g is None:
+            return []
+        guard_srcs.append(g)
+    if polarity is None:
+        return []                                      # no IsAnd selector on this arm -> not an arm
+    if _has_ir_mutation(then):
+        return []
+    rets: list = []
+    _nonbail_returns(then, rets)
+    if len(rets) != 1:
+        return []
+    projections: dict = {}
+    ctx = {"rewrite": True, "source": source, "cmp_trees": cmp_trees, "getop_lets": getop_lets,
+           "cmp_names": {icmp_params[0]: "0", icmp_params[1]: "1"}, "projections": projections}
+    try:
+        rewrite_tree = _to_tree(rets[0], None, ctx)
+    except (_Unmappable, IndexError):
+        return []
+    combined = {"kind": "call", "name": "m_And" if polarity else "m_Or", "template": None,
+                "args": [cmp_trees[icmp_params[0]], cmp_trees[icmp_params[1]]]}
+    out: list[dict] = []
+    for pair in pg.recover_pair_cases(" && ".join(guard_srcs), "", marker, matcher_tree=combined,
+                                      rewrite_tree=rewrite_tree, projections=projections):
+        pair.setdefault("case", {})[band] = polarity
+        pair["marker"] = f"{pair['marker']}.{'and' if polarity else 'or'}"
+        out.append(pair)
+    return out
+
+
+def _twoicmp_arms(ast: dict, source, marker: str) -> list[dict]:
+    """Recover the two-icmp caller contract from a fold's real-headers AST: two `ICmpInst *` params +
+    a `bool IsAnd` selector, a negated-OR bailout binding both matches, per-case arms. [] otherwise."""
+    icmp_params, band = _twoicmp_params(ast)
+    if len(icmp_params) != 2 or band is None:
+        return []
+    body = _body_compound(ast)
+    if body is None:
+        return []
+    bail = None
+    for stmt in cp.inner(body):
+        if stmt.get("kind") == "IfStmt":
+            m = _bailout_matches(stmt, icmp_params)
+            if m is not None:
+                bail = (stmt, m)
+                break
+    if bail is None:
+        return []
+    try:
+        cmp_trees = {c: _to_tree(pat, None, {"source": source}) for c, pat in bail[1].items()}
+    except (_Unmappable, IndexError):
+        return []
+    getop_lets = _getoperand_lets(body)
+    arms: list[dict] = []
+    for stmt in cp.inner(body):
+        if stmt.get("kind") != "IfStmt" or stmt is bail[0]:
+            continue
+        for pair in _twoicmp_arm(stmt, icmp_params, band, cmp_trees, getop_lets, source, marker):
+            arms.append({**pair, "arm": len(arms), "standalone": len(arms) > 0})
+    return arms
+
+
 def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
                                    marker: str = "probe.recovered.fold",
                                    clang_bin: str = "clang") -> list[dict]:
@@ -442,7 +674,15 @@ def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[s
     if arms:
         return arms
     single = _recover_from_ast(ast, name, _instr_params_from_ast(ast), marker)
-    return [{**single, "arm": 0, "standalone": False}] if single is not None else []
+    if single is not None:
+        return [{**single, "arm": 0, "standalone": False}]
+    # phase-40 shape: the two-icmp caller contract (needs the source bytes for the m_Intrinsic
+    # template-id read the typed AST elides).
+    try:
+        source = Path(cpp_path).read_bytes()
+    except OSError:
+        return []
+    return _twoicmp_arms(ast, source, marker)
 
 
 def available(clang_bin: str = "clang") -> bool:

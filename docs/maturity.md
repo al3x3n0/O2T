@@ -32,7 +32,7 @@ unusually rigorous soundness discipline — not a production verifier of real pa
 | **Peephole coverage** | Over 441 real upstream InstCombine/InstSimplify functions, O2T recovers and proves **12 fold arms across 8 functions** (~2%). The other 429 decline. |
 | **"Passes" vs obligations** | O2T verifies isolated recovered **fold obligations**, not passes. Worklists, iteration, in-place IR mutation, and analysis dependencies are not modeled. The "verify the pass" framing is aspirational relative to the mechanism; "recover-and-verify fold obligations from pass source" is the precise claim. |
 | **Recovery brittleness** | Recovery is regex + a hand-parser over C++. **Seven latent soundness holes** surfaced during phases 36–40 alone (each caught by the discipline, but their density shows the layer is young). |
-| **Structured-tree front-end** | **Wired, two modes** (`o2t/mine/clang_tree.py`): (a) STUB-MODE parses in-memory fold source against a minimal stub (`clang_tree_fixture`); (b) **SOURCE-FILE MODE parses fold source against the REAL LLVM 18 headers** (`-ast-dump-filter` keeps the AST in KBs) and recovers a **VERBATIM upstream fold** (combineAddSubWithShlAddSub) byte-identical to the regex path, proved and reconcile-agreed, regex parser fully out of the loop -- **no stub approximation** (`clang_tree_source_fixture`). Both modes decline guards/mutations they cannot map, never dropping a premise. **Measured verbatim reach: 2/3 InstCombine E6 folds** recovered parser-free from their real `.cpp`s (up from 0/8 stub-mode): combineAddSubWithShlAddSub (return-form) and foldXorToXor (a 3-arm cascade, each arm a real Boolean identity `(A&B)^(A|B) -> A^B`). foldIsPowerOf2OrZero still declines (two-icmp contract, not yet in the AST extractor). The limit is extractor fold-shape coverage, not the compiler front-end. |
+| **Structured-tree front-end** | **Wired, two modes** (`o2t/mine/clang_tree.py`): (a) STUB-MODE parses in-memory fold source against a minimal stub (`clang_tree_fixture`); (b) **SOURCE-FILE MODE parses fold source against the REAL LLVM 18 headers** (`-ast-dump-filter` keeps the AST in KBs) and recovers a **VERBATIM upstream fold** (combineAddSubWithShlAddSub) byte-identical to the regex path, proved and reconcile-agreed, regex parser fully out of the loop -- **no stub approximation** (`clang_tree_source_fixture`). Both modes decline guards/mutations they cannot map, never dropping a premise. **Measured verbatim reach: 3/3 InstCombine E6 folds** recovered parser-free from their real `.cpp`s (up from 0/8 stub-mode): combineAddSubWithShlAddSub (return-form), foldXorToXor (a 3-arm cascade, each arm a real Boolean identity `(A&B)^(A|B) -> A^B`), and **foldIsPowerOf2OrZero (the two-icmp caller contract, both arms)** -- two-primary composition under the IsAnd-selected connective, `PredK == ICMP_*` guards, and `Cmp0->getOperand(0)` projection, each arm a real ctpop theorem. The one datum clang's typed AST elides -- the `m_Intrinsic<Intrinsic::ctpop>` id (it prints only `IntrinsicID_match`) -- is read at the DeclRefExpr span the compiler itself pins, not by a structural parse; a UGE-for-UGT mutation refutes with a witness through the real-AST path. The limit is extractor fold-shape coverage, not the compiler front-end. |
 | **Loop benchmark** | E1's zero-false-refutation result is over **7 hand-crafted recurrence kernels**, not LLVM's test suite. |
 | **Discrepancy finding** | No wild miscompile has been found; all discrepancy detection is on **injected** faults (E1/E2/E7 teeth). |
 | **Agent (E8)** | Never run with a live model; trust invariants gated only with a deterministic stub. |
@@ -48,10 +48,11 @@ discharge; loop-nest transforms and vectorization are out.
 ## Prioritized roadmap toward maturity
 
 1. **Clang-AST front-end: broaden verbatim reach** (highest leverage). Both modes wired
-   (stub-mode + SOURCE-FILE mode against real LLVM 18 headers, recovering a verbatim upstream fold
-   parser-free). Remaining: (a) extend the extractor's fold-shape coverage on the real AST
-   (two-icmp/contract, like the string path), and (b) parse whole upstream `.cpp`s in their
-   lib-internal compile context (compile DB) so every fold's real method resolves, not just
+   (stub-mode + SOURCE-FILE mode against real LLVM 18 headers, recovering 3/3 InstCombine E6 folds
+   parser-free -- return-form, a 3-arm cascade, and the two-icmp caller contract). Remaining:
+   (a) extend the extractor's fold-shape coverage on the real AST to the last string-path shapes
+   (the `simplifyXInst` contract, predicate-set splits), and (b) parse whole upstream `.cpp`s in
+   their lib-internal compile context (compile DB) so every fold's real method resolves, not just
    self-contained free functions.
 2. **Broaden both benchmarks** to LLVM's own test suite (loops for E1/E4; a larger InstCombine
    slice for E6), so coverage and soundness numbers are over a representative corpus.

@@ -11,6 +11,7 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Constants.h"
 #include <cassert>
 using namespace llvm;
 using namespace llvm::PatternMatch;
@@ -65,5 +66,29 @@ static Value *foldSubWrong(IRBuilder<> &Builder, BinaryOperator &I) {
   Value *X, *Y;
   if (match(&I, m_Sub(m_Value(X), m_Value(Y))))
     return replaceInstUsesWith(I, X);
+  return nullptr;
+}
+
+// VERBATIM body from InstCombineAndOrXor.cpp: the TWO-ICMP caller contract. Upstream's
+// `InstCombiner::BuilderTy &Builder` is trimmed to a free `IRBuilder<> &Builder` (identical
+// recovery -- the Builder type does not enter the trees). Two ICmpInst* + a bool IsAnd selector;
+// a negated-OR bailout binds both matches; each arm returns the IsAnd-selected combination. The
+// matcher `m_Intrinsic<Intrinsic::ctpop>` is the one datum the typed AST elides (it prints only
+// IntrinsicID_match); the front-end reads the ctpop token at the DeclRefExpr span clang pins.
+static Value *foldIsPowerOf2OrZero(ICmpInst *Cmp0, ICmpInst *Cmp1, bool IsAnd,
+                                   IRBuilder<> &Builder) {
+  CmpInst::Predicate Pred0, Pred1;
+  Value *X;
+  if (!match(Cmp0, m_ICmp(Pred0, m_Intrinsic<Intrinsic::ctpop>(m_Value(X)),
+                          m_SpecificInt(1))) ||
+      !match(Cmp1, m_ICmp(Pred1, m_Specific(X), m_ZeroInt())))
+    return nullptr;
+
+  Value *CtPop = Cmp0->getOperand(0);
+  if (IsAnd && Pred0 == ICmpInst::ICMP_NE && Pred1 == ICmpInst::ICMP_NE)
+    return Builder.CreateICmpUGT(CtPop, ConstantInt::get(CtPop->getType(), 1));
+  if (!IsAnd && Pred0 == ICmpInst::ICMP_EQ && Pred1 == ICmpInst::ICMP_EQ)
+    return Builder.CreateICmpULT(CtPop, ConstantInt::get(CtPop->getType(), 2));
+
   return nullptr;
 }
