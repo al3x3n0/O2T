@@ -45,6 +45,18 @@ FOLDS = [
      "Value *f(Instruction &I){ Value *X, *Y;\n"
      "  if (match(&I, m_Sub(m_Value(X), m_Value(Y))))\n"
      "    return replaceInstUsesWith(I, X);\n  return nullptr; }"),
+    # GUARDED folds: the AST condition's non-match conjuncts are reconstructed into the recovered
+    # precondition (the matcher tree is still parser-free). sdiv->udiv proves ONLY under both
+    # nonneg guards; add->or proves ONLY under disjointness.
+    ("guarded-sdiv-udiv", "proved",
+     "Value *f(Instruction &I){ Value *X, *Y;\n"
+     "  if (match(&I, m_SDiv(m_Value(X), m_Value(Y))) && isKnownNonNegative(X) "
+     "&& isKnownNonNegative(Y))\n"
+     "    return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));\n  return nullptr; }"),
+    ("disjoint-add-or", "proved",
+     "Value *f(Instruction &I){ Value *X, *Y;\n"
+     "  if (match(&I, m_Add(m_Value(X), m_Value(Y))) && haveNoCommonBitsSet(X, Y))\n"
+     "    return replaceInstUsesWith(I, Builder.CreateOr(X, Y));\n  return nullptr; }"),
 ]
 
 
@@ -61,14 +73,16 @@ def main() -> int:
         clang_pair = ct.recover_from_clang(src, clang_bin=clang)
         assert clang_pair is not None, ("AST front-end must recover", name)
 
-        # 2. CROSS-FRONT-END AGREEMENT: the same obligation as the regex path, byte for byte.
-        #    Two independent readings of the source agree -- the structured-tree soundness idea,
-        #    realized end-to-end from real C++ rather than hand-authored trees.
+        # 2. CROSS-FRONT-END AGREEMENT: the same obligation as the regex path, byte for byte --
+        #    before, after, variables, AND the recovered assumptions (the guard preconditions).
+        #    Two independent readings of the source agree, matcher AND guards.
         regex_pair = pg.recover_from_function(src)
         assert regex_pair is not None, name
         assert clang_pair["before"] == regex_pair["before"], (name, "before diverged")
         assert clang_pair["after"] == regex_pair["after"], (name, "after diverged")
         assert clang_pair["variables"] == regex_pair["variables"], name
+        assert sorted(map(str, clang_pair["assumptions"])) == \
+            sorted(map(str, regex_pair["assumptions"])), (name, "assumptions diverged")
 
         # 3. The verdict is identical and correct (teeth: the wrong fold refutes via the AST path).
         status, cex = ma.prove(clang_pair, z3)
@@ -79,20 +93,30 @@ def main() -> int:
         else:
             proved += 1
 
-    # 4. SOUND DECLINE: a non-fold function (no match / no rewrite) yields nothing -- never a
-    #    mis-mapping; and a guarded fold is out of this cut and declines here (guards route through
-    #    the string path), rather than silently dropping the premise.
+    # 4. GUARD IS LOAD-BEARING: the guarded sdiv->udiv refutes when its guard is DROPPED -- so the
+    #    reconstructed precondition is genuinely carrying the proof, not decoration.
+    unguarded = ("Value *f(Instruction &I){ Value *X, *Y;\n"
+                 "  if (match(&I, m_SDiv(m_Value(X), m_Value(Y))))\n"
+                 "    return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));\n  return nullptr; }")
+    up = ct.recover_from_clang(unguarded, clang_bin=clang)
+    assert up is not None and ma.prove(up, z3)[0] == "refuted", "unguarded sdiv->udiv must refute"
+
+    # 5. SOUND DECLINE, never a dropped premise: a non-fold declines; a guard that is NOT a flat
+    #    reconstructible call (a `Pred == ICMP_EQ` compare) declines rather than drop it; a bailout
+    #    cascade (multiple ifs) is out of this cut and declines.
     assert ct.recover_from_clang("Value *f(Instruction &I){ return nullptr; }", clang_bin=clang) is None
-    guarded = ("Value *f(Instruction &I){ Value *X, *Y;\n"
-               "  if (match(&I, m_SDiv(m_Value(X), m_Value(Y))) && isKnownNonNegative(X))\n"
-               "    return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y));\n  return nullptr; }")
-    assert ct.recover_from_clang(guarded, clang_bin=clang) is None, "guarded fold: out of this cut"
+    cascade = ("Value *f(Instruction &I){ Value *X, *Y;\n"
+               "  if (!match(&I, m_SDiv(m_Value(X), m_Value(Y)))) return nullptr;\n"
+               "  if (!isKnownNonNegative(X)) return nullptr;\n"
+               "  return replaceInstUsesWith(I, Builder.CreateUDiv(X, Y)); }")
+    assert ct.recover_from_clang(cascade, clang_bin=clang) is None, "bailout cascade: out of this cut"
 
     print(f"clang_tree_fixture OK: the Clang-AST front-end recovers {proved} folds proved and "
-          f"{refuted} refuted from real C++ WITHOUT the regex parser -- each obligation "
-          "byte-identical to the regex path (two independent readings agree) with the wrong fold "
-          "refuted via the AST path; non-fold and (this-cut) guarded shapes decline, never "
-          "mis-map. The structured-tree TCB-shrink is realized end-to-end from source")
+          f"{refuted} refuted from real C++ WITHOUT the regex parser -- matcher AND guard "
+          "conjuncts reconstructed, each obligation byte-identical to the regex path (before, "
+          "after, variables, assumptions) with the wrong fold refuted and the guard shown "
+          "load-bearing; non-fold, non-reconstructible-guard, and bailout-cascade shapes decline, "
+          "never dropping a premise. The structured-tree TCB-shrink is realized end-to-end")
     return 0
 
 

@@ -79,6 +79,17 @@ extern IRBuilder Builder;
 // The rewrite sink.
 template <class I, class V> Value *replaceInstUsesWith(I, V);
 
+// Analysis-query GUARDS -- declared so a `&& isKnownNonNegative(X)` conjunct resolves to a clean
+// CallExpr the front-end can reconstruct into a precondition (rather than dropping it).
+bool isKnownNonNegative(Value *);
+bool isKnownNonZero(Value *);
+bool isKnownPositive(Value *);
+bool haveNoCommonBitsSet(Value *, Value *);
+bool MaskedValueIsZero(Value *, Value *);
+bool isGuaranteedNotToBePoison(Value *);
+bool isGuaranteedNotToBeUndefOrPoison(Value *);
+bool hasOneUse(Value *);
+
 }  // namespace llvm
 using namespace llvm;
 #endif
