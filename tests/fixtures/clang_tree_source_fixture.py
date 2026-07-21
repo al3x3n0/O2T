@@ -114,13 +114,47 @@ def main() -> int:
         Path(mut_path).unlink(missing_ok=True)
     refuted += 1
 
+    # 7. simplifyXInst NAME CONTRACT (pass_graph phase 37) from real source: the fold NAME declares
+    #    the instruction, so the front-end synthesizes the phantom `m_<Op>(m_Value(Op0), m_Value(Op1))`
+    #    and splices each arm's `match(OpK, ...)` into slot K. Faithful free-function renderings
+    #    (X-0->X, X^0->X, X^X->0), each byte-identical to the regex path -- SHAPE coverage, parser-free.
+    #    (Not counted in verbatim reach: the X^X arm is matcher-form where upstream uses pointer-eq.)
+    for fn, narms in (("simplifySubInst", 1), ("simplifyXorInst", 2)):
+        sarms = ct.recover_folds_from_source_file(str(VENDOR), fn, [inc], clang_bin=clang)
+        sreg = pg.recover_folds_from_function(bodies[fn])
+        assert len(sarms) == narms, (fn, len(sarms))
+        for a, s in zip(sarms, sreg):
+            assert ma.prove(a, z3)[0] == "proved", (fn, a["arm"], ma.prove(a, z3))
+            for key in ("before", "after", "variables", "assumptions"):
+                assert a[key] == s[key], (fn, key, "diverged from the regex path")
+        proved += narms
+
+    # 8. ORIENTATION teeth (phase 37's soundness centerpiece): the name fixes Op0 as sub's minuend,
+    #    so a swapped `0 - X -> X` reading refutes with a witness through the real-AST path -- the
+    #    phantom synthesis is not commuting operands. Self-contained temp source (absolute -I).
+    orient_swap = ('#include "llvm/IR/PatternMatch.h"\n#include "llvm/IR/Constants.h"\n'
+                   "using namespace llvm;\nusing namespace llvm::PatternMatch;\n"
+                   "static Value *simplifySubInst(Value *Op0, Value *Op1) {\n"
+                   "  if (match(Op0, m_Zero()))\n    return Op1;\n  return nullptr;\n}\n")
+    with tempfile.NamedTemporaryFile("w", suffix=".cpp", delete=False) as tf:
+        tf.write(orient_swap)
+        swap_path = tf.name
+    try:
+        sw = ct.recover_folds_from_source_file(swap_path, "simplifySubInst", [inc], clang_bin=clang)
+        sst, scex = ma.prove(sw[0], z3)
+        assert sst == "refuted" and scex, ("0 - X -> X orientation must refute with a witness", sst)
+    finally:
+        Path(swap_path).unlink(missing_ok=True)
+    refuted += 1
+
     print(f"clang_tree_source_fixture OK: {proved} proved + {refuted} refuted recovered from fold "
           "source parsed against the REAL LLVM 18 headers (no stub) -- including VERBATIM upstream "
           "combineAddSubWithShlAddSub, the foldXorToXor 3-arm cascade, and BOTH arms of the two-icmp "
           "contract foldIsPowerOf2OrZero (ctpop theorems, m_Intrinsic id read at the compiler-pinned "
-          "span) -- each obligation byte-identical to the regex path, the wrong fold and the UGE "
-          "mutation refuted with a witness. Verbatim reach: the regex parser is out of the loop on "
-          "real compiler-parsed source, not a stub approximation")
+          "span) -- plus the simplifyXInst NAME contract (phantom-instruction synthesis + operand "
+          "splice: X-0->X, X^0->X, X^X->0), each obligation byte-identical to the regex path, the "
+          "wrong fold / UGE mutation / swapped 0-X orientation all refuted with a witness. Verbatim "
+          "reach: the regex parser is out of the loop on real compiler-parsed source, not a stub")
     return 0
 
 

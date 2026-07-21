@@ -92,3 +92,26 @@ static Value *foldIsPowerOf2OrZero(ICmpInst *Cmp0, ICmpInst *Cmp1, bool IsAnd,
 
   return nullptr;
 }
+
+// FAITHFUL renderings of the simplifyXInst caller contract (InstructionSimplify). The NAME declares
+// the instruction (`sub Op0, Op1`), so the front-end synthesizes the phantom and splices each arm's
+// operand match into it. The `X - 0` / `X ^ 0` arms are verbatim-shaped; the `X ^ X` arm is written
+// in matcher form (`m_Specific(Op0)`) where upstream uses pointer-equality -- a faithful rendering of
+// the same identity, not a byte-for-byte copy. (So these grow SHAPE coverage; the verbatim-reach
+// count stays the InstCombine E6 folds above.)
+static Value *simplifySubInst(Value *Op0, Value *Op1) {
+  // X - 0 -> X  (orientation is load-bearing: the name fixes Op0 as the minuend)
+  if (match(Op1, m_Zero()))
+    return Op0;
+  return nullptr;
+}
+
+static Value *simplifyXorInst(Value *Op0, Value *Op1) {
+  // X ^ 0 -> X
+  if (match(Op1, m_Zero()))
+    return Op0;
+  // X ^ X -> 0
+  if (match(Op1, m_Specific(Op0)))
+    return Constant::getNullValue(Op0->getType());
+  return nullptr;
+}

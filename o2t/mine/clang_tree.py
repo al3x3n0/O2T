@@ -643,6 +643,96 @@ def _twoicmp_arms(ast: dict, source, marker: str) -> list[dict]:
     return arms
 
 
+# --- the simplifyXInst caller contract via the AST (pass_graph phase 37, parser-free) ------------
+# `simplify<Op>Inst(Value *Op0, Value *Op1, ...)` DOCUMENTS its instruction in the NAME (`sub Op0,
+# Op1`): the name licenses synthesizing the phantom `m_<Op>(m_Value(Op0), m_Value(Op1))` and
+# splicing each arm's `match(OpK, PAT)` into slot K. The spliced operand name is retired; a rewrite
+# that still references it lowers to an unbound value and DECLINES (self-enforcing, no unsound splice).
+def _simplify_params(fn_decl: dict) -> tuple[str | None, list[str]]:
+    """The opname the fold's `simplify<Op>Inst` name declares + its `Value *` parameter names."""
+    from o2t.intent.pass_graph import _SIMPLIFY_CONTRACT_RE
+    m = _SIMPLIFY_CONTRACT_RE.search((fn_decl.get("name") or "") + "(")
+    if m is None:
+        return None, []
+    params = [p["name"] for p in cp.inner(fn_decl)
+              if p.get("kind") == "ParmVarDecl" and p.get("name")
+              and "Value" in (p.get("type") or {}).get("qualType", "")
+              and "*" in (p.get("type") or {}).get("qualType", "")]
+    return m.group(1), params
+
+
+def _simplify_arm(if_stmt: dict, opname: str, op0: str, op1: str, source, marker: str) -> dict | None:
+    """One simplifyXInst arm `if (match(OpK, PAT) [&& guards]) return <value>;` -> its obligation via
+    the name-declared phantom instruction, or None. Operand matches splice into the phantom's slots;
+    non-match conjuncts must be reconstructible guards (else decline)."""
+    from o2t.intent.pass_graph import _OP_TO_MATCHER
+    kids = cp.inner(if_stmt)
+    if len(kids) < 2:
+        return None
+    cond, then = kids[0], kids[1]
+    slot_of = {op0: 0, op1: 1}
+    spliced: dict[int, dict] = {}
+    guard_srcs: list[str] = []
+    for c in _flatten_and(cond):
+        if c.get("kind") in ("CallExpr", "CXXMemberCallExpr") and cp.callee_name(c) == "match":
+            margs = cp.call_args(c)
+            if len(margs) != 2:
+                return None
+            subj = cp.strip_casts(margs[0])
+            sname = (subj.get("referencedDecl") or {}).get("name") if subj.get("kind") == "DeclRefExpr" else None
+            if sname not in slot_of or slot_of[sname] in spliced:
+                return None                            # foreign subject / duplicate operand -> decline
+            spliced[slot_of[sname]] = margs[1]
+        elif c.get("kind") in ("CallExpr", "CXXMemberCallExpr"):
+            rs = _reconstruct_guard(c)
+            if rs is None:
+                return None
+            guard_srcs.append(rs)
+        else:
+            return None                                # bare bool / isa / compare -> outside this cut
+    if not spliced:
+        return None                                    # no operand match -> not a contract arm
+    if _has_ir_mutation(then):
+        return None
+    rets: list = []
+    _nonbail_returns(then, rets)
+    if len(rets) != 1:
+        return None
+    src_ctx = {"source": source}
+    primary = {"kind": "call", "name": _OP_TO_MATCHER[opname], "template": None,
+               "args": [{"kind": "call", "name": "m_Value", "template": None,
+                         "args": [{"kind": "name", "name": op0}]},
+                        {"kind": "call", "name": "m_Value", "template": None,
+                         "args": [{"kind": "name", "name": op1}]}]}
+    try:
+        for k, pat in spliced.items():
+            primary["args"][k] = _to_tree(pat, None, src_ctx)     # retire the operand: splice its shape
+        rewrite_tree = _to_tree(rets[0], None, {"rewrite": True, "source": source})
+    except (_Unmappable, IndexError):
+        return None
+    return pg.recover_pair(" && ".join(guard_srcs), "", marker,
+                           matcher_tree=primary, rewrite_tree=rewrite_tree)
+
+
+def _simplify_arms(ast: dict, source, marker: str) -> list[dict]:
+    """Recover the simplifyXInst caller contract from a fold's real-headers AST: the name declares the
+    instruction, each `if (match(OpK, ...)) return ...;` arm becomes an obligation. [] otherwise."""
+    opname, params = _simplify_params(ast)
+    if opname is None or len(params) < 2:
+        return []
+    body = _body_compound(ast)
+    if body is None:
+        return []
+    arms: list[dict] = []
+    for stmt in cp.inner(body):
+        if stmt.get("kind") != "IfStmt":
+            continue
+        pair = _simplify_arm(stmt, opname, params[0], params[1], source, marker)
+        if pair is not None:
+            arms.append({**pair, "arm": len(arms), "standalone": len(arms) > 0})
+    return arms
+
+
 def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
                                    marker: str = "probe.recovered.fold",
                                    clang_bin: str = "clang") -> list[dict]:
@@ -677,12 +767,13 @@ def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[s
     if single is not None:
         return [{**single, "arm": 0, "standalone": False}]
     # phase-40 shape: the two-icmp caller contract (needs the source bytes for the m_Intrinsic
-    # template-id read the typed AST elides).
+    # template-id read the typed AST elides); then the phase-37 simplifyXInst name contract.
     try:
         source = Path(cpp_path).read_bytes()
     except OSError:
         return []
-    return _twoicmp_arms(ast, source, marker)
+    two = _twoicmp_arms(ast, source, marker)
+    return two if two else _simplify_arms(ast, source, marker)
 
 
 def available(clang_bin: str = "clang") -> bool:
