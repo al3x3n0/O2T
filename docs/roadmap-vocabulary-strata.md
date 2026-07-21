@@ -69,12 +69,31 @@ a bare literal — reconstructing that needs Stratum B's literal APInt evaluator
 Soundness obligation (held): the mask must be a **literal or a compile-time-constant O2T can fold**; a
 computed/SSA mask stays a `mask-pair` or declines. No new SMT.
 
-### Stratum B — APInt literal constant-folding in rewrites (LOW–MEDIUM risk)
-A small, closed evaluator for APInt/ConstantInt methods **when every operand is a literal**:
-`lshr`, `shl`, `ashr`, `and`, `or`, `xor`, `add`, `sub`, `getSignMask`, `getAllOnes`,
-`countTrailingZeros`, `countLeadingZeros`. Emits a `{kind:int, value:…}` rewrite node, matching bv32
-wrapping/signedness exactly. This unlocks rewrites that *derive* a constant. Any non-literal operand
-declines (no symbolic APInt). The teeth already in place (a mutated constant refutes) validate it.
+### Stratum B — APInt literal constant-folding in rewrites — **RE-SCOPED by a finding**
+Original plan: a closed evaluator that folds `ConstantInt::get(Ty, APInt::getSignMask(BW))` and friends
+to a `{kind:int}` node. **An exploratory implementation revealed this is largely blocked by O2T's own
+width-uniformity cross-check, and correctly so.** `reconcile` re-proves the obligation at a small
+concrete width (8 bits) and demands the verdict be width-uniform. A *width-parametric* constant like
+`getSignMask(32) = 0x80000000` baked as a fixed 32-bit literal truncates to `0x00` at width 8 — it is
+NOT the width-8 sign mask — so the two engines disagree and `reconcile` flags the fold untrusted. That
+is the cross-check doing its job: a fixed literal cannot represent a value whose meaning depends on the
+bitwidth.
+
+Consequences for the slice:
+- **Truncation-robust** constants (`getAllOnes`/`getMaxValue` → all-ones, `getMinValue`/`getZero` → 0,
+  and small literal arithmetic that fits every reconcile width) fold safely — but these are already
+  expressible (`getAllOnesValue`, `getNullValue`) or rare, so the net new reach is negligible.
+- **Width-parametric** constants (`getSignMask`, `getSignedMinValue`, `getSignedMaxValue`) — the
+  actually-useful case, since sign-bit manipulation is common in InstCombine — need a **width-parametric
+  formal-IR constant node** (e.g. a `signmask` op evaluating to `1 << (w-1)` at each engine's width),
+  NOT a fixed int. That is a cross-cutting change: ~10 op-dispatch sites across 6 soundness-critical
+  files (`formal_ir`, `mini_alive` ×2, `symexec/modelcheck_intents`, `intent/infer`, `pass_graph` ×5)
+  must all learn the node, or they drift. Medium risk, deliberate — not a reflexive increment.
+
+So Stratum B is **re-scoped**: the fixed-literal folding is dropped (it fails the cross-check for the
+interesting cases and adds nothing for the safe ones); the real slice is the width-parametric `signmask`
+node, tracked here as a deliberate future change. Any non-literal (symbolic/matched) operand always
+declines regardless.
 
 ### Stratum C — computed KnownBits (HIGH risk; stays a principled DECLINE)
 `computeKnownBits(X)` with a runtime-computed mask is **out of scope by design**: O2T cannot pin the
@@ -100,9 +119,13 @@ just the SMT.
 The honest reach delta: this widens the **string** front-end's guard vocabulary now; it does not yet
 lift the 3/3 verbatim count, because (i) the AST front-end still needs the inline-guard wiring, and
 (ii) real upstream folds write the mask as an APInt expression or a `computeKnownBits` result, which
-needs Stratum B (literal APInt folding) or stays a Stratum C decline. The next concrete slice is
-therefore **Stratum B's literal APInt evaluator**, which both unblocks APInt-mask reconstruction and
-lets rewrites derive constants.
+needs Stratum B or stays a Stratum C decline.
+
+A Stratum B exploration then produced a second, sharper finding (see below): folding width-parametric
+constants (`getSignMask`, …) to fixed literals is **rejected by the width-uniformity cross-check**, and
+correctly so. The genuinely-useful next slice is therefore a **width-parametric `signmask` formal-IR
+node** — a deliberate cross-cutting change, not a reflexive one — rather than the fixed-literal
+evaluator originally sketched.
 
 ## Non-goals (stated, so silence is not mistaken for coverage)
 
