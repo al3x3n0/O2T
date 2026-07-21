@@ -185,7 +185,7 @@ for E4), but the **aggregate result tables/figures with measured numbers are not
 
 | Experiment | Mechanism gated by | Result table produced? |
 | --- | --- | --- |
-| E1 soundness coverage (passes × loops → proved / loop-eliminated / refuted) | the closed-loop TV + loop fixtures (C4, C2) | ☐ TODO — no aggregate matrix yet |
+| E1 soundness coverage (passes × loops → proved / loop-eliminated / refuted) | `tv_matrix_fixture` (zero-false-refutation invariant + mutate teeth) | ✓ **Measured** ([e1-coverage.md](e1-coverage.md)): 5 real opt passes × 7 loops = 35 cells, 26 positive verdicts, **0 false refutations** on sound LLVM, 9 honest loop-eliminated; a mutated recurrence refutes with a witness |
 | E2 teeth / mutation catch-rate + witness minimality | `mutation_catchrate_fixture` (zero-survivor invariant across all tiers) | ◐ **Catch-rate measured** ([e2-mutation.md](e2-mutation.md)): 52/52 seeded corruptions caught, 0 survivors (34 deep-contract mutants + 7 recovery classes + 11 registry intents); witness MINIMALITY scoped to the loop track (E1/E5), stated not overclaimed |
 | E3 performance (integer vs bv32; batch vs per-candidate; per-obligation Z3 time) | `prove_timing_fixture` (orderings + generous bounds; never machine numbers) | ✓ **Measured** ([e3-timing.md](e3-timing.md)): Int `unsat` 0.105 s vs bv32 timeout at the 10 s cap; batch 19.5× over per-candidate; fold obligations 12–83 ms |
 | E4 frontend robustness (SCEV succeeds where regex fails) | SCEV frontend fixtures (C3/C4) | ☐ TODO — no comparative study |

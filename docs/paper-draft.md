@@ -333,6 +333,14 @@ function is not a soundness event. The matrix is complemented by six *field* spe
 bugs caught during development, each by a different mechanism, two of which would have produced
 false refutations of upstream LLVM and one of which was a direct false-proof vector.
 
+**E1 — closed-loop coverage (measured).** Five real loop passes (LICM, loop-rotate,
+simple-loop-unswitch, loop-instsimplify, indvars) were run over a seven-loop recurrence benchmark
+and their actual output validated against the input: 35 cells, **26 positive verdicts** (20
+loop→loop `proved`, 6 indvars `proved-closed-form`), 9 honestly-reported `loop-eliminated`, and
+**zero false refutations** — no correct LLVM pass falsely accused. The dual holds: a mutated
+recurrence in `opt`'s output is refuted with a concrete witness, so the zero-refutation result is
+a property of sound passes, not of a validator that never refutes.
+
 **E2 — mutation catch-rate (measured).** Across three independent teeth tiers — 34 single-point
 corruptions of the deep family contracts (each killed with a witness, premises satisfiable), the 7
 recovery misrecovery classes of E7, and 11 perturbed registry intents — **52 of 52 seeded
@@ -344,8 +352,9 @@ point mutations, and is not claimed here.
 bit-blasted bv32 twin exhausts a 10 s cap; batched synthesis discharge runs 19.5× faster than
 per-candidate while agreeing candidate-by-candidate; recovered fold obligations prove in 12–83 ms.
 
-**Pending (mechanism-gated).** E1, E4, E5 (loop-track coverage, frontend robustness, case studies)
-have their mechanisms gated by fixtures but no aggregate tables yet.
+**Pending (mechanism-gated).** E4 (frontend robustness — SCEV succeeds where regex frontends
+fail), E5 (source case studies), and E8 (live-model agent triage) have their mechanisms gated by
+fixtures but no aggregate tables yet.
 E8 (live agent triage of a vendor tree) has its trust invariants gated with a deterministic stub
 but no live-model run.
 

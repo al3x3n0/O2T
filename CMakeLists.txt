@@ -625,6 +625,12 @@ if(O2T_BUILD_TESTS)
             "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/passir_corpus_fixture.py; else echo 'passir_corpus_fixture: z3 not found, skipped'; fi"
     )
     add_test(
+        NAME tv_matrix_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/tv_matrix_fixture.py; else echo 'tv_matrix_fixture: z3 or opt not found, skipped'; fi"
+    )
+    add_test(
         NAME mutation_catchrate_fixture
         COMMAND
             /bin/sh -c
