@@ -51,6 +51,10 @@ into a recurrence DSL and discharging soundness with Z3.
 - **[e5-case-studies.md](e5-case-studies.md)** — the E5 worked case studies: foldIsPowerOf2OrZero
   recovered from verbatim upstream source, strength reduction proved relationally, discrepancy scope.
 
+- **[maturity.md](maturity.md)** — honest self-assessment: what is solid, where O2T is
+  immature (peephole coverage ~2%, brittle recovery, the unwired structured-tree front-end),
+  the structural declines, and a prioritized roadmap toward maturity.
+
 ## Reproducing
 
 Everything is gated by an executable suite:
