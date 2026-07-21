@@ -656,6 +656,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/tv_matrix_fixture.py; else echo 'tv_matrix_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Observational validation: a fold recovered FROM SOURCE is emitted as IR, the real
+    # `opt -passes=instcombine` is run, and its actual output is checked against the recovered `after`
+    # -- closing the source-intent <-> actual-behavior loop for peephole folds.
+    add_test(
+        NAME observe_fold_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observe_fold_fixture.py; else echo 'observe_fold_fixture: z3 or opt not found, skipped'; fi"
+    )
     add_test(
         NAME mutation_catchrate_fixture
         COMMAND

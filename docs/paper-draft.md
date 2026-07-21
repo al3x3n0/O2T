@@ -220,6 +220,15 @@ itself* as a verification obligation, defended by independence in layers:
    a trimmed rendering.
 6. **Certificates and abduction.** Verdicts carry re-checkable certificates; when a fold refutes,
    abduction synthesizes the *missing precondition*, converting a rejection into a diagnosis.
+7. **Observational grounding.** All of the above certify the *recovery*; this certifies that the
+   recovery matches the *pass's actual behavior*. The recovered `before` is emitted as LLVM IR, the
+   real `opt -passes=instcombine` is run, and the optimizer's output is checked against the recovered
+   `after` — the peephole analogue of the loop track's translation validation, closing the loop from
+   *source-recovered intent* to *what the compiled pass does*. A fold is **confirmed** when the pass
+   performs it (equivalent forms accepted), **not-fired** when the pass declines it on inputs that do
+   not establish the recovered precondition (checked under that precondition, so a guard is honored
+   rather than mis-flagged), and **divergent** when the pass produces something the recovered `after`
+   does not — a discrepancy the symbolic proof alone cannot see, since it never runs the pass.
 
 Beneath both tracks sits a meta-verification layer: premises must be jointly satisfiable before
 an `unsat` counts as proof (anti-vacuity), every proved contract must kill all its single-point
