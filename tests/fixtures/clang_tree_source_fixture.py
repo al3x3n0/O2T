@@ -65,6 +65,17 @@ def main() -> int:
         assert pair["after"] == regex_pair["after"], (name, "after diverged")
         assert pair["variables"] == regex_pair["variables"], name
 
+    # 4. CASCADE: a verbatim multi-arm fold (foldXorToXor, 3 arms) recovers every arm from the
+    #    real-headers AST -- the assert/getOperand prelude is tolerated (scoped per-arm), and each
+    #    arm is a real Boolean identity (A&B)^(A|B) -> A^B that proves. arm 0 is a pass-level claim;
+    #    later arms are standalone (the pass_graph cascade caveat).
+    arms = ct.recover_folds_from_source_file(str(VENDOR), "foldXorToXor", [inc], clang_bin=clang)
+    assert len(arms) == 3, ("cascade must recover 3 arms", len(arms))
+    assert [a["standalone"] for a in arms] == [False, True, True]
+    assert all(ma.prove(a, z3)[0] == "proved" for a in arms), \
+        [ma.prove(a, z3)[0] for a in arms]
+    proved += 3
+
     print(f"clang_tree_source_fixture OK: {proved} proved + {refuted} refuted recovered from fold "
           "source parsed against the REAL LLVM 18 headers (no stub) -- including a VERBATIM upstream "
           "combineAddSubWithShlAddSub -- each obligation byte-identical to the regex path, the wrong "

@@ -11,11 +11,33 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include <cassert>
 using namespace llvm;
 using namespace llvm::PatternMatch;
 
 // The rewrite sink (InstCombiner member in upstream; a free decl here so the unit is standalone).
 Value *replaceInstUsesWith(Instruction &, Value *);
+
+// VERBATIM cascade body from InstCombineAndOrXor.cpp (first three arms): each proves A ^ B.
+static Instruction *foldXorToXor(BinaryOperator &I, IRBuilder<> &Builder) {
+  assert(I.getOpcode() == Instruction::Xor);
+  Value *Op0 = I.getOperand(0);
+  Value *Op1 = I.getOperand(1);
+  Value *A, *B;
+  // (A & B) ^ (A | B) -> A ^ B  (+ commuted)
+  if (match(&I, m_c_Xor(m_And(m_Value(A), m_Value(B)),
+                        m_c_Or(m_Deferred(A), m_Deferred(B)))))
+    return BinaryOperator::CreateXor(A, B);
+  // (A | ~B) ^ (~A | B) -> A ^ B  (+ commuted)
+  if (match(&I, m_Xor(m_c_Or(m_Value(A), m_Not(m_Value(B))),
+                      m_c_Or(m_Not(m_Deferred(A)), m_Deferred(B)))))
+    return BinaryOperator::CreateXor(A, B);
+  // (A & ~B) ^ (~A & B) -> A ^ B  (+ commuted)
+  if (match(&I, m_Xor(m_c_And(m_Value(A), m_Not(m_Value(B))),
+                      m_c_And(m_Not(m_Deferred(A)), m_Deferred(B)))))
+    return BinaryOperator::CreateXor(A, B);
+  return nullptr;
+}
 
 // VERBATIM body from InstCombineAddSub.cpp: (-B << Cnt) + A -> A - (B << Cnt).
 static Instruction *combineAddSubWithShlAddSub(IRBuilder<> &Builder,

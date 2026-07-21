@@ -362,6 +362,89 @@ def recover_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
     return _recover_from_ast(ast, ast.get("name") or fn_name, _instr_params_from_ast(ast), marker)
 
 
+def _body_compound(fn_decl: dict) -> dict | None:
+    for ch in cp.inner(fn_decl):
+        if ch.get("kind") == "CompoundStmt":
+            return ch
+    return None
+
+
+def _recover_arm(if_stmt: dict, marker: str) -> dict | None:
+    """One cascade arm `if (match(&I, PAT) && <guards>) <then returns REWRITE>` -> an obligation,
+    or None. Guard/mutation/non-vocab checks are SCOPED TO THE ARM (the if-condition + then-branch),
+    so a function-level prelude (`assert`, unused `getOperand` lets) does not block the arm. The
+    then-branch's Builder.Create* lets are inlined; the rewrite is its single non-bail return."""
+    kids = cp.inner(if_stmt)
+    if len(kids) < 2:
+        return None
+    cond, then = kids[0], kids[1]
+    conjuncts = _flatten_and(cond)
+    is_match = [c for c in conjuncts
+                if c.get("kind") in ("CallExpr", "CXXMemberCallExpr") and cp.callee_name(c) == "match"]
+    if len(is_match) != 1:
+        return None
+    guard_srcs = []
+    for c in conjuncts:
+        if c is is_match[0]:
+            continue
+        if c.get("kind") not in ("CallExpr", "CXXMemberCallExpr"):
+            return None
+        rs = _reconstruct_guard(c)
+        if rs is None:
+            return None
+        guard_srcs.append(rs)
+    if _has_ir_mutation(then) or _has_nonvocab_call(then):
+        return None                                   # mutation / const-emitter in the arm -> decline
+    rets: list = []
+    _nonbail_returns(then, rets)
+    if len(rets) != 1:
+        return None
+    lets: dict = {}
+    _collect_lets(then, lets)
+    m_args = cp.call_args(is_match[0])
+    if len(m_args) != 2:
+        return None
+    try:
+        mt, rt = _to_tree(m_args[1]), _to_tree(rets[0], lets)
+    except (_Unmappable, IndexError):
+        return None
+    return pg.recover_pair(" && ".join(guard_srcs), "", marker, matcher_tree=mt, rewrite_tree=rt)
+
+
+def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
+                                   marker: str = "probe.recovered.fold",
+                                   clang_bin: str = "clang") -> list[dict]:
+    """CASCADE-aware verbatim recovery: every top-level `if (match(&I, ...)) return <rewrite>;` arm
+    of a fold-named function becomes its own obligation, tagged `arm`. Reads the real-headers AST
+    (parser-free); a function-level prelude (asserts, operand lets) is tolerated. Falls back to the
+    single-obligation path (RIUW / return-form) when the body is not a cascade. Returns [] on
+    decline. The refutation-standalone caveat of pass_graph's cascade slicing applies to arm > 0."""
+    ast = _dump_source_file(cpp_path, fn_name, includes, clang_bin)
+    if ast is None or ast.get("kind") != "FunctionDecl":
+        return []
+    from o2t.intent.pass_graph import _FOLD_CONTRACT_RE
+    name = ast.get("name") or fn_name
+    if not _FOLD_CONTRACT_RE.search(name):
+        return []
+    body = _body_compound(ast)
+    arms: list[dict] = []
+    if body is not None:
+        for idx, stmt in enumerate(cp.inner(body)):
+            if stmt.get("kind") != "IfStmt":
+                continue
+            matches: list = []
+            cp.find_member_call(cp.inner(stmt)[0] if cp.inner(stmt) else {}, "match", matches)
+            if not matches:
+                continue
+            pair = _recover_arm(stmt, marker)
+            if pair is not None:
+                arms.append({**pair, "arm": len(arms), "standalone": len(arms) > 0})
+    if arms:
+        return arms
+    single = _recover_from_ast(ast, name, _instr_params_from_ast(ast), marker)
+    return [{**single, "arm": 0, "standalone": False}] if single is not None else []
+
+
 def available(clang_bin: str = "clang") -> bool:
     return cp.find_clang(clang_bin) is not None
 
