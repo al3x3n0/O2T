@@ -115,3 +115,17 @@ static Value *simplifyXorInst(Value *Op0, Value *Op1) {
     return Constant::getNullValue(Op0->getType());
   return nullptr;
 }
+
+// FAITHFUL rendering of a predicate-SET fold (phase-39 shape): the `isEquality(Pred)` guard licenses
+// the rewrite for BOTH equality members, so the obligation splits into an eq case and an ne case,
+// each instantiated through the matcher AND the generic CreateICmp(Pred, ...) rewrite -- ALL must
+// prove (a rewrite that hardcodes one member refutes on the other; predicate overreach caught by the
+// split). The identity is real InstCombine: icmp eq/ne (A ^ B), 0 <-> icmp eq/ne A, B.
+static Value *foldXorEqualityZero(Instruction &I, IRBuilder<> &Builder) {
+  CmpInst::Predicate Pred;
+  Value *A, *B;
+  if (match(&I, m_ICmp(Pred, m_Xor(m_Value(A), m_Value(B)), m_Zero())) &&
+      ICmpInst::isEquality(Pred))
+    return replaceInstUsesWith(I, Builder.CreateICmp(Pred, A, B));
+  return nullptr;
+}

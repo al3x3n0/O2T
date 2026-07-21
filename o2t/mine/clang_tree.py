@@ -363,7 +363,9 @@ def _return_form_trees(ast: dict, fn_name: str, instr_params: set) -> tuple[dict
 
 
 def _recover_from_ast(ast: dict, fn_name: str, instr_params: set, marker: str) -> dict | None:
-    """Shared tail: RIUW/guarded first, else the return-form anchor; drive recover_pair."""
+    """Shared tail (SINGLE-obligation view): RIUW/guarded first, else the return-form anchor; drive
+    recover_pair -- None for a predicate-SET fold (multiple cases can't collapse to one, exactly as
+    pass_graph.recover_from_function refuses)."""
     trees = _extract_riuw(ast)
     if trees is None:
         trees = _return_form_trees(ast, fn_name, instr_params)
@@ -372,6 +374,21 @@ def _recover_from_ast(ast: dict, fn_name: str, instr_params: set, marker: str) -
     matcher_tree, rewrite_tree, guard_source = trees
     return pg.recover_pair(guard_source, "", marker,
                            matcher_tree=matcher_tree, rewrite_tree=rewrite_tree)
+
+
+def _recover_cases_from_ast(ast: dict, fn_name: str, instr_params: set, marker: str) -> list[dict]:
+    """Cases-aware tail: like _recover_from_ast but returns ALL obligation cases -- a predicate-SET
+    guard (`ICmpInst::isEquality(Pred)`, phase 39) expands to one case per member (eq/ne/...), each
+    instantiated consistently through the matcher and the rewrite, and ALL must prove. Returns one
+    entry for an ordinary single-case fold (byte-identical to _recover_from_ast), [] on decline."""
+    trees = _extract_riuw(ast)
+    if trees is None:
+        trees = _return_form_trees(ast, fn_name, instr_params)
+    if trees is None:
+        return []
+    matcher_tree, rewrite_tree, guard_source = trees
+    return pg.recover_pair_cases(guard_source, "", marker,
+                                 matcher_tree=matcher_tree, rewrite_tree=rewrite_tree)
 
 
 def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
@@ -763,9 +780,11 @@ def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[s
                 arms.append({**pair, "arm": len(arms), "standalone": len(arms) > 0})
     if arms:
         return arms
-    single = _recover_from_ast(ast, name, _instr_params_from_ast(ast), marker)
-    if single is not None:
-        return [{**single, "arm": 0, "standalone": False}]
+    # single fold, cases-aware: a predicate-SET guard (phase 39) yields multiple cases, all under
+    # arm 0 (a refutation of any case refutes the fold); an ordinary fold yields exactly one.
+    single_cases = _recover_cases_from_ast(ast, name, _instr_params_from_ast(ast), marker)
+    if single_cases:
+        return [{**c, "arm": 0, "standalone": False} for c in single_cases]
     # phase-40 shape: the two-icmp caller contract (needs the source bytes for the m_Intrinsic
     # template-id read the typed AST elides); then the phase-37 simplifyXInst name contract.
     try:

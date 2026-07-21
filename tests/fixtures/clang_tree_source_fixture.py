@@ -147,14 +147,46 @@ def main() -> int:
         Path(swap_path).unlink(missing_ok=True)
     refuted += 1
 
+    # 9. PREDICATE-SET split (pass_graph phase 39) from real source: an `ICmpInst::isEquality(Pred)`
+    #    guard on an m_ICmp-bound predicate expands the obligation into one case per member (eq, ne),
+    #    each instantiated through the matcher AND the generic CreateICmp(Pred, ...) rewrite. BOTH
+    #    cases prove the identity (icmp eq/ne (A^B),0 <-> icmp eq/ne A,B), byte-identical to the regex
+    #    path. Faithful rendering (SHAPE coverage), not counted in verbatim reach.
+    pset = ct.recover_folds_from_source_file(str(VENDOR), "foldXorEqualityZero", [inc], clang_bin=clang)
+    assert [a["case"]["pred"] for a in pset] == ["eq", "ne"], pset
+    assert all(a["arm"] == 0 for a in pset), "predicate-set members share arm 0"
+    preg = pg.recover_folds_from_function(bodies["foldXorEqualityZero"])
+    for a, s in zip(pset, preg):
+        assert ma.prove(a, z3)[0] == "proved", (a["case"], ma.prove(a, z3))
+        for key in ("before", "after", "variables", "assumptions"):
+            assert a[key] == s[key], ("predicate-set", a["case"], key, "diverged from the regex path")
+    proved += 2
+
+    # 10. OVERREACH teeth (phase 39's centerpiece): a rewrite that HARDCODES one member
+    #     (CreateICmpEQ) proves the eq case but REFUTES the ne case with a witness -- the split
+    #     catches a predicate the rewrite is not entitled to.
+    over_src = VENDOR.read_text().replace("Builder.CreateICmp(Pred, A, B)", "Builder.CreateICmpEQ(A, B)")
+    with tempfile.NamedTemporaryFile("w", suffix=".cpp", delete=False) as tf:
+        tf.write(over_src)
+        over_path = tf.name
+    try:
+        over = ct.recover_folds_from_source_file(over_path, "foldXorEqualityZero", [inc], clang_bin=clang)
+        by_pred = {a["case"]["pred"]: ma.prove(a, z3) for a in over}
+        assert by_pred["eq"][0] == "proved", "hardcoded-EQ eq case still proves"
+        assert by_pred["ne"][0] == "refuted" and by_pred["ne"][1], "predicate overreach must refute ne"
+    finally:
+        Path(over_path).unlink(missing_ok=True)
+    refuted += 1
+
     print(f"clang_tree_source_fixture OK: {proved} proved + {refuted} refuted recovered from fold "
           "source parsed against the REAL LLVM 18 headers (no stub) -- including VERBATIM upstream "
           "combineAddSubWithShlAddSub, the foldXorToXor 3-arm cascade, and BOTH arms of the two-icmp "
           "contract foldIsPowerOf2OrZero (ctpop theorems, m_Intrinsic id read at the compiler-pinned "
-          "span) -- plus the simplifyXInst NAME contract (phantom-instruction synthesis + operand "
-          "splice: X-0->X, X^0->X, X^X->0), each obligation byte-identical to the regex path, the "
-          "wrong fold / UGE mutation / swapped 0-X orientation all refuted with a witness. Verbatim "
-          "reach: the regex parser is out of the loop on real compiler-parsed source, not a stub")
+          "span) -- plus the simplifyXInst NAME contract (X-0->X, X^0->X, X^X->0) and a "
+          "predicate-SET split (icmp eq/ne (A^B),0 <-> icmp A,B, both members), each obligation "
+          "byte-identical to the regex path, the wrong fold / UGE mutation / swapped 0-X orientation / "
+          "predicate overreach all refuted with a witness. Verbatim reach: the regex parser is out of "
+          "the loop on real compiler-parsed source, not a stub")
     return 0
 
 
