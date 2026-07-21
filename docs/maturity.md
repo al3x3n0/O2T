@@ -32,7 +32,7 @@ unusually rigorous soundness discipline — not a production verifier of real pa
 | **Peephole coverage** | Over 441 real upstream InstCombine/InstSimplify functions, O2T recovers and proves **12 fold arms across 8 functions** (~2%). The other 429 decline. |
 | **"Passes" vs obligations** | O2T verifies isolated recovered **fold obligations**, not passes. Worklists, iteration, in-place IR mutation, and analysis dependencies are not modeled. The "verify the pass" framing is aspirational relative to the mechanism; "recover-and-verify fold obligations from pass source" is the precise claim. |
 | **Recovery brittleness** | Recovery is regex + a hand-parser over C++. **Seven latent soundness holes** surfaced during phases 36–40 alone (each caught by the discipline, but their density shows the layer is young). |
-| **Structured-tree front-end** | **First cut wired** (`o2t/mine/clang_tree.py`): a Clang-AST producer walks `clang -ast-dump=json` and feeds `recover_pair` real matcher/rewrite trees, with the regex parser OUT of the loop -- recovering the same obligation byte-for-byte on unguarded folds (`clang_tree_fixture`). Guards, the return-form anchor, and templated matchers still route through the string path; widening the AST producer to them retires more of the parser. |
+| **Structured-tree front-end** | **Wired and widening** (`o2t/mine/clang_tree.py`): a Clang-AST producer walks `clang -ast-dump=json` and feeds `recover_pair` real matcher/rewrite trees, regex parser OUT of the loop -- now covering unguarded RIUW folds, GUARDED folds (guard preconditions reconstructed from the AST), and the RETURN-form anchor (Builder lets inlined at AST level), each byte-identical to the regex path incl. assumptions (`clang_tree_fixture`). Bailout cascades, const emitters, and templated matchers still route through the string path; each further widening retires more of the parser. |
 | **Loop benchmark** | E1's zero-false-refutation result is over **7 hand-crafted recurrence kernels**, not LLVM's test suite. |
 | **Discrepancy finding** | No wild miscompile has been found; all discrepancy detection is on **injected** faults (E1/E2/E7 teeth). |
 | **Agent (E8)** | Never run with a live model; trust invariants gated only with a deterministic stub. |
@@ -47,10 +47,10 @@ discharge; loop-nest transforms and vectorization are out.
 
 ## Prioritized roadmap toward maturity
 
-1. **Widen the Clang-AST front-end** (highest leverage). The first cut is wired
-   (`clang_tree.py`, unguarded folds, regex parser out of the loop); extend it to guards, the
-   return-form anchor, and templated matchers so the whole recovery TCB shrinks and E6 coverage
-   climbs without the fragility that produced the seven holes.
+1. **Widen the Clang-AST front-end** (highest leverage, in progress). Unguarded, guarded, and
+   return-form folds are wired parser-free (`clang_tree.py`); extend to bailout cascades, const
+   emitters, and templated matchers so the whole recovery TCB shrinks and E6 coverage climbs
+   without the fragility that produced the recovery-soundness holes.
 2. **Broaden both benchmarks** to LLVM's own test suite (loops for E1/E4; a larger InstCombine
    slice for E6), so coverage and soundness numbers are over a representative corpus.
 3. **Grow the guard vocabulary** (KnownBits/APInt/`decomposeBitTestICmp`) to lift E6 out of single
