@@ -341,6 +341,13 @@ loop→loop `proved`, 6 indvars `proved-closed-form`), 9 honestly-reported `loop
 recurrence in `opt`'s output is refuted with a concrete witness, so the zero-refutation result is
 a property of sound passes, not of a validator that never refutes.
 
+**E4 — frontend robustness (measured).** The SCEV frontend and the legacy line-regex frontend
+were run over a rotated/multi-block/LCSSA benchmark — the shape `clang -O1` emits. The regex
+frontend recovers **0 of 4**; SCEV recovers **4 of 4** — strict domination on the real-world form.
+A simple single-block control (regex 4/4) confirms the rotated failures are a property of loop
+shape, not a dead parser. Since E1 validates rotated real `opt` output, the SCEV frontend is what
+makes E1 measurable at all.
+
 **E2 — mutation catch-rate (measured).** Across three independent teeth tiers — 34 single-point
 corruptions of the deep family contracts (each killed with a witness, premises satisfiable), the 7
 recovery misrecovery classes of E7, and 11 perturbed registry intents — **52 of 52 seeded
@@ -352,9 +359,9 @@ point mutations, and is not claimed here.
 bit-blasted bv32 twin exhausts a 10 s cap; batched synthesis discharge runs 19.5× faster than
 per-candidate while agreeing candidate-by-candidate; recovered fold obligations prove in 12–83 ms.
 
-**Pending (mechanism-gated).** E4 (frontend robustness — SCEV succeeds where regex frontends
-fail), E5 (source case studies), and E8 (live-model agent triage) have their mechanisms gated by
-fixtures but no aggregate tables yet.
+**Pending.** E5 (source case studies — narrative, e.g. an LSR-from-source walk-through) and E8
+(live-model agent triage — its trust invariants are gated with a deterministic stub, but no run
+with a live model) remain; E8 is bounded by an external dependency rather than missing mechanism.
 E8 (live agent triage of a vendor tree) has its trust invariants gated with a deterministic stub
 but no live-model run.
 

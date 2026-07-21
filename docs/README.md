@@ -46,6 +46,8 @@ into a recurrence DSL and discharging soundness with Z3.
   corruptions caught, zero survivors across the deep-contract, recovery, and registry teeth tiers.
 - **[e1-coverage.md](e1-coverage.md)** — the measured E1 coverage matrix: 5 real opt passes × 7
   loops, 26 positive verdicts, zero false refutations on sound LLVM, mutated-recurrence teeth.
+- **[e4-robustness.md](e4-robustness.md)** — the measured E4 frontend differential: on rotated/LCSSA
+  loops regex recovers 0, SCEV recovers 4 (strict domination), with a simple-loop control.
 
 ## Reproducing
 
