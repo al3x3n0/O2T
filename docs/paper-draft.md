@@ -19,7 +19,11 @@ mis-*recovery* is as dangerous as a mis-*compile*, O2T defends the recovery itse
 cross-check stack that shrinks the trusted base: symbolic-versus-exhaustive-concrete
 reconciliation, an independent second solver, width- and arity-parametric corroboration,
 compilation of the verbatim source rewrite through an independent shim, re-checkable proof
-certificates, and precondition abduction. In a seeded-misrecovery ablation over seven corruption
+certificates, and precondition abduction. O2T's own tokenizer and hand-parser are themselves
+removed from the trusted base by a Clang-AST front-end that recovers obligations from the real
+C++ compiler's AST — byte-identically to the regex path, and now at full shape parity with it,
+including the two-icmp caller contract recovered verbatim against the real LLVM 18 headers. In a
+seeded-misrecovery ablation over seven corruption
 classes, **no corruption escapes the stack**, and two layers are shown to be uniquely
 load-bearing. On an unmodified 38,267-line corpus of upstream LLVM 18 InstCombine and
 InstructionSimplify source, O2T proves twelve fold obligations verbatim — including both arms of
@@ -75,7 +79,9 @@ source**. Doing so requires solving four problems that per-pair tools never face
   bounded arity; multi-conjunct composition; and caller contracts recovered from function
   signatures (`simplifyXInst`, two-icmp combiners). Every rung declines what it cannot model.
 - **Certifying the recovery** (§4). A layered cross-check stack — engine reconciliation, a second
-  solver, width- and arity-parametric corroboration, compiler-grounded recovery, certificates,
+  solver, width- and arity-parametric corroboration, compiler-grounded recovery, a Clang-AST
+  front-end that removes O2T's own parser from the trusted base (now at full shape parity with the
+  regex path, recovering the two-icmp contract verbatim from real headers), certificates,
   abduction — treated as a verification object in its own right. A seeded-misrecovery ablation
   (§10, E7) shows zero escapes across seven corruption classes and identifies two layers as
   uniquely load-bearing; six recovery bugs found during development, each caught by a different
@@ -195,8 +201,18 @@ itself* as a verification obligation, defended by independence in layers:
    the translation-validation move applied one level up, to the *recovery*. This is strictly
    stronger than reconciling a harness rebuilt from O2T's own nodes, which cannot catch a
    recovery that is internally consistent but unfaithful to the source.
-5. **Structured-tree front-end.** A Clang-AST miner may supply pre-parsed matcher/rewrite trees,
-   removing the tokenizer and parser from the trusted base entirely.
+5. **Structured-tree front-end.** A Clang-AST miner supplies pre-parsed matcher/rewrite trees built
+   from the C++ compiler's own AST, removing O2T's tokenizer and hand-parser from the trusted base
+   entirely — a misparse is impossible on a tree. This is realized in two modes: a stub mode (fold
+   source against a minimal API stub) and a **source-file mode that parses unmodified fold bodies
+   against the real LLVM 18 headers**, recovering an obligation byte-identical to the regex path with
+   the parser fully out of the loop. Its shape coverage is now at **parity with the regex front-end**:
+   guarded/return-form folds, cascades, the two-icmp caller contract (recovered *verbatim* — the one
+   datum the typed AST elides, the `m_Intrinsic<Intrinsic::ctpop>` id, is read at the source span the
+   compiler itself pins), the `simplifyXInst` name contract, predicate-set case splits, and the
+   operand/reduction collapse loops. Every shape carries teeth through the same AST path (a mutated
+   rewrite, a swapped operand orientation, a predicate overreach, and a non-associative reducer all
+   refute with witnesses; a non-collapse loop declines).
 6. **Certificates and abduction.** Verdicts carry re-checkable certificates; when a fold refutes,
    abduction synthesizes the *missing precondition*, converting a rejection into a diagnosis.
 
@@ -361,7 +377,9 @@ per-candidate while agreeing candidate-by-candidate; recovered fold obligations 
 
 **E5 — case studies (worked examples).** Two end-to-end walk-throughs, each traceable to a gated
 fixture: `foldIsPowerOf2OrZero` recovered from unmodified upstream source through nearly the whole
-ladder and proved as two ctpop theorems; and strength reduction proved relationally for all trip
+ladder and proved as two ctpop theorems — and recovered a *second, independent* way, from the real
+LLVM 18 Clang AST with O2T's hand-parser fully out of the loop, byte-identically to the regex path
+(two front-ends agreeing on the same obligation); and strength reduction proved relationally for all trip
 counts by the inferred relation `{k = c·i, acc = acc}`, with a wrong stride refuted, on both
 hand-written loops and the rotated real-`opt` output shape. On this benchmark O2T finds no
 miscompile — the correct result, matching E1 — so discrepancy *detection* is demonstrated on
@@ -369,11 +387,9 @@ injected miscompiles (E1/E2/E7 teeth); a real class of discrepancy was nonethele
 in development, in O2T's own reading of the source (E7's six field specimens). Closed-loop
 validation of real `opt -passes=lsr` and reproduction of a wild LLVM bug remain open.
 
-**Pending.** E8 (live-model agent triage) is the one remaining experiment: its trust invariants
-are gated with a deterministic stub, but a run with a live model is bounded by an external
-dependency rather than missing mechanism.
-E8 (live agent triage of a vendor tree) has its trust invariants gated with a deterministic stub
-but no live-model run.
+**Pending.** E8 (live-model agent triage of a vendor tree) is the one remaining experiment: its
+trust invariants are gated with a deterministic stub, but a run with a live model is bounded by an
+external dependency rather than missing mechanism.
 
 ## 11. Limitations
 
