@@ -4,11 +4,18 @@
 pass_graph.recover_pair accepts pre-parsed matcher/rewrite TREES (the {kind,name,args,template}
 form its `_parse` produces); supplying them bypasses the tokenizer + hand-parser entirely, so a
 misparse becomes impossible on a tree. Until now only fixtures hand-authored those trees. This
-module PRODUCES them from real source: it shells out to `clang -Xclang -ast-dump=json` (the C++
-COMPILER's own parser), walks the CallExpr AST of the `match(...)` pattern and the
-`replaceInstUsesWith(I, <rewrite>)` value, and maps each AST node to the tree dialect. The
-compiler builds the call structure; O2T only relabels it -- removing the regex parser from the
-trusted base (the #1 maturity item in docs/maturity.md).
+module PRODUCES them: it shells out to `clang -Xclang -ast-dump=json` (the C++ COMPILER's own
+parser), walks the CallExpr AST of the `match(...)` pattern and the rewrite, and maps each AST
+node to the tree dialect. The compiler builds the call structure; O2T only relabels it -- removing
+the regex parser from the trusted base (the #1 maturity item in docs/maturity.md).
+
+STUB MODE (this implementation): clang parses the fold against a MINIMAL API stub
+(tests/fixtures/instcombine_pass_api.h), so it works only on stub-compatible source. This proves
+the parser-free PRINCIPLE byte-for-byte against the regex path, but its reach on VERBATIM upstream
+is 0 -- real folds reference API the stub does not declare, and clang emits RecoveryExprs that
+decline. Production reach needs the real LLVM headers + full InstCombiner compile context (the
+matcher tree DOES parse cleanly on verbatim source with `-I <llvm-include> -ast-dump-filter`;
+Builder/guard resolution needs the class context). See docs/maturity.md roadmap #1.
 
 Scope: (1) a single guarded `if (match(&I, ...) && <guards>) return replaceInstUsesWith(...)` --
 the guard conjuncts are reconstructed from the AST into the recovered PRECONDITION; and (2) the

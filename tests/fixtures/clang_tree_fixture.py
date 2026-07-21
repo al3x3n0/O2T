@@ -27,7 +27,9 @@ from o2t import mini_alive as ma  # noqa: E402
 
 _HOMEBREW_CLANG = "/opt/homebrew/opt/llvm@18/bin/clang"
 
-# (name, source, expected verdict). Unguarded structural folds -- the AST front-end's first cut.
+# (name, source, expected verdict). STUB-MODE source: written to parse against the minimal API
+# stub. This gates the parser-free PRINCIPLE (byte-identical to the regex path), NOT verbatim
+# upstream reach -- which is 0 in stub mode and needs real headers + compile context (maturity.md).
 FOLDS = [
     ("nested-identity", "proved",
      "Value *f(Instruction &I){ Value *X, *Y;\n"

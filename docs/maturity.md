@@ -32,7 +32,7 @@ unusually rigorous soundness discipline — not a production verifier of real pa
 | **Peephole coverage** | Over 441 real upstream InstCombine/InstSimplify functions, O2T recovers and proves **12 fold arms across 8 functions** (~2%). The other 429 decline. |
 | **"Passes" vs obligations** | O2T verifies isolated recovered **fold obligations**, not passes. Worklists, iteration, in-place IR mutation, and analysis dependencies are not modeled. The "verify the pass" framing is aspirational relative to the mechanism; "recover-and-verify fold obligations from pass source" is the precise claim. |
 | **Recovery brittleness** | Recovery is regex + a hand-parser over C++. **Seven latent soundness holes** surfaced during phases 36–40 alone (each caught by the discipline, but their density shows the layer is young). |
-| **Structured-tree front-end** | **Wired and widening** (`o2t/mine/clang_tree.py`): a Clang-AST producer walks `clang -ast-dump=json` and feeds `recover_pair` real matcher/rewrite trees, regex parser OUT of the loop -- now covering unguarded RIUW folds, GUARDED folds (guard preconditions reconstructed from the AST), and the RETURN-form anchor (Builder lets inlined at AST level), each byte-identical to the regex path incl. assumptions (`clang_tree_fixture`). Bailout cascades, const emitters, and templated matchers still route through the string path; each further widening retires more of the parser. |
+| **Structured-tree front-end** | **Wired, STUB-MODE** (`o2t/mine/clang_tree.py`): a Clang-AST producer walks `clang -ast-dump=json` against a minimal API stub and feeds `recover_pair` real matcher/rewrite trees, regex parser OUT of the loop -- byte-identical to the regex path (incl. assumptions) across unguarded, guarded, and return-form folds whose source is stub-compatible (`clang_tree_fixture`). **Honest reach: 0/8 on the VERBATIM upstream E6 functions** -- real folds reference API the minimal stub does not declare, so clang emits RecoveryExprs and extraction declines. This proves the parser-free PRINCIPLE, not production reach. Verbatim reach needs the real LLVM headers + full InstCombiner compile context (spike: the matcher tree parses cleanly on verbatim source with `-I <llvm-include> -ast-dump-filter`, but Builder/guard resolution needs the class context -- a compile-DB-scale effort, roadmap #1a). |
 | **Loop benchmark** | E1's zero-false-refutation result is over **7 hand-crafted recurrence kernels**, not LLVM's test suite. |
 | **Discrepancy finding** | No wild miscompile has been found; all discrepancy detection is on **injected** faults (E1/E2/E7 teeth). |
 | **Agent (E8)** | Never run with a live model; trust invariants gated only with a deterministic stub. |
@@ -47,10 +47,12 @@ discharge; loop-nest transforms and vectorization are out.
 
 ## Prioritized roadmap toward maturity
 
-1. **Widen the Clang-AST front-end** (highest leverage, in progress). Unguarded, guarded, and
-   return-form folds are wired parser-free (`clang_tree.py`); extend to bailout cascades, const
-   emitters, and templated matchers so the whole recovery TCB shrinks and E6 coverage climbs
-   without the fragility that produced the recovery-soundness holes.
+1. **Clang-AST front-end: from stub-mode to verbatim reach** (highest leverage). The parser-free
+   PRINCIPLE is proven (stub-mode: byte-identical to regex on stub-compatible folds; the matcher
+   tree also parses cleanly on VERBATIM upstream with real headers + `-ast-dump-filter`). The gap
+   is production reach: parsing whole upstream `.cpp`s in their real compile context (compile DB /
+   LLVM source tree) so Builder/guard/API references resolve, then filtering to each fold's method.
+   Until then clang_tree recovers 0/8 verbatim E6 functions -- a stated limitation.
 2. **Broaden both benchmarks** to LLVM's own test suite (loops for E1/E4; a larger InstCombine
    slice for E6), so coverage and soundness numbers are over a representative corpus.
 3. **Grow the guard vocabulary** (KnownBits/APInt/`decomposeBitTestICmp`) to lift E6 out of single
