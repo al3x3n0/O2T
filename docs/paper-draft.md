@@ -212,7 +212,12 @@ itself* as a verification obligation, defended by independence in layers:
    compiler itself pins), the `simplifyXInst` name contract, predicate-set case splits, and the
    operand/reduction collapse loops. Every shape carries teeth through the same AST path (a mutated
    rewrite, a swapped operand orientation, a predicate overreach, and a non-associative reducer all
-   refute with witnesses; a non-collapse loop declines).
+   refute with witnesses; a non-collapse loop declines). A **whole-`.cpp` mode** closes the last gap:
+   it parses the *unmodified upstream* `InstCombineAndOrXor.cpp` (~4830 lines) in its real lib context
+   and recovers folds from it — five obligations byte-identical to the regex path. The only header
+   outside the installed LLVM tree, `InstCombineInternal.h`, transitively needs only installed public
+   headers, so the whole file compiles with no LLVM build; the recovery reads genuine pass source, not
+   a trimmed rendering.
 6. **Certificates and abduction.** Verdicts carry re-checkable certificates; when a fold refutes,
    abduction synthesizes the *missing precondition*, converting a rejection into a diagnosis.
 

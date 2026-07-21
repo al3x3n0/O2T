@@ -407,11 +407,17 @@ def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
     return _recover_from_ast(ast, fn_name, instr_params, marker)
 
 
+_DEFN_KINDS = ("FunctionDecl", "CXXMethodDecl")
+
+
 def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
                       clang_bin: str = "clang", timeout: int = 300) -> dict | None:
     """SOURCE-FILE MODE: parse a whole upstream `.cpp` against its REAL compile context and
     `-ast-dump-filter` to just `fn_name` (keeps the AST tractable -- KBs, not the GB of a full TU).
-    Returns the single FunctionDecl node, or None. Each `includes` dir is passed as `-I`."""
+    Works on an UNMODIFIED upstream `.cpp` (a free function OR an `InstCombinerImpl::` method) when
+    its lib-internal header dir is on `includes` (each dir is passed as `-I`). The filter can emit
+    several decls for one name -- a bodiless declaration plus the out-of-line definition -- so return
+    the first FUNCTION/METHOD decl with `fn_name` that actually has a CompoundStmt BODY."""
     clang = cp.find_clang(clang_bin)
     if clang is None:
         return None
@@ -421,15 +427,24 @@ def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
         argv += ["-I", inc]
     argv.append(cpp_path)
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout.strip()
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if not out:
-        return None
-    try:
-        return json.JSONDecoder().raw_decode(out)[0]     # first (matching) decl
-    except (json.JSONDecodeError, ValueError):
-        return None
+    dec = json.JSONDecoder()
+    i, n = 0, len(out)
+    while i < n:
+        while i < n and out[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        try:
+            node, i = dec.raw_decode(out, i)
+        except (json.JSONDecodeError, ValueError):
+            break
+        if node.get("kind") in _DEFN_KINDS and node.get("name") == fn_name \
+                and _body_compound(node) is not None:
+            return node
+    return None
 
 
 def recover_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
@@ -441,7 +456,7 @@ def recover_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
     of the loop, no stub approximation. Returns recover_pair's formal dict, or None on any decline.
     The fold name/instruction-params are read from the AST FunctionDecl."""
     ast = _dump_source_file(cpp_path, fn_name, includes, clang_bin)
-    if ast is None or ast.get("kind") != "FunctionDecl":
+    if ast is None or ast.get("kind") not in _DEFN_KINDS:
         return None
     return _recover_from_ast(ast, ast.get("name") or fn_name, _instr_params_from_ast(ast), marker)
 
@@ -891,7 +906,7 @@ def recover_folds_from_source_file(cpp_path: str, fn_name: str, includes: list[s
     single-obligation path (RIUW / return-form) when the body is not a cascade. Returns [] on
     decline. The refutation-standalone caveat of pass_graph's cascade slicing applies to arm > 0."""
     ast = _dump_source_file(cpp_path, fn_name, includes, clang_bin)
-    if ast is None or ast.get("kind") != "FunctionDecl":
+    if ast is None or ast.get("kind") not in _DEFN_KINDS:
         return []
     from o2t.intent.pass_graph import _FOLD_CONTRACT_RE
     name = ast.get("name") or fn_name

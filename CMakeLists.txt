@@ -637,6 +637,13 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v clang >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/clang; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/clang_tree_source_fixture.py; else echo 'clang_tree_source_fixture: z3 or clang not found, skipped'; fi"
     )
+    # Whole-.cpp mode: recover folds from the UNMODIFIED upstream InstCombineAndOrXor.cpp in its real
+    # lib context. Skips (hermetically) unless an LLVM 18 InstCombine source dir is located via
+    # O2T_INSTCOMBINE_DIR / O2T_LLVM_SRC -- the fixture's docstring gives the two-curl reproduction.
+    add_test(
+        NAME clang_tree_wholecpp_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/clang_tree_wholecpp_fixture.py
+    )
     add_test(
         NAME frontend_robustness_fixture
         COMMAND
