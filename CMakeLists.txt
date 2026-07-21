@@ -631,6 +631,12 @@ if(O2T_BUILD_TESTS)
             "if command -v z3 >/dev/null 2>&1 && { command -v clang >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/clang; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/clang_tree_fixture.py; else echo 'clang_tree_fixture: z3 or clang not found, skipped'; fi"
     )
     add_test(
+        NAME clang_tree_source_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v clang >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/clang; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/clang_tree_source_fixture.py; else echo 'clang_tree_source_fixture: z3 or clang not found, skipped'; fi"
+    )
+    add_test(
         NAME frontend_robustness_fixture
         COMMAND
             /bin/sh -c

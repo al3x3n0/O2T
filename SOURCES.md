@@ -70,7 +70,8 @@ Recover *what a pass does* from its source.
 - `clang_pass.py` — Clang-AST-driven mining.
 - `clang_tree.py` — the Clang-AST **structured-tree front-end**: produces matcher/rewrite trees
   from `clang -ast-dump=json` and feeds `recover_pair` with the regex parser OUT of the trusted
-  base (see [`docs/maturity.md`](docs/maturity.md) roadmap #1).
+  base -- stub-mode (in-memory source) + SOURCE-FILE mode (verbatim upstream against real LLVM
+  headers). See [`docs/maturity.md`](docs/maturity.md) roadmap #1.
 - `relational.py`, `llvm_relational.py`, `loop_invariant.py`, `shapes.py` —
   relational drivers and shape recognition.
 

@@ -29,6 +29,8 @@ premise.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -55,8 +57,12 @@ def _to_tree(node: dict, lets: dict | None = None) -> dict:
         name = cp.callee_name(n)
         if not name:
             raise _Unmappable("call with no resolvable callee")
+        # Skip clang-materialized DEFAULT arguments (a Builder emitter's defaulted `Twine` name),
+        # so the verbatim call's operand arity matches the source's -- the value operands only.
+        args = [a for a in cp.call_args(n)
+                if cp.strip_casts(a).get("kind") != "CXXDefaultArgExpr"]
         return {"kind": "call", "name": name, "template": None,
-                "args": [_to_tree(a, lets) for a in cp.call_args(n)]}
+                "args": [_to_tree(a, lets) for a in args]}
     if k == "DeclRefExpr":
         ref = (n.get("referencedDecl") or {}).get("name")
         if not ref:
@@ -129,15 +135,19 @@ def _reconstruct_guard(call: dict) -> str | None:
 
 def extract_trees(source: str,
                   clang_bin: str = "clang") -> tuple[dict, dict, str] | None:
-    """From a fold's C++ source, extract (matcher_tree, rewrite_tree, guard_source) via the clang
-    AST, or None. The matcher is the 2nd arg of the single `match(&I, <pattern>)`; the rewrite is
-    the 2nd arg of `replaceInstUsesWith(I, <value>)`; guard_source is the `&&`-joined
-    reconstruction of the fold-condition's non-match conjuncts (empty for an unguarded fold).
-    Declines on absence, multiplicity, an unmapped node, more than one guarded `if`, or any guard
-    that is not a flat reconstructible call -- and NEVER silently drops a guard."""
+    """In-memory (stub-mode) wrapper: dump `source` and extract the RIUW/guarded trees."""
     ast = _dump(source, clang_bin)
-    if ast is None:
-        return None
+    return _extract_riuw(ast) if ast is not None else None
+
+
+def _extract_riuw(ast: dict) -> tuple[dict, dict, str] | None:
+    """From a fold's AST, extract (matcher_tree, rewrite_tree, guard_source), or None. The matcher
+    is the 2nd arg of the single `match(&I, <pattern>)`; the rewrite is the 2nd arg of
+    `replaceInstUsesWith(I, <value>)`; guard_source is the `&&`-joined reconstruction of the
+    fold-condition's non-match conjuncts (empty for unguarded). Declines on absence, multiplicity,
+    an unmapped node, more than one guarded `if`, or any guard that is not a flat reconstructible
+    call -- and NEVER silently drops a guard. AST-based, so it serves both stub and source-file
+    modes."""
     matches, riuws = [], []
     cp.find_member_call(ast, "match", matches)
     cp.find_member_call(ast, "replaceInstUsesWith", riuws)
@@ -204,6 +214,20 @@ def _nonbail_returns(node: dict, out: list) -> None:
         _nonbail_returns(ch, out)
 
 
+_IR_MUTATORS = frozenset({
+    "setOperand", "swapOperands", "replaceOperand", "replaceUsesOfWith", "setHasNoSignedWrap",
+    "setHasNoUnsignedWrap", "setIsExact", "setPredicate", "dropPoisonGeneratingFlags",
+    "mutateType", "copyIRFlags", "andIRFlags", "setFastMathFlags"})
+
+
+def _has_ir_mutation(node: dict) -> bool:
+    """An in-place IR mutation (`I.setOperand(...)`, `BOp->setHasNoSignedWrap()`) -- the replaced
+    value would no longer be the matched shape, so the fold declines (AST-based mutation screen)."""
+    if node.get("kind") in ("CallExpr", "CXXMemberCallExpr") and cp.callee_name(node) in _IR_MUTATORS:
+        return True
+    return any(_has_ir_mutation(ch) for ch in cp.inner(node))
+
+
 def _has_nonvocab_call(node: dict) -> bool:
     """Any call outside {match, m_*, Create*} -- a guard/analysis-query/const-emitter. The
     return-form cut is UNGUARDED and pure-builder only, so its presence declines (never drops)."""
@@ -215,17 +239,33 @@ def _has_nonvocab_call(node: dict) -> bool:
     return any(_has_nonvocab_call(ch) for ch in cp.inner(node))
 
 
-def _return_form_trees(ast: dict, source: str) -> tuple[dict, dict, str] | None:
+_INSTR_TYPES = ("BinaryOperator", "Instruction", "UnaryOperator", "ICmpInst", "CmpInst",
+                "SelectInst", "PHINode", "GetElementPtrInst", "CastInst", "Operator")
+
+
+def _instr_params_from_ast(fn_decl: dict) -> set:
+    """Instruction-typed parameter names of a FunctionDecl. The AST's `qualType` is the resolved
+    TYPE only (`const llvm::BinaryOperator &`) with no parameter name, so match the type keyword
+    directly rather than the source-form `Type &name` regex."""
+    out: set = set()
+    for p in cp.inner(fn_decl):
+        if p.get("kind") == "ParmVarDecl" and p.get("name"):
+            qt = (p.get("type") or {}).get("qualType", "")
+            if any(t in qt for t in _INSTR_TYPES):
+                out.add(p["name"])
+    return out
+
+
+def _return_form_trees(ast: dict, fn_name: str, instr_params: set) -> tuple[dict, dict, str] | None:
     """Return-form recovery: a fold-named helper that RETURNS the replacement value (no RIUW).
     Scoped to the unguarded, positive-guard, pure-builder shape -- fold-name gated, single match on
-    the instruction parameter, Builder.Create* lets inlined, non-bail return tree-ified. Guards,
-    const emitters, and in-place mutation decline (this cut, never a dropped premise)."""
-    from o2t.intent.pass_graph import (_FOLD_CONTRACT_RE, _FOLD_NAME_RE, _INSTR_PARAM_RE,
-                                       _MUTATES_IR_RE)
-    fn = _FOLD_NAME_RE.search(source)
-    if fn is None or not _FOLD_CONTRACT_RE.search(fn.group(1)):
+    an instruction-typed parameter (`instr_params`), Builder.Create* lets inlined, non-bail return
+    tree-ified. Guards, const emitters, and in-place mutation decline (this cut, never a dropped
+    premise). AST-based; the caller supplies fn_name + instr_params from source or the AST."""
+    from o2t.intent.pass_graph import _FOLD_CONTRACT_RE
+    if not fn_name or not _FOLD_CONTRACT_RE.search(fn_name):
         return None                                   # not a fold-contract name -> decline
-    if _MUTATES_IR_RE.search(source):
+    if _has_ir_mutation(ast):
         return None                                   # in-place mutation -> decline
     if _has_nonvocab_call(ast):
         return None                                   # a guard/const-emitter -> this cut declines
@@ -241,8 +281,7 @@ def _return_form_trees(ast: dict, source: str) -> tuple[dict, dict, str] | None:
     if subj.get("kind") == "UnaryOperator":               # &I
         subj = cp.strip_casts(cp.inner(subj)[0]) if cp.inner(subj) else {}
     subj_name = (subj.get("referencedDecl") or {}).get("name") if subj.get("kind") == "DeclRefExpr" else None
-    signature = source[:source.find("{")] if "{" in source else source
-    if subj_name is None or subj_name not in {m.group(1) for m in _INSTR_PARAM_RE.finditer(signature)}:
+    if subj_name is None or subj_name not in instr_params:
         return None
     lets: dict = {}
     _collect_lets(ast, lets)
@@ -256,31 +295,90 @@ def _return_form_trees(ast: dict, source: str) -> tuple[dict, dict, str] | None:
         return None
 
 
-def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
-                       clang_bin: str = "clang") -> dict | None:
-    """Recover a fold obligation via the Clang-AST front-end -- the regex parser is NOT in the
-    loop. Returns the same formal dict recover_pair produces (provable by mini_alive.prove), or
-    None on any decline. The trees drive recover_pair directly; guards route through the string
-    path and so are absent here (unguarded folds only, this cut)."""
-    trees = extract_trees(source, clang_bin)
+def _recover_from_ast(ast: dict, fn_name: str, instr_params: set, marker: str) -> dict | None:
+    """Shared tail: RIUW/guarded first, else the return-form anchor; drive recover_pair."""
+    trees = _extract_riuw(ast)
     if trees is None:
-        # phase-36 idiom: a fold-named helper that RETURNS the replacement (no replaceInstUsesWith).
-        ast = _dump(source, clang_bin)
-        trees = _return_form_trees(ast, source) if ast is not None else None
-        if trees is None:
-            return None
+        trees = _return_form_trees(ast, fn_name, instr_params)
+    if trees is None:
+        return None
     matcher_tree, rewrite_tree, guard_source = trees
     return pg.recover_pair(guard_source, "", marker,
                            matcher_tree=matcher_tree, rewrite_tree=rewrite_tree)
+
+
+def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
+                       clang_bin: str = "clang") -> dict | None:
+    """STUB-MODE: recover a fold obligation from in-memory C++ `source` parsed against the minimal
+    API stub -- the regex parser is NOT in the loop. Returns recover_pair's formal dict or None.
+    Reach is limited to stub-compatible source; see recover_from_source_file for verbatim reach."""
+    ast = _dump(source, clang_bin)
+    if ast is None:
+        return None
+    from o2t.intent.pass_graph import _FOLD_NAME_RE, _INSTR_PARAM_RE
+    fn = _FOLD_NAME_RE.search(source)
+    fn_name = fn.group(1) if fn else ""
+    sig = source[:source.find("{")] if "{" in source else source
+    instr_params = {m.group(1) for m in _INSTR_PARAM_RE.finditer(sig)}
+    return _recover_from_ast(ast, fn_name, instr_params, marker)
+
+
+def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
+                      clang_bin: str = "clang", timeout: int = 300) -> dict | None:
+    """SOURCE-FILE MODE: parse a whole upstream `.cpp` against its REAL compile context and
+    `-ast-dump-filter` to just `fn_name` (keeps the AST tractable -- KBs, not the GB of a full TU).
+    Returns the single FunctionDecl node, or None. Each `includes` dir is passed as `-I`."""
+    clang = cp.find_clang(clang_bin)
+    if clang is None:
+        return None
+    argv = [clang, "-Xclang", "-ast-dump=json", "-Xclang", f"-ast-dump-filter={fn_name}",
+            "-fsyntax-only", "-std=c++17"]
+    for inc in includes:
+        argv += ["-I", inc]
+    argv.append(cpp_path)
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if not out:
+        return None
+    try:
+        return json.JSONDecoder().raw_decode(out)[0]     # first (matching) decl
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def recover_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
+                             marker: str = "probe.recovered.fold",
+                             clang_bin: str = "clang") -> dict | None:
+    """VERBATIM reach: recover a fold obligation from UNMODIFIED upstream `.cpp` source, parsed in
+    its real compile context (`includes` = the LLVM public headers + the pass's lib-internal
+    header). The compiler's own parser builds the tree from real code -- the regex parser fully out
+    of the loop, no stub approximation. Returns recover_pair's formal dict, or None on any decline.
+    The fold name/instruction-params are read from the AST FunctionDecl."""
+    ast = _dump_source_file(cpp_path, fn_name, includes, clang_bin)
+    if ast is None or ast.get("kind") != "FunctionDecl":
+        return None
+    return _recover_from_ast(ast, ast.get("name") or fn_name, _instr_params_from_ast(ast), marker)
 
 
 def available(clang_bin: str = "clang") -> bool:
     return cp.find_clang(clang_bin) is not None
 
 
+def llvm_include_dir(clang_bin: str = "clang") -> str | None:
+    """Locate the LLVM public header tree (`<prefix>/include` next to the clang binary) that has
+    `llvm/IR/PatternMatch.h` -- the include dir source-file mode parses verbatim upstream against.
+    Returns None if not found (source-file mode then skips)."""
+    clang = cp.find_clang(clang_bin)
+    if clang is None:
+        return None
+    inc = Path(clang).resolve().parent.parent / "include"
+    return str(inc) if (inc / "llvm" / "IR" / "PatternMatch.h").exists() else None
+
+
 def main(argv=None) -> int:
     import argparse
-    import json
     import shutil
     import sys
     ap = argparse.ArgumentParser(
