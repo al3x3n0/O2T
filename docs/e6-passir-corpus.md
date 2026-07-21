@@ -219,23 +219,25 @@ structural parse; the UGE mutation refutes through the real-AST path too. See
 ## Whole-file sweep: decline-by-default over an unmodified real `.cpp`
 
 With whole-`.cpp` mode (see [maturity.md](maturity.md) roadmap #1(b)), the AST front-end was swept over
-**every fold-shaped function in the genuine, unmodified `InstCombineAndOrXor.cpp` (52 functions:
-31 static helpers + 20 `InstCombinerImpl::` methods + 1)** — the compiler's own parser over real pass
-source, no vendored bodies, no stub. The honest result:
+**every fold-shaped function in two genuine, unmodified upstream files — `InstCombineAndOrXor.cpp`
+(52 functions) and `InstCombineAddSub.cpp` (23 functions), 75 in all** (static helpers +
+`InstCombinerImpl::` methods) — the compiler's own parser over real pass source, no vendored bodies, no
+stub. The honest result:
 
-| Outcome | Count |
-| --- | --- |
-| Recovered **and proved** | **2** — `foldIsPowerOf2OrZero` (2 arms) + `foldXorToXor` (3 arms) = **5 arms** |
-| Declined | 50 |
-| **Refuted (false claims)** | **0** |
-| Errored / mis-mapped | **0** |
+| File | Functions | Recovered + proved | Declined | Refuted / errored |
+| --- | --- | --- | --- | --- |
+| `InstCombineAndOrXor.cpp` | 52 | 2 (`foldIsPowerOf2OrZero` 2 arms, `foldXorToXor` 3 arms) | 50 | 0 |
+| `InstCombineAddSub.cpp` | 23 | 1 (`combineAddSubWithShlAddSub` 1 arm) | 22 | 0 |
+| **Total** | **75** | **3 functions / 6 arms** | **72** | **0** |
 
-The reach number is small *by design*, and that is the point. Across all 52 functions there are **zero
-false proofs and zero false refutations** — the two O2T recovers are byte-identical to the regex path,
-and the other 50 are **declined**, not mis-modeled. The declines are the vocabulary wall, exactly as
+The reach number is small *by design*, and that is the point. Across all 75 functions there are **zero
+false proofs and zero false refutations** — the three O2T recovers are byte-identical to the regex path,
+and the other 72 are **declined**, not mis-modeled. The declines are the vocabulary wall, exactly as
 [roadmap-vocabulary-strata.md](roadmap-vocabulary-strata.md) predicts: `computeKnownBits`/`KnownBits`
 masks, `ConstantRange`, APInt arithmetic, FP/`FCmp` reasoning, and structural helpers
 (`matchDeMorgansLaws`, `decomposeBitTestICmp`, `matchFunnelShift`, …). Retiring the parser (shape
 parity) does not conjure a model for these — and the discipline correctly refuses to guess. The
 measured story is therefore **"recover exactly what the vocabulary can model, decline the rest, never a
-false claim,"** now demonstrated over a whole real file rather than a hand-picked handful.
+false claim,"** now demonstrated over two whole real files (75 functions) rather than a hand-picked
+handful. `clang_tree_wholecpp_fixture` gates the recoverable subset (6 arms across both files) where an
+LLVM 18 source dir is available.

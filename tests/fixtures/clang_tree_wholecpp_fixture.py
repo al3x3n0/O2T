@@ -37,10 +37,11 @@ from o2t import mini_alive as ma  # noqa: E402
 _HOMEBREW_CLANG = "/opt/homebrew/opt/llvm@18/bin/clang"
 VENDOR = Path(__file__).resolve().parent / "vendor_folds" / "instcombine_real_folds.cpp"
 
-# (function name, expected #arms, expected verdicts) -- both are static helpers in the real file.
+# (upstream .cpp, function, expected #arms, expected verdicts) -- static helpers in the real files.
 TARGETS = [
-    ("foldIsPowerOf2OrZero", 2, ["proved", "proved"]),   # the two-icmp caller contract
-    ("foldXorToXor", 3, ["proved", "proved", "proved"]),  # a 3-arm Boolean-identity cascade
+    ("InstCombineAndOrXor.cpp", "foldIsPowerOf2OrZero", 2, ["proved", "proved"]),      # two-icmp contract
+    ("InstCombineAndOrXor.cpp", "foldXorToXor", 3, ["proved", "proved", "proved"]),    # 3-arm cascade
+    ("InstCombineAddSub.cpp", "combineAddSubWithShlAddSub", 1, ["proved"]),            # (-B<<Cnt)+A -> A-(B<<Cnt)
 ]
 
 
@@ -68,20 +69,23 @@ def main() -> int:
               "dir (O2T_INSTCOMBINE_DIR or O2T_LLVM_SRC), skipped")
         return 0
 
-    cpp = str(icdir / "InstCombineAndOrXor.cpp")
     includes = [inc, str(icdir)]           # the .cpp's `#include "InstCombineInternal.h"` resolves here
     bodies = {f["name"]: f["full"] for f in corpus.extract_functions(VENDOR.read_text())}
 
-    total = 0
-    for name, narms, verdicts in TARGETS:
+    total, files = 0, set()
+    for cppname, name, narms, verdicts in TARGETS:
+        cpp = icdir / cppname
+        if not cpp.is_file():
+            continue                       # source dir may hold only some of the upstream files
+        files.add(cppname)
         # 1. Recover from the GENUINE upstream .cpp (unmodified, in its real lib context).
-        arms = ct.recover_folds_from_source_file(cpp, name, includes, clang_bin=clang)
+        arms = ct.recover_folds_from_source_file(str(cpp), name, includes, clang_bin=clang)
         assert len(arms) == narms, (name, "expected", narms, "got", len(arms))
         assert [ma.prove(a, z3)[0] for a in arms] == verdicts, (name, [ma.prove(a, z3)[0] for a in arms])
 
         # 2. CROSS-CHECK: the obligation from the real whole-.cpp is byte-identical to the regex path's
-        #    reading of the same fold body -- the compiler's parser over 4830 lines of real pass source
-        #    and O2T's regex over the trimmed body agree, obligation for obligation.
+        #    reading of the same fold body -- the compiler's parser over thousands of lines of real pass
+        #    source and O2T's regex over the trimmed body agree, obligation for obligation.
         regex_arms = pg.recover_folds_from_function(bodies[name])
         assert len(regex_arms) == narms, (name, "regex arms", len(regex_arms))
         for a, r in zip(arms, regex_arms):
@@ -89,12 +93,15 @@ def main() -> int:
                 assert a[key] == r[key], (name, key, "real .cpp diverged from the regex path")
         total += narms
 
-    print(f"clang_tree_wholecpp_fixture OK: {total} fold arms recovered from the UNMODIFIED upstream "
-          "InstCombineAndOrXor.cpp (~4830 lines, real lib context, only InstCombineInternal.h added to "
-          "the include path) -- foldIsPowerOf2OrZero (two-icmp ctpop theorems) and the foldXorToXor "
-          "3-arm cascade, all proved and each byte-identical to the regex path. The compiler parses the "
-          "genuine pass source; O2T's regex parser is entirely out of the loop -- no vendored rendering, "
-          "no stub, no LLVM build required")
+    if total == 0:
+        print("clang_tree_wholecpp_fixture: no target upstream .cpp found in the source dir, skipped")
+        return 0
+    print(f"clang_tree_wholecpp_fixture OK: {total} fold arms recovered from {len(files)} UNMODIFIED "
+          "upstream InstCombine .cpp file(s) in their real lib context (only InstCombineInternal.h added "
+          "to the include path -- no LLVM build) -- foldIsPowerOf2OrZero (two-icmp ctpop theorems), the "
+          "foldXorToXor 3-arm cascade, and combineAddSubWithShlAddSub, all proved and each byte-identical "
+          "to the regex path. The compiler parses the genuine pass source; O2T's regex parser is entirely "
+          "out of the loop -- no vendored rendering, no stub")
     return 0
 
 
