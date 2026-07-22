@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from o2t.frontend import tv_matrix as tv  # noqa: E402
 from o2t.validate import scalar_ir as si  # noqa: E402
-from o2t.validate.vec_tv import vec_tv  # noqa: E402
+from o2t.validate.vec_tv import vec_tv, svec_tv  # noqa: E402
 
 AND = ("define <2 x i32> @f(<2 x i32> %x) {\n"
        "  %r = and <2 x i32> %x, <i32 -1, i32 -1>\n  ret <2 x i32> %r\n}\n")
@@ -64,14 +64,27 @@ def main() -> int:
     wrong_shuf = SHUF.replace("i32 0, i32 3", "i32 0, i32 2")
     assert vec_tv(z3, SHUF, wrong_shuf, "s")["status"] == "refuted", "a wrong shuffle mask must refute"
 
-    # 4. Out-of-scope shapes decline soundly (scalable vector).
-    scal = ("define <vscale x 2 x i32> @v(<vscale x 2 x i32> %x) {\n  ret <vscale x 2 x i32> %x\n}\n")
-    assert vec_tv(z3, scal, scal, "v")["status"] == "unsupported", "scalable vectors decline"
+    # 4. SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise, so a proof
+    #    for an unconstrained lane index covers all lanes. Folds prove; a wrong lane refutes; a
+    #    cross-lane op (which the per-lane model cannot soundly handle) declines.
+    sf = ("define <vscale x 4 x i32> @sf(<vscale x 4 x i32> %x) {\n"
+          "  %r = add <vscale x 4 x i32> %x, zeroinitializer\n  ret <vscale x 4 x i32> %r\n}\n")
+    assert svec_tv(z3, sf, si.run_passes(sf, "instcombine", opt), "sf")["status"] == "proved", "svec add X,0->X"
+    sg = ("define <vscale x 4 x i32> @sg(<vscale x 4 x i32> %x) {\n"
+          "  %r = and <vscale x 4 x i32> %x, splat (i32 -1)\n  ret <vscale x 4 x i32> %r\n}\n")
+    assert svec_tv(z3, sg, si.run_passes(sg, "instcombine", opt), "sg")["status"] == "proved", "svec and X,-1->X"
+    sbad = sg.replace("splat (i32 -1)", "splat (i32 0)")   # and X, 0 -> 0, not X
+    sident = "define <vscale x 4 x i32> @sg(<vscale x 4 x i32> %x) {\n  ret <vscale x 4 x i32> %x\n}\n"
+    assert svec_tv(z3, sbad, sident, "sg")["status"] == "refuted", "svec wrong lane must refute"
+    xl = ("define i32 @h(<vscale x 4 x i32> %x) {\n"
+          "  %e = extractelement <vscale x 4 x i32> %x, i32 0\n  ret i32 %e\n}\n")
+    assert svec_tv(z3, xl, xl, "h")["status"] == "unsupported", "a cross-lane op must decline"
 
-    print("vec_tv_fixture OK: vector functions are TV'd via a lane model -- element-wise folds prove "
-          "(and X,-1->X, add X,0->X), a shufflevector is proved equal to its explicit extract/insert "
-          "form (the permutation captured exactly), a wrong lane or a wrong shuffle mask REFUTES with a "
-          "witness, and scalable vectors are a sound decline. The vector gap, opened")
+    print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
+          "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
+          "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "
+          "folds prove (add X,0->X, and X,splat(-1)->X), a wrong lane refutes, and a cross-lane op "
+          "declines (the per-lane model stays sound). The vector gap -- fixed and scalable -- closed")
     return 0
 
 

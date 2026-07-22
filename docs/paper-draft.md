@@ -251,8 +251,11 @@ itself* as a verification obligation, defended by independence in layers:
    vector folds (a wrong lane or shuffle mask refutes). **Pointer arithmetic** (`getelementptr`) is
    address arithmetic over the memory array, so `p[i]` and `p[j]` alias iff `i=j` — gep reassociation
    `(p+i)+j=p+(i+j)` proves and an alias-unsound load refutes, all for free from the theory of arrays.
-   Only loops (the recurrence track's domain) and a few irregular shapes (scalable vectors, struct/i8
-   geps) remain out. Whole-*pass* composition follows for a **pipeline**: a pass sequence
+   **Scalable vectors** (runtime length) are handled at one *symbolic lane*: since element-wise ops do
+   not cross lanes, a proof for an unconstrained lane index covers all lanes, so scalable folds prove
+   while any cross-lane op declines (keeping the per-lane model sound). Only loops — the recurrence
+   track's domain — and a few irregular shapes (struct/i8 geps) remain out; the bounded-code fragment
+   is otherwise complete. Whole-*pass* composition follows for a **pipeline**: a pass sequence
    `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
    **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
    `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step

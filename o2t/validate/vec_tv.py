@@ -165,6 +165,114 @@ def _vec_instr(dst, rhs, env):
     raise si.Unsupported(rhs)
 
 
+# --- scalable vectors: a per-lane symbolic model (element-wise only) --------------------------------
+_SVEC = re.compile(r"<vscale\s+x\s+\d+\s+x\s+i(\d+)>")
+_SV_OPD = r"((?:splat\s*\([^)]*\))|zeroinitializer|[^,\s]+)"
+
+
+def _sv_lane(tok, w, env):
+    """A scalable-vector operand -> its value at THE symbolic lane. A splat/zeroinitializer is that
+    constant at every lane; a vector name is its per-lane symbol; a scalar literal is itself."""
+    tok = tok.strip()
+    if tok in env:
+        return env[tok][0]
+    if tok == "zeroinitializer":
+        return si._const(0, w)
+    sm = re.fullmatch(r"splat\s*\(\s*i\d+\s+(-?\d+)\s*\)", tok)
+    if sm:
+        return si._const(int(sm.group(1)), w)
+    if re.fullmatch(r"-?\d+", tok):
+        return si._const(int(tok), w)
+    raise si.Unsupported(f"scalable operand {tok!r}")
+
+
+def _svtranslate(ll_text, func):
+    """Translate a scalable-vector function at ONE symbolic lane -> (lane term, width, declarations).
+    Element-wise only: any cross-lane op (extract/insert/shuffle/reduce) is unmatched and DECLINES, so
+    the per-lane model stays sound (lane i of an element-wise result depends only on lane i)."""
+    body = si._function_body(ll_text, func)
+    if body is None:
+        raise si.Unsupported(f"function {func} not found")
+    if re.search(r"^\s*br\b", body, re.M):
+        raise si.Unsupported("multi-block")
+    env, decls = {}, []
+    for typ, name in _signature_scal(ll_text, func):
+        m = _SVEC.fullmatch(typ)
+        w = int(m.group(1)) if m else int(typ[1:])
+        decls.append((name, w)); env[name] = (name, w)   # a scalable vec's value AT the symbolic lane
+    ret = ret_w = None
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(";"):
+            continue
+        rm = re.fullmatch(r"ret\s+(<vscale\s+x\s+\d+\s+x\s+i\d+>|i\d+)\s+(\S+)", line)
+        if rm:
+            sm = _SVEC.fullmatch(rm.group(1))
+            ret_w = int(sm.group(1)) if sm else int(rm.group(1)[1:])
+            ret = _sv_lane(rm.group(2), ret_w, env)
+            break
+        m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
+        if not m:
+            raise si.Unsupported(line)
+        dst, rhs = m.group(1), m.group(2)
+        bm = re.fullmatch(r"(\w+)(?:\s+(?:nsw|nuw|exact|disjoint))*\s+<vscale\s+x\s+\d+\s+x\s+i(\d+)>\s+"
+                          + _SV_OPD + r",\s+" + _SV_OPD, rhs)
+        if bm and bm.group(1) in si._BIN:
+            w = int(bm.group(2))
+            env[dst] = (f"({si._BIN[bm.group(1)]} {_sv_lane(bm.group(3), w, env)} "
+                        f"{_sv_lane(bm.group(4), w, env)})", w)
+            continue
+        im = re.fullmatch(r"icmp\s+(\w+)\s+<vscale\s+x\s+\d+\s+x\s+i(\d+)>\s+" + _SV_OPD + r",\s+" + _SV_OPD, rhs)
+        if im and im.group(1) in si._ICMP:
+            w = int(im.group(2))
+            pred = si._ICMP[im.group(1)].format(a=_sv_lane(im.group(3), w, env), b=_sv_lane(im.group(4), w, env))
+            env[dst] = (f"(ite {pred} {si._const(1, 1)} {si._const(0, 1)})", 1)
+            continue
+        raise si.Unsupported(rhs)                          # cross-lane / unmodeled -> sound decline
+    if ret is None:
+        raise si.Unsupported("no ret")
+    return ret, ret_w, decls
+
+
+def _signature_scal(ll_text, func):
+    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    out = []
+    if m:
+        for part in m.group(1).split(","):
+            pm = re.search(r"(<vscale\s+x\s+\d+\s+x\s+i\d+>|i\d+)\s+(%[\w.]+)", part.strip())
+            if pm:
+                out.append((pm.group(1), pm.group(2)))
+    return out
+
+
+def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
+    """TV an element-wise scalable-vector function at one SYMBOLIC lane. Because element-wise ops do not
+    cross lanes, proving the lanes equal for an unconstrained lane index proves it for ALL lanes."""
+    if _signature_scal(before_ll, func) != _signature_scal(after_ll, func):
+        return {"status": "unsupported", "function": func, "reason": "signature changed"}
+    try:
+        rb, wb, decls = _svtranslate(before_ll, func)
+        ra, wa, _ = _svtranslate(after_ll, func)
+    except si.Unsupported as exc:
+        return {"status": "unsupported", "function": func, "reason": str(exc)}
+    if wb != wa:
+        return {"status": "error", "function": func, "reason": "lane width changed"}
+    ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]
+    smt = "\n".join(["(set-logic QF_BV)", *ds, f"(assert (not (= {rb} {ra})))", "(check-sat)",
+                     "(get-model)", ""])
+    try:
+        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
+                             timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "function": func}
+    head = out.strip().splitlines()[0].strip() if out.strip() else "error"
+    if head == "unsat":
+        return {"status": "proved", "function": func}
+    if head == "sat":
+        return {"status": "refuted", "function": func, "witness": out}
+    return {"status": "error", "function": func, "reason": head}
+
+
 def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
     """TV a vector function lane-by-lane. Proved iff every result lane agrees for all inputs."""
     if _signature(before_ll, func) != _signature(after_ll, func):
