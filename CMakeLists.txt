@@ -665,6 +665,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observe_fold_fixture.py; else echo 'observe_fold_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Whole-function TV over a real InstCombine test corpus: real IR -> real opt -> whole transform
+    # proved sound (verifies the composition of whatever folds fired, not an isolated obligation).
+    add_test(
+        NAME corpus_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/corpus_tv_fixture.py; else echo 'corpus_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     add_test(
         NAME mutation_catchrate_fixture
         COMMAND

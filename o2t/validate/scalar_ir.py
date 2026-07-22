@@ -222,10 +222,12 @@ def run_instcombine(src_text, opt_bin="opt"):
     return run_passes(src_text, "instcombine", opt_bin)
 
 
-def validate_transform(z3_bin, src_text, opt_text, func):
+def validate_transform(z3_bin, src_text, opt_text, func, timeout=None):
     """Translate before/after and prove the returned value equal for all inputs -- a closed-loop
     translation validation for ANY value-preserving scalar pass (instcombine, reassociate,
-    early-cse, gvn, ...). Returns a verdict dict (status proved|refuted|unsupported|error)."""
+    early-cse, gvn, ...). Returns a verdict dict (status proved|refuted|unsupported|error|timeout).
+    `timeout` (seconds) bounds the z3 call so one pathological function cannot hang a corpus sweep --
+    a timeout is a sound DECLINE (no verdict), never a proof."""
     try:
         p0, r0, w0, sp, su = translate(src_text, func)   # src: value, poison, ub
         p1, r1, w1, tp, tu = translate(opt_text, func)   # tgt: value, poison, ub
@@ -242,7 +244,11 @@ def validate_transform(z3_bin, src_text, opt_text, func):
                                            smt_or([tp, f"(not (= {r0} {r1}))"])])])])
     smt = "\n".join(["(set-logic QF_BV)", *decls,
                      f"(assert {refute})", "(check-sat)", "(get-model)", ""])
-    out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
+                             timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
     if head == "unsat":
         return {"status": "proved", "function": func}

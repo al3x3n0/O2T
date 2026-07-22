@@ -229,6 +229,17 @@ itself* as a verification obligation, defended by independence in layers:
    not establish the recovered precondition (checked under that precondition, so a guard is honored
    rather than mis-flagged), and **divergent** when the pass produces something the recovered `after`
    does not — a discrepancy the symbolic proof alone cannot see, since it never runs the pass.
+8. **Whole-function translation validation.** Where observational grounding checks one recovered fold,
+   this validates the *entire* transformation on *real code*: for a corpus of real IR functions the
+   actual `opt -passes=instcombine` is run and the whole-function output is proved a sound refinement
+   of the input (Alive2-style), verifying the *composition* of whatever folds fired rather than an
+   isolated obligation. Over LLVM's own InstCombine tests (`and/or/xor/add.ll`, 715 functions) **351
+   (49%) are proved sound end-to-end with zero false refutations**; the rest decline (memory /
+   multi-block / vector shapes the scalar translator does not model, plus a few solver timeouts) —
+   never a false proof. This is a whole-*function* result, not yet whole-*pass* (the worklist/fixpoint
+   composition across functions is still unmodeled), and it is the broad-reach complement to
+   source-recovery's narrow-but-explanatory obligations: the two meet at *attribution* — decomposing a
+   proved whole-function transform into the recovered folds that account for it.
 
 Beneath both tracks sits a meta-verification layer: premises must be jointly satisfiable before
 an `unsat` counts as proof (anti-vacuity), every proved contract must kill all its single-point

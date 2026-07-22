@@ -22,6 +22,13 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   emitted as IR, the real `opt -passes=instcombine` is run, and its output is checked against the
   recovered `after` — closing the source-intent ↔ actual-behavior loop (confirmed / not-fired /
   divergent), so the recovery is grounded against what the pass *actually does*, not just its intent.
+  And **whole-function TV** (`corpus_tv_fixture`) proves the *entire* transformation sound over real
+  code: for every function in LLVM's own InstCombine tests, real `opt` runs and the whole-function
+  refinement is proved. Measured over `and/or/xor/add.ll` — **351/715 functions (49%) proved sound
+  end-to-end, 0 false refutations**; the rest decline (353 unsupported memory/multi-block/vector,
+  11 z3-timeout). This verifies the *composition* of whatever folds fired — a whole-function (not
+  whole-pass) end-to-end result whose reach (49%) far exceeds source-recovery (Track A, ~4%) because
+  it TVs the real IR directly, with the miscompile teeth biting.
 - **The soundness discipline**: decline-by-default, the recovery cross-check stack, anti-vacuity
   gates, mutation teeth, "no silent mis-model." E7 (zero-escape ablation) and E2 (52/52 mutants
   caught) measure it. More rigorous than most shipped verifiers.
