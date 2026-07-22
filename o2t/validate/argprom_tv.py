@@ -36,8 +36,10 @@ from o2t.validate.module_tv import _defined, signature_tv
 
 
 def argpromotion_tv(z3_bin: str, before_ll: str, after_ll: str, timeout: int = 15) -> dict:
-    """Verify an argument-promotion (or any caller-preserving signature-changing IPO) transform at the
-    module level. Returns {promoted, steps, module}."""
+    """Verify an argument-promotion transform (an internal callee's signature changed, its callers
+    preserved) at the module level. Returns {promoted, steps, module}. Scope is deliberately narrow:
+    it proves the SURVIVING functions with promoted callees inlined -- it does NOT check function
+    DELETION or addition (compose that with module_tv when a transform also deletes)."""
     before, after = _defined(before_ll), _defined(after_ll)   # name -> internal?
     survivors = [n for n in before if n in after]
     steps, promoted, refuted, uncertain = [], [], False, False

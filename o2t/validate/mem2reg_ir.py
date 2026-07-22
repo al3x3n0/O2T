@@ -55,7 +55,8 @@ def _blocks(body):
 
 
 def _params(ll_text, func):
-    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    # anchored on `define` so a forward-reference call site is not misread as the signature
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
     out = {}
     if m:
         for part in m.group(1).split(","):

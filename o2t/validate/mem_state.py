@@ -41,8 +41,10 @@ def _split_args(arg_str):
 
 
 def _signature(ll_text, func):
-    """[(kind, name)] for params -- kind is 'ptr' or an int width. None if the function is absent."""
-    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    """[(kind, name)] for params -- kind is 'ptr' or an int width. None if the function is absent.
+    Anchored on the `define` so a forward-reference CALL SITE above the definition is not misread as
+    the signature (which would bind callee params to the caller's argument names)."""
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
     if not m:
         return None
     out = []

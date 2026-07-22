@@ -42,7 +42,7 @@ def _function_body(ll_text, func):
 
 def _params(ll_text, func):
     """name -> SMT sort, from the function signature (i1 -> Bool, iN -> (_ BitVec N))."""
-    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
     out = {}
     if not m:
         return out

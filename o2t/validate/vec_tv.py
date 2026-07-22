@@ -29,7 +29,7 @@ def _vtype(t):
 
 
 def _signature(ll_text, func):
-    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
     out = []
     if m:
         for part in m.group(1).split(","):
@@ -235,7 +235,7 @@ def _svtranslate(ll_text, func):
 
 
 def _signature_scal(ll_text, func):
-    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
     out = []
     if m:
         for part in m.group(1).split(","):

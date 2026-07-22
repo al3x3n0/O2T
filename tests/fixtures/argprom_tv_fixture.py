@@ -80,6 +80,31 @@ def main() -> int:
     assert argpromotion_tv(z3, ap_ext_before, ap_ext_after)["module"] == "refuted", \
         "promoting an externally-visible callee must refute"
 
+    # 5. ALIASING through a callee store (array theory, exact): @w stores through %a; a caller that
+    #    then loads %b and claims the result equals the stored value is UNSOUND when a aliases b, so
+    #    it must REFUTE -- not decline. (Regression: signature reading must anchor on the callee's
+    #    `define`, not a forward-reference call site, or the callee params are misread and this
+    #    silently declines instead of refuting.)
+    al = ("define i32 @f(ptr %a, ptr %b, i32 %x) {\n  call void @w(ptr %a, i32 %x)\n"
+          "  %v = load i32, ptr %b\n  ret i32 %v\n}\n"
+          "define void @w(ptr %p, i32 %x) {\n  store i32 %x, ptr %p\n  ret void\n}\n")
+    al_bad = al.replace("%v = load i32, ptr %b\n  ret i32 %v", "ret i32 %x")
+    v = mem_state_tv(z3, al, al_bad, "f")
+    assert v["status"] == "refuted" and v.get("witness"), ("alias-unsound callee store must refute", v)
+
+    # 6. FORWARD REFERENCE (order independence): the CALLER is defined BEFORE the callee, so the only
+    #    `@w(...)` above the definition is the call site. The signature reader must still find @w's
+    #    real parameters -- the store-forward must PROVE, and a wrong version REFUTE, never decline.
+    fwd = ("define i32 @caller(ptr %q, i32 %y) {\n  call void @w(ptr %q, i32 %y)\n"
+           "  %v = load i32, ptr %q\n  ret i32 %v\n}\n"
+           "define void @w(ptr %p, i32 %x) {\n  store i32 %x, ptr %p\n  ret void\n}\n")
+    fwd_ok = fwd.replace("%v = load i32, ptr %q\n  ret i32 %v", "ret i32 %y")
+    assert mem_state_tv(z3, fwd, fwd_ok, "caller")["status"] == "proved", \
+        "forward-referenced callee must translate, not decline"
+    fwd_bad = fwd.replace("%v = load i32, ptr %q\n  ret i32 %v", "%z = add i32 %y, 1\n  ret i32 %z")
+    assert mem_state_tv(z3, fwd, fwd_bad, "caller")["status"] == "refuted", \
+        "a wrong forward-referenced transform must refute"
+
     print("argprom_tv_fixture OK: memory-threaded interprocedural inlining closes Track B's last two "
           "edges -- NON-SCALAR (void/pointer) callees (store-through-ptr forwards; a wrong store "
           "REFUTES) and ARGUMENT PROMOTION proved at the callers against REAL opt output (@g(ptr)->"

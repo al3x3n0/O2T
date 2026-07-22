@@ -59,8 +59,10 @@ def _function_body(ll_text, func):
 
 
 def _params(ll_text, func):
-    """Parameter name -> width, from the signature (declared as bitvectors)."""
-    m = re.search(r"@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    """Parameter name -> width, from the signature (declared as bitvectors). Anchored on the `define`
+    so a forward-reference CALL SITE `@func(args)` above the definition is not misread as the
+    signature (which would bind callee params to the caller's argument names)."""
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
     out = {}
     if m:
         for part in m.group(1).split(","):
