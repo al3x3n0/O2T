@@ -244,8 +244,13 @@ itself* as a verification obligation, defended by independence in layers:
    per-function proofs cannot see: a whole-module transform is a refinement iff every surviving function
    refines *and* every deleted function was provably dead (internal linkage, unreferenced in the
    result) — so `globaldce` removing dead code proves, while deleting an externally-visible or
-   still-referenced function is refuted. What remains unmodeled is interprocedural *value flow*
-   (inlining, IPSCCP) and signature changes (arg promotion). This is the broad-reach complement to
+   still-referenced function is refuted. Interprocedural *value flow* is now reached too: a direct
+   `call @g(args)` is modeled by translating the callee with its parameters bound to the argument
+   terms — inlining `g`'s semantics into the caller's obligation — so a caller becomes translatable and
+   **inlining and IPSCCP-style transforms are verified across the call boundary** (`opt`'s inlined
+   `foo(x)=bar(x)+1 → 2x+1` proves; a wrong inline refutes), with recursion a bounded sound decline.
+   What remains unmodeled is signature changes (arg promotion) and non-scalar/multi-block callees. This
+   is the broad-reach complement to
    source-recovery's narrow-but-explanatory obligations. The two **meet at attribution**: for each
    proved whole-function transform, the recovered fold whose `(before, after)` matches it — under a
    variable mapping, checked by SMT so an equivalent form still matches — is credited as the

@@ -85,17 +85,30 @@ def _operand(tok, width, env):
     raise Unsupported(f"operand {tok!r}")
 
 
-def translate(ll_text, func, extra_ops=None):
+_MAX_CALL_DEPTH = 6
+
+
+def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0):
     """Translate a single-BB integer function to (params, ret_term, ret_width, ret_poison, ret_ub).
     Raises Unsupported on any unmodeled instruction/shape (so it is declined, not mis-proved).
     `extra_ops` is an optional list of handlers `(rhs, env) -> (smt, w, poison, ub) | None` for
     instructions beyond the built-in fragment -- ENRICHMENTS that must be independently validated
-    (o2t/validate/enrich.py) before they are installed here, so the core is grown, never guessed."""
+    (o2t/validate/enrich.py) before they are installed here, so the core is grown, never guessed.
+    `bindings`/`_module`/`_depth` support INTERPROCEDURAL resolution: a `call @g(args)` is modeled by
+    translating `g` (from `_module`) with its params bound to the argument terms -- so a caller is
+    translatable and inlining is verifiable. Recursion is bounded by `_MAX_CALL_DEPTH` (else declined)."""
     body = _function_body(ll_text, func)
     if body is None:
         raise Unsupported(f"function {func} not found")
     params = _params(ll_text, func)
-    env = {name: (name, w, "false", "false") for name, w in params.items()}
+    # `bindings` supplies a caller's argument terms for a resolved call (interprocedural inlining);
+    # `_module` is where callees are looked up (defaults to this text); `_depth` bounds recursion.
+    if bindings is not None:
+        env = dict(bindings)
+    else:
+        env = {name: (name, w, "false", "false") for name, w in params.items()}
+    call_ctx = {"module": _module if _module is not None else ll_text,
+                "depth": _depth, "extra_ops": extra_ops}
     labels = re.findall(r"^\s*[\w.]+:", body, re.M)
     if len(labels) > 1:
         raise Unsupported("multi-block function")
@@ -113,7 +126,7 @@ def translate(ll_text, func, extra_ops=None):
             break
         if line == "ret void":
             raise Unsupported("void return")
-        _instruction(line, env, extra_ops)
+        _instruction(line, env, extra_ops, call_ctx)
     if ret_term is None:
         raise Unsupported("no scalar ret")
     # UB is a whole-function property: a div-by-zero / INT_MIN-/-1 anywhere is UB even if its result
@@ -147,7 +160,7 @@ def _own_ub(name, a, b, w):
     return smt_or(conds)
 
 
-def _instruction(line, env, extra_ops=None):
+def _instruction(line, env, extra_ops=None, call_ctx=None):
     m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
     if not m:
         raise Unsupported(line)
@@ -209,6 +222,30 @@ def _instruction(line, env, extra_ops=None):
         else:
             ext = "zero_extend" if cm.group(1) == "zext" else "sign_extend"
             env[dst] = (f"((_ {ext} {dst_w - src_w}) {v})", dst_w, vp, vu)
+        return
+
+    # Interprocedural: a direct call `call iN @g(args)` to a function defined in the module is modeled
+    # by translating g with its params bound to the argument terms (inlining its semantics). Bounded
+    # recursion; an external/undefined/over-deep/recursive callee declines (never a mis-model).
+    callm = re.fullmatch(r"call\s+i(\d+)\s+@([\w.$]+)\s*\((.*)\)", rhs)
+    if callm and call_ctx is not None and _function_body(call_ctx["module"], callm.group(2)) is not None:
+        module, depth = call_ctx["module"], call_ctx["depth"]  # a DEFINED module function -> inline it
+        callee, arg_str = callm.group(2), callm.group(3)       # (declared/intrinsic calls fall through)
+        if depth >= _MAX_CALL_DEPTH:
+            raise Unsupported("call too deep / recursion")
+        cparams = _params(module, callee)
+        arg_toks = [a.strip() for a in arg_str.split(",")] if arg_str.strip() else []
+        if len(arg_toks) != len(cparams):
+            raise Unsupported("call arity mismatch")
+        bindings = {}
+        for (pname, pw), tok in zip(cparams.items(), arg_toks):
+            am = re.fullmatch(r"i\d+\s+(\S+)", tok)
+            if not am:
+                raise Unsupported(f"call arg {tok!r}")
+            bindings[pname] = _operand(am.group(1), pw, env)
+        _, cret, cw, cp, cu = translate(module, callee, call_ctx["extra_ops"], bindings,
+                                        module, depth + 1)
+        env[dst] = (cret, cw, cp, cu)
         return
 
     for handler in (extra_ops or ()):                 # validated enrichments (enrich.py)
