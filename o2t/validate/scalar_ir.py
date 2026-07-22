@@ -109,9 +109,8 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
         env = {name: (name, w, "false", "false") for name, w in params.items()}
     call_ctx = {"module": _module if _module is not None else ll_text,
                 "depth": _depth, "extra_ops": extra_ops}
-    labels = re.findall(r"^\s*[\w.]+:", body, re.M)
-    if len(labels) > 1:
-        raise Unsupported("multi-block function")
+    if re.search(r"^\s*br\b", body, re.M):             # any branch -> a multi-block (CFG) function
+        return _translate_multiblock(body, params, env, extra_ops, call_ctx)
     ret_term = ret_width = None
     ret_poison = ret_ub = "false"
     for raw in body.splitlines():
@@ -134,6 +133,115 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
     # reaches the returned value, so it stays on ret_poison).
     func_ub = smt_or([ret_ub, *(v[3] for v in env.values())])
     return params, ret_term, ret_width, ret_poison, func_ub
+
+
+def _bool_of(term, width):
+    """An iW value -> an SMT boolean (true iff nonzero) -- the sense of a branch/select condition."""
+    return f"(not (= {term} {_const(0, width)}))"
+
+
+def _parse_blocks(body):
+    """[(label, [instruction lines], terminator line)] for each basic block; None if malformed. The
+    entry block (leading instructions before the first label) is named `entry`."""
+    lines = [l.strip() for l in body.splitlines() if l.strip() and not l.strip().startswith(";")]
+    raw, label, cur = [], None, []
+    for l in lines:
+        m = re.fullmatch(r"([\w.]+):", l)
+        if m:
+            if label is not None or cur:
+                raw.append((label or "entry", cur))
+            label, cur = m.group(1), []
+        else:
+            cur.append(l)
+    raw.append((label or "entry", cur))
+    out = []
+    for lab, insts in raw:
+        if not insts:
+            return None
+        out.append((lab, insts[:-1], insts[-1]))
+    return out
+
+
+def _translate_multiblock(body, params, env, extra_ops, call_ctx):
+    """Symbolically execute an ACYCLIC single-function CFG to the same 5-tuple `translate` returns.
+    Each block gets a path condition; a `phi` becomes an `ite` over the predecessors' reached-from
+    conditions; returns are combined by path condition. SOUND-BY-SCOPE: div/rem (the only UB sources)
+    make it DECLINE (so whole-function UB is `false` and needs no path-conditioning); a back-edge
+    (loop) or an unhandled terminator/shape DECLINES. Poison propagates through the phi/return ites;
+    branch-on-poison is not modeled (a documented conservative gap, not a false proof)."""
+    blocks = _parse_blocks(body)
+    if not blocks:
+        raise Unsupported("unparseable CFG")
+    order = [lab for lab, _, _ in blocks]
+    binfo = {lab: (insts, term) for lab, insts, term in blocks}
+    succ = {}
+    for lab, insts, term in blocks:
+        if any(re.search(r"\b[us](?:div|rem)\b", ins) for ins in insts):
+            raise Unsupported("div/rem in multi-block (UB path-conditioning not modeled)")
+        if re.fullmatch(r"ret\s+i\d+\s+\S+", term):
+            succ[lab] = []
+        elif (um := re.fullmatch(r"br\s+label\s+%([\w.]+)", term)):
+            succ[lab] = [um.group(1)]
+        elif (cm := re.fullmatch(r"br\s+i1\s+\S+,\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)):
+            succ[lab] = [cm.group(1), cm.group(2)]
+        else:
+            raise Unsupported(f"terminator {term!r}")
+    preds = {lab: [] for lab in order}
+    for lab in order:
+        for s in succ[lab]:
+            if s not in preds:
+                raise Unsupported(f"branch to unknown block %{s}")
+            preds[s].append(lab)
+
+    path, edge, rets = {order[0]: "true"}, {}, []
+    done, todo, progress = set(), list(order), True
+    while todo and progress:
+        progress = False
+        for lab in list(todo):
+            if lab != order[0] and any(p not in done for p in preds[lab]):
+                continue
+            if lab != order[0]:
+                parts = [f"(and {path[p]} {edge[(p, lab)]})" for p in preds[lab]]
+                path[lab] = parts[0] if len(parts) == 1 else "(or " + " ".join(parts) + ")"
+            insts, term = binfo[lab]
+            for ins in insts:
+                pm = re.fullmatch(r"(%[\w.]+)\s*=\s*phi\s+i(\d+)\s+(.+)", ins)
+                if pm:
+                    dst, w = pm.group(1), int(pm.group(2))
+                    incs = re.findall(r"\[\s*([^,\]]+?)\s*,\s*%([\w.]+)\s*\]", pm.group(3))
+                    if not incs:
+                        raise Unsupported("phi parse")
+                    val = poi = None
+                    for vtok, plab in incs:
+                        vt, _, vp, _ = _operand(vtok.strip(), w, env)
+                        rf = f"(and {path.get(plab, 'false')} {edge.get((plab, lab), 'false')})"
+                        val = vt if val is None else f"(ite {rf} {vt} {val})"
+                        poi = vp if poi is None else f"(ite {rf} {vp} {poi})"
+                    env[dst] = (val, w, poi, "false")
+                    continue
+                _instruction(ins, env, extra_ops, call_ctx)
+            if term.startswith("ret"):
+                rm = re.fullmatch(r"ret\s+i(\d+)\s+(\S+)", term)
+                w = int(rm.group(1))
+                rt, _, rp, _ = _operand(rm.group(2), w, env)
+                rets.append((rt, rp, w, path[lab]))
+            elif (um := re.fullmatch(r"br\s+label\s+%([\w.]+)", term)):
+                edge[(lab, um.group(1))] = "true"
+            else:
+                cm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)
+                cv, _, _, _ = _operand(cm.group(1), 1, env)
+                cb = _bool_of(cv, 1)
+                edge[(lab, cm.group(2))], edge[(lab, cm.group(3))] = cb, f"(not {cb})"
+            done.add(lab); todo.remove(lab); progress = True
+    if todo:
+        raise Unsupported("cyclic CFG (loop) -- not modeled")
+    if not rets:
+        raise Unsupported("no scalar ret")
+    w = rets[0][2]
+    term, poison = rets[-1][0], rets[-1][1]
+    for rt, rp, _, pc in reversed(rets[:-1]):
+        term, poison = f"(ite {pc} {rt} {term})", f"(ite {pc} {rp} {poison})"
+    return params, term, w, poison, "false"
 
 
 def _own_poison(name, op, flags, a, b, w):

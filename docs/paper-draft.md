@@ -234,9 +234,11 @@ itself* as a verification obligation, defended by independence in layers:
    actual `opt -passes=instcombine` is run and the whole-function output is proved a sound refinement
    of the input (Alive2-style), verifying the *composition* of whatever folds fired rather than an
    isolated obligation. Over LLVM's own InstCombine tests (`and/or/xor/add.ll`, 715 functions) **351
-   (49%) are proved sound end-to-end with zero false refutations**; the rest decline (memory /
-   multi-block / vector shapes the scalar translator does not model, plus a few solver timeouts) —
-   never a false proof. Whole-*pass* composition follows for a **pipeline**: a pass sequence
+   (49%) are proved sound end-to-end with zero false refutations**; the rest decline (memory / vector /
+   loop shapes the translator does not model, plus a few solver timeouts) — never a false proof.
+   Acyclic **branch/phi** functions are handled by symbolically executing the CFG (each block a path
+   condition, each `phi` an `ite`), with the value model validated against `lli` execution and loops /
+   div-rem a bounded sound decline; only memory, vectors, and loops remain out of the fragment. Whole-*pass* composition follows for a **pipeline**: a pass sequence
    `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
    **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
    `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step

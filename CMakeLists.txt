@@ -681,6 +681,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/compose_tv_fixture.py; else echo 'compose_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Multi-block CFG: whole-function TV for acyclic branch/phi functions (symbolic execution);
+    # the value model is validated against lli execution. Loops / div-rem are bounded sound declines.
+    add_test(
+        NAME multiblock_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/multiblock_tv_fixture.py; else echo 'multiblock_tv_fixture: z3/opt/lli not found, skipped'; fi"
+    )
     # Interprocedural composition: model calls (inline the callee's semantics) so inlining / IPSCCP
     # transforms are verifiable across the call boundary; recursion is a bounded sound decline.
     add_test(

@@ -25,8 +25,9 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   And **whole-function TV** (`corpus_tv_fixture`) proves the *entire* transformation sound over real
   code: for every function in LLVM's own InstCombine tests, real `opt` runs and the whole-function
   refinement is proved. Measured over `and/or/xor/add.ll` — **351/715 functions (49%) proved sound
-  end-to-end, 0 false refutations**; the rest decline (353 unsupported memory/multi-block/vector,
-  11 z3-timeout). This verifies the *composition* of whatever folds fired — a whole-function (not
+  end-to-end, 0 false refutations**; the rest decline (memory/vector/loop shapes, z3-timeouts).
+  Acyclic **branch/phi** functions are now handled by symbolic CFG execution (`multiblock_tv_fixture`),
+  the value model validated against `lli` execution; loops/div-rem are bounded sound declines. This verifies the *composition* of whatever folds fired — a whole-function (not
   whole-pass) end-to-end result whose reach (49%) far exceeds source-recovery (Track A, ~4%) because
   it TVs the real IR directly, with the miscompile teeth biting. **Attribution** (`attribute_fixture`)
   welds the two tracks: for each proved whole-function transform it credits the recovered fold whose
