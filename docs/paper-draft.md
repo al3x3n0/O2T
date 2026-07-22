@@ -331,6 +331,16 @@ gate; staged tools are hash-pinned, executed once in isolation, and promoted onl
 Prompt injection from hostile pass source is thereby bounded to steering *which whitelisted
 verifier runs*, never *what counts as sound*.
 
+The same discipline lets the agent *extend the verifier itself*. An enrichment agent diagnoses the
+instructions behind whole-function TV's `unsupported` declines, asks the LLM to propose each one's SMT
+semantics, and — critically — **validates every proposal against `lli` execution** before installing
+it (§4.9). The LLM's model is data ratified by an oracle it did not author: a correct `llvm.bswap`
+model is validated and lifts the reach (a `bswap(bswap(x))→x` transform goes from unsupported to
+proved), while a wrong model is rejected by `lli` before it can enter the trust base. The loop runs
+end-to-end on a deterministic stub (no model access); going live is a single `--llm-command` flag. So
+an LLM can *grow* O2T's verification vocabulary without ever being trusted to decide soundness — the
+autonomous-harness analogue of the whole design's thesis.
+
 ## 8. Implementation
 
 O2T is a Python core (~40 modules) behind ~143 thin CLI tools, with a C++ side for bounded IR

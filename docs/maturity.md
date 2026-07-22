@@ -38,7 +38,12 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   independent oracle) — the correct model is validated and lifts a transform from unsupported to
   proved, a wrong model is rejected before it can enable a false proof. This is how an autonomous
   harness can extend O2T's verifier without weakening it: the proposer suggests, an oracle it did not
-  author decides.
+  author decides. An **enrichment agent** (`enrich_agent_fixture`) closes the last mile: an LLM
+  (deterministic stub in the gate, `claude -p` one flag away) *drives* the loop — diagnose the
+  decline, propose the semantics, lli validates, install, re-run — lifting reach 0→2 on a validated
+  bswap while a wrong proposal is rejected and never installed. The autonomous harness's hard parts
+  (the soundness discipline) are built and gated; what remains is breadth (more instruction/shape
+  enrichments) and a live-model run.
 - **The soundness discipline**: decline-by-default, the recovery cross-check stack, anti-vacuity
   gates, mutation teeth, "no silent mis-model." E7 (zero-escape ablation) and E2 (52/52 mutants
   caught) measure it. More rigorous than most shipped verifiers.

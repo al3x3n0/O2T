@@ -689,6 +689,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/enrich_fixture.py; else echo 'enrich_fixture: z3/opt/lli not found, skipped'; fi"
     )
+    # Enrichment AGENT: an LLM (deterministic stub) DRIVES the loop -- diagnose -> propose -> lli
+    # validates -> install -> re-run. The last mile of the autonomous harness; live is one flag.
+    add_test(
+        NAME enrich_agent_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/enrich_agent_fixture.py; else echo 'enrich_agent_fixture: z3/opt/lli not found, skipped'; fi"
+    )
     add_test(
         NAME mutation_catchrate_fixture
         COMMAND
