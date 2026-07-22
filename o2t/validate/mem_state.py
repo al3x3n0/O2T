@@ -38,6 +38,26 @@ def _signature(ll_text, func):
     return out
 
 
+def _addr_off(addr, off):
+    return addr if off == 0 else f"(bvadd {addr} (_ bv{off} 64))"
+
+
+def _store_bytes(mem, addr, value, width):
+    """Store a `width`-bit value at byte address `addr`, LITTLE-ENDIAN (byte 0 = LSB)."""
+    for i in range(width // 8):
+        mem = f"(store {mem} {_addr_off(addr, i)} ((_ extract {i * 8 + 7} {i * 8}) {value}))"
+    return mem
+
+
+def _load_bytes(mem, addr, width):
+    """Load a `width`-bit value from byte address `addr`, little-endian."""
+    nb = width // 8
+    if nb == 1:
+        return f"(select {mem} {addr})"
+    parts = [f"(select {mem} {_addr_off(addr, i)})" for i in range(nb)]
+    return f"(concat {' '.join(reversed(parts))})"      # MSB-first concat, byte 0 is the LSB
+
+
 def _idx64(tok, env):
     """A gep index operand -> a 64-bit SMT term (sign-extended, as gep indices are signed)."""
     if tok in env:
@@ -50,23 +70,51 @@ def _idx64(tok, env):
     raise si.Unsupported(f"gep index {tok!r}")
 
 
+def _scaled(base, idx64, stride):
+    return f"(bvadd {base} {idx64})" if stride == 1 else \
+        f"(bvadd {base} (bvmul {idx64} (_ bv{stride} 64)))"
+
+
+def _field_offsets(fields_bits, packed):
+    """BYTE offset of each field of an integer struct (alignment = field size unless packed)."""
+    offs, cur = [], 0
+    for w in fields_bits:
+        sz = w // 8
+        if not packed and sz:
+            cur = (cur + sz - 1) // sz * sz
+        offs.append(cur); cur += sz
+    return offs
+
+
 def _gep(line, addr, env):
-    """`%q = getelementptr [inbounds] i32, ptr %base, iW %idx` (or the `[N x i32], ..., 0, %idx` array
-    form) -> (dst, new address term = base + idx). ELEMENT-addressed (stride 1), consistent with the
-    word array; the array theory then handles aliasing (two geps alias iff their addresses are equal).
-    Returns None if the line is not a gep; declines an unmodeled gep (struct / i8 / other type)."""
+    """`getelementptr` -> (dst, new BYTE address). Handles a scalar element `iW, ptr %b, iW %i`
+    (byte stride W/8), the array form `[N x iW], ptr %b, iW 0, iW %i`, and an integer-struct field
+    `{iA, iB, ...}, ptr %b, iW 0, iW K` (constant K -> field byte offset). Because memory is byte-
+    addressable, i8/i32/struct/type-punning all share ONE model and the array theory handles aliasing.
+    None if not a gep; declines an unmodeled gep (nested/pointer fields, non-byte width)."""
     m = re.fullmatch(r"(%[\w.]+)\s*=\s*getelementptr\s+(?:inbounds\s+)?(.+)", line)
     if not m:
         return None
     dst, rest = m.group(1), m.group(2)
-    e1 = re.fullmatch(r"i32,\s+ptr\s+(%[\w.]+),\s+i\d+\s+(\S+)", rest)
-    e2 = re.fullmatch(r"\[\d+\s+x\s+i32\],\s+ptr\s+(%[\w.]+),\s+i\d+\s+0,\s+i\d+\s+(\S+)", rest)
-    g = e1 or e2
-    if not g:
-        raise si.Unsupported(f"gep form {rest[:40]!r}")
-    if g.group(1) not in addr:
-        raise si.Unsupported("gep on a non-pointer base")
-    return dst, f"(bvadd {addr[g.group(1)]} {_idx64(g.group(2), env)})"
+    e1 = re.fullmatch(r"i(\d+),\s+ptr\s+(%[\w.]+),\s+i\d+\s+(\S+)", rest)
+    e2 = re.fullmatch(r"\[\d+\s+x\s+i(\d+)\],\s+ptr\s+(%[\w.]+),\s+i\d+\s+0,\s+i\d+\s+(\S+)", rest)
+    if e1 or e2:
+        g = e1 or e2
+        w = int(g.group(1))
+        if w % 8 or g.group(2) not in addr:
+            raise si.Unsupported("gep non-byte element / non-pointer base")
+        return dst, _scaled(addr[g.group(2)], _idx64(g.group(3), env), w // 8)
+    e3 = re.fullmatch(r"(<)?\{\s*(.+?)\s*\}>?,\s+ptr\s+(%[\w.]+),\s+i\d+\s+0,\s+i\d+\s+(\d+)", rest)
+    if e3:
+        fm = [re.fullmatch(r"i(\d+)", f.strip()) for f in e3.group(2).split(",")]
+        if not all(fm) or e3.group(3) not in addr:
+            raise si.Unsupported("non-integer struct field / non-pointer base")
+        fields = [int(f.group(1)) for f in fm]
+        k = int(e3.group(4))
+        if any(w % 8 for w in fields) or k >= len(fields):
+            raise si.Unsupported("struct field out of range / non-byte field")
+        return dst, _addr_off(addr[e3.group(3)], _field_offsets(fields, e3.group(1) == "<")[k])
+    raise si.Unsupported(f"gep form {rest[:40]!r}")
 
 
 def _mem_translate(ll_text, func):
@@ -96,16 +144,18 @@ def _mem_translate(ll_text, func):
             break
         sm = re.fullmatch(r"store\s+i(\d+)\s+(\S+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
         if sm:
-            if int(sm.group(1)) != 32 or sm.group(3) not in addr:
+            w = int(sm.group(1))
+            if w % 8 or sm.group(3) not in addr:
                 raise si.Unsupported("store width/target out of scope")
-            vt, _, _, _ = si._operand(sm.group(2), 32, env)
-            mem = f"(store {mem} {addr[sm.group(3)]} {vt})"
+            vt, _, _, _ = si._operand(sm.group(2), w, env)
+            mem = _store_bytes(mem, addr[sm.group(3)], vt, w)
             continue
         lm = re.fullmatch(r"(%[\w.]+)\s*=\s*load\s+i(\d+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
         if lm:
-            if int(lm.group(2)) != 32 or lm.group(3) not in addr:
+            w = int(lm.group(2))
+            if w % 8 or lm.group(3) not in addr:
                 raise si.Unsupported("load width/target out of scope")
-            env[lm.group(1)] = (f"(select {mem} {addr[lm.group(3)]})", 32, "false", "false")
+            env[lm.group(1)] = (_load_bytes(mem, addr[lm.group(3)], w), w, "false", "false")
             continue
         gm = _gep(line, addr, env)                       # getelementptr on an i32 pointer -> a new address
         if gm:
@@ -128,7 +178,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     if wb != wa or (rb is None) != (ra is None):
         return {"status": "error", "function": func, "reason": "return kind changed"}
     sig = _signature(before_ll, func) or []
-    decls = ["(declare-const mem0 (Array (_ BitVec 64) (_ BitVec 32)))"]
+    decls = ["(declare-const mem0 (Array (_ BitVec 64) (_ BitVec 8)))"]
     for w, n in sig:
         decls.append(f"(declare-const {n} (_ BitVec {64 if w == 'ptr' else w}))")
     diffs = ([f"(not (= {rb} {ra}))"] if rb is not None else []) + [f"(not (= {mb} {ma}))"]

@@ -73,10 +73,35 @@ def main() -> int:
                "  %pi = getelementptr i32, ptr %p, i64 %i\n  store i32 %x, ptr %pi\n  ret i32 %x\n}\n")
     assert mem_state_tv(z3, off, off_bad, "f")["status"] == "refuted", "p[i] and p[i+1] never alias"
 
-    print("gep_tv_fixture OK: getelementptr is modeled as address arithmetic over the memory array, so "
-          "aliasing is EXACT -- store p[i];load p[i] returns x (proved, incl. opt's redundant-load elim); "
-          "store p[i];load p[j] claiming x REFUTES (unsound when i!=j); gep(gep(p,i),j)==gep(p,i+j) proves; "
-          "and p[i] vs p[i+1] never alias. Pointer arithmetic, handled by the theory of arrays")
+    # 5. BYTE-LEVEL / TYPE PUNNING (byte-addressable memory): store an i32, load an i8 at the base --
+    #    the low byte equals trunc(x). Proved; claiming it equals a different byte refutes.
+    tp = ("define i8 @g(ptr %p, i32 %x) {\n  store i32 %x, ptr %p\n  %v = load i8, ptr %p\n  ret i8 %v\n}\n")
+    tp_ok = ("define i8 @g(ptr %p, i32 %x) {\n  store i32 %x, ptr %p\n"
+             "  %t = trunc i32 %x to i8\n  ret i8 %t\n}\n")
+    assert mem_state_tv(z3, tp, tp_ok, "g")["status"] == "proved", "load i8 == low byte of stored i32"
+    tp_bad = ("define i8 @g(ptr %p, i32 %x) {\n  store i32 %x, ptr %p\n"
+              "  %s = lshr i32 %x, 8\n  %t = trunc i32 %s to i8\n  ret i8 %t\n}\n")
+    assert mem_state_tv(z3, tp, tp_bad, "g")["status"] == "refuted", "low byte != byte 1"
+
+    # 6. STRUCT geps: field 1 of {i32, i32} is at byte offset 4. Store/load field 1 proves; and field 0
+    #    and field 1 do NOT alias (offset 0 vs 4) -> a cross-field load-forwarding claim refutes.
+    st = ("define i32 @h(ptr %p, i32 %x) {\n  %f = getelementptr {i32, i32}, ptr %p, i32 0, i32 1\n"
+          "  store i32 %x, ptr %f\n  %v = load i32, ptr %f\n  ret i32 %v\n}\n")
+    st_ok = ("define i32 @h(ptr %p, i32 %x) {\n  %f = getelementptr {i32, i32}, ptr %p, i32 0, i32 1\n"
+             "  store i32 %x, ptr %f\n  ret i32 %x\n}\n")
+    assert mem_state_tv(z3, st, st_ok, "h")["status"] == "proved", "struct field store/load"
+    st_alias = ("define i32 @h(ptr %p, i32 %x) {\n"
+                "  %f0 = getelementptr {i32, i32}, ptr %p, i32 0, i32 0\n  store i32 %x, ptr %f0\n"
+                "  %f1 = getelementptr {i32, i32}, ptr %p, i32 0, i32 1\n"
+                "  %v = load i32, ptr %f1\n  ret i32 %v\n}\n")
+    st_bad = st_alias.replace("%v = load i32, ptr %f1\n  ret i32 %v", "ret i32 %x")
+    assert mem_state_tv(z3, st_alias, st_bad, "h")["status"] == "refuted", "struct fields 0,1 don't alias"
+
+    print("gep_tv_fixture OK: getelementptr over BYTE-ADDRESSABLE memory (theory of arrays) -- "
+          "store p[i];load p[i] returns x (incl. opt's redundant-load elim), store p[i];load p[j] "
+          "claiming x REFUTES (i!=j), gep(gep(p,i),j)==gep(p,i+j) proves, p[i] vs p[i+1] never alias; "
+          "and byte-level: TYPE PUNNING (store i32, load i8 low byte == trunc x) proves, struct field "
+          "access proves, and distinct struct fields don't alias. Aliasing exact -- no alias analysis")
     return 0
 
 

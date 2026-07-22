@@ -253,9 +253,11 @@ itself* as a verification obligation, defended by independence in layers:
    `(p+i)+j=p+(i+j)` proves and an alias-unsound load refutes, all for free from the theory of arrays.
    **Scalable vectors** (runtime length) are handled at one *symbolic lane*: since element-wise ops do
    not cross lanes, a proof for an unconstrained lane index covers all lanes, so scalable folds prove
-   while any cross-lane op declines (keeping the per-lane model sound). Only loops — the recurrence
-   track's domain — and a few irregular shapes (struct/i8 geps) remain out; the bounded-code fragment
-   is otherwise complete. Whole-*pass* composition follows for a **pipeline**: a pass sequence
+   while any cross-lane op declines (keeping the per-lane model sound). Memory is **byte-addressable**,
+   so `i8`/struct geps, mixed-width access, and **type punning** (store an `i32`, load its low `i8`)
+   are all one model — a struct field is a byte offset, distinct fields provably do not alias. **The
+   bounded-code fragment is complete**; the only category outside it is *loops*, which are the
+   recurrence track's domain (all-trip-count proofs), not bounded translation validation. Whole-*pass* composition follows for a **pipeline**: a pass sequence
    `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
    **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
    `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step
