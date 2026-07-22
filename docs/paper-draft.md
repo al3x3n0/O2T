@@ -238,8 +238,14 @@ itself* as a verification obligation, defended by independence in layers:
    multi-block / vector shapes the scalar translator does not model, plus a few solver timeouts) —
    never a false proof. This is a whole-*function* result, not yet whole-*pass* (the worklist/fixpoint
    composition across functions is still unmodeled), and it is the broad-reach complement to
-   source-recovery's narrow-but-explanatory obligations: the two meet at *attribution* — decomposing a
-   proved whole-function transform into the recovered folds that account for it.
+   source-recovery's narrow-but-explanatory obligations. The two **meet at attribution**: for each
+   proved whole-function transform, the recovered fold whose `(before, after)` matches it — under a
+   variable mapping, checked by SMT so an equivalent form still matches — is credited as the
+   *explanation* (sound *and* accounted for by source-recovered intent). The exact match makes
+   mis-attribution impossible: an unsound fold is never credited. Over the vendored real-test corpus a
+   recovered-fold set explains 8 of 14 whole-function transforms by a *named* fold; the remainder is
+   honest **residue** — a composed transform or a fold not yet recovered — which is precisely the
+   work-list an enrichment loop would target.
 
 Beneath both tracks sits a meta-verification layer: premises must be jointly satisfiable before
 an `unsat` counts as proof (anti-vacuity), every proved contract must kill all its single-point

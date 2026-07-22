@@ -28,7 +28,11 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   end-to-end, 0 false refutations**; the rest decline (353 unsupported memory/multi-block/vector,
   11 z3-timeout). This verifies the *composition* of whatever folds fired — a whole-function (not
   whole-pass) end-to-end result whose reach (49%) far exceeds source-recovery (Track A, ~4%) because
-  it TVs the real IR directly, with the miscompile teeth biting.
+  it TVs the real IR directly, with the miscompile teeth biting. **Attribution** (`attribute_fixture`)
+  welds the two tracks: for each proved whole-function transform it credits the recovered fold whose
+  before/after matches it (SMT-exact, so no mis-attribution — an unsound fold is never credited),
+  leaving the unexplained remainder as honest residue. 8/14 of the vendored corpus is explained by a
+  *named* recovered fold; the residue is the enrichment work-list.
 - **The soundness discipline**: decline-by-default, the recovery cross-check stack, anti-vacuity
   gates, mutation teeth, "no silent mis-model." E7 (zero-escape ablation) and E2 (52/52 mutants
   caught) measure it. More rigorous than most shipped verifiers.
