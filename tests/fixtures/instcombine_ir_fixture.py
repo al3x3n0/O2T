@@ -80,6 +80,12 @@ def main() -> int:
          fn("%x = or disjoint i32 %a, %b\nret i32 %x"), "refuted"),
         (fn("%x = lshr i32 %a, %b\nret i32 %x"),     # lshr -> lshr exact : new poison
          fn("%x = lshr exact i32 %a, %b\nret i32 %x"), "refuted"),
+        (fn("%x = udiv i32 %a, %b\nret i32 %x"),      # udiv -> udiv exact : poison when inexact
+         fn("%x = udiv exact i32 %a, %b\nret i32 %x"), "refuted"),
+        (fn("%x = sdiv i32 %a, %b\nret i32 %x"),      # sdiv -> sdiv exact : poison when inexact
+         fn("%x = sdiv exact i32 %a, %b\nret i32 %x"), "refuted"),
+        (fn("%x = udiv exact i32 %a, %b\nret i32 %x"),  # udiv exact -> udiv : flag DROP is sound
+         fn("%x = udiv i32 %a, %b\nret i32 %x"), "proved"),
         (fn("ret i32 %a"),                            # introduce a (dead) div-by-zero : new UB
          fn("%bad = udiv i32 %a, %b\nret i32 %a"), "refuted"),
         (fn("%bad = udiv i32 %a, %b\nret i32 %a"),   # remove the div : UB removal is sound

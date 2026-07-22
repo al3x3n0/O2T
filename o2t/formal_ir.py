@@ -158,6 +158,8 @@ VALID_FLAGS = {
     "bvshl": {"nsw", "nuw"},
     "bvlshr": {"exact"},
     "bvashr": {"exact"},
+    "bvudiv": {"exact"},
+    "bvsdiv": {"exact"},
     "bvor": {"disjoint"},
 }
 
@@ -194,6 +196,12 @@ def flag_poison_smt(op: str, flags: list[str], a: str, b: str, n: int) -> str:
         elif op in {"bvlshr", "bvashr"} and fl == "exact":
             shr = f"({op} {a} {b})"
             conds.append(f"(or (bvuge {b} {width_lit}) (not (= (bvshl {shr} {b}) {a})))")
+        elif op in {"bvudiv", "bvsdiv"} and fl == "exact":
+            # `exact` division is poison when the dividend is not a multiple of the divisor (a
+            # rounded/inexact result). Guarded by a nonzero divisor: divide-by-zero is UB (handled
+            # separately), which dominates, so poison is scoped to the defined-but-inexact case.
+            rem = "bvurem" if op == "bvudiv" else "bvsrem"
+            conds.append(f"(and (not (= {b} (_ bv0 {n}))) (not (= ({rem} {a} {b}) (_ bv0 {n}))))")
         elif op == "bvor" and fl == "disjoint":
             conds.append(f"(not (= (bvand {a} {b}) (_ bv0 {n})))")
     return smt_or(conds) if conds else "false"
