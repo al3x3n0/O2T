@@ -19,10 +19,52 @@ of deletion + surviving-function refinement; signature changes and IPO value-flo
 from __future__ import annotations
 
 import re
+import subprocess
 
 from o2t.validate import scalar_ir as si
 
 _DEFINE_RE = re.compile(r"^define\s+(.*?)@([\w.$]+)\s*\(", re.M)
+
+
+def signature_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
+    """TV a function whose SIGNATURE changed (e.g. deadargelim / dead-arg removal). Sound iff every
+    REMOVED parameter was DEAD (unused in the before body) AND the function -- as a function of the
+    SURVIVING parameters -- refines. Removing a LIVE argument is refuted; added/promoted parameters are
+    not modeled (a sound decline). No signature change -> ordinary whole-function TV."""
+    bp, ap = si._params(before_ll, func), si._params(after_ll, func)
+    removed = [n for n in bp if n not in ap]
+    if [n for n in ap if n not in bp]:
+        return {"status": "unsupported", "function": func, "reason": "added/promoted parameters"}
+    if not removed:
+        return si.validate_transform(z3_bin, before_ll, after_ll, func, timeout=timeout)
+    body = si._function_body(before_ll, func) or ""
+    for n in removed:                                  # a removed arg USED in the body is still live
+        if re.search(re.escape(n) + r"(?![\w.])", body):
+            return {"status": "refuted", "function": func, "reason": f"removed a live argument {n}"}
+    try:
+        _, r0, w0, sp, su = si.translate(before_ll, func)   # ret is over surviving params (dead unused)
+        _, r1, w1, tp, tu = si.translate(after_ll, func)
+    except si.Unsupported as exc:
+        return {"status": "unsupported", "function": func, "reason": str(exc)}
+    if w0 != w1:
+        return {"status": "error", "function": func, "reason": "return width changed"}
+    union = {**ap, **bp}                                # dead args declared (unused) so terms compare
+    decls = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(union.items())]
+    refute = si.smt_and([f"(not {su})",
+                         si.smt_or([tu, si.smt_and([f"(not {sp})",
+                                                    si.smt_or([tp, f"(not (= {r0} {r1}))"])])])])
+    smt = "\n".join(["(set-logic QF_BV)", *decls, f"(assert {refute})", "(check-sat)", "(get-model)", ""])
+    try:
+        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
+                             timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "function": func}
+    head = out.strip().splitlines()[0].strip() if out.strip() else "error"
+    if head == "unsat":
+        return {"status": "proved", "function": func, "removed": removed}
+    if head == "sat":
+        return {"status": "refuted", "function": func, "witness": out}
+    return {"status": "error", "function": func, "reason": head}
 
 
 def _defined(ll_text: str) -> dict:
@@ -53,7 +95,7 @@ def module_tv(z3_bin: str, before_ll: str, after_ll: str, timeout: int = 15) -> 
     steps, refuted, uncertain = [], False, False
 
     for n in survivors:
-        v = si.validate_transform(z3_bin, before_ll, after_ll, n, timeout=timeout)
+        v = signature_tv(z3_bin, before_ll, after_ll, n, timeout=timeout)   # handles sig changes too
         steps.append({"function": n, "kind": "survivor", "status": v["status"]})
         if v["status"] == "refuted":
             refuted = True

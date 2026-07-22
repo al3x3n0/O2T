@@ -251,8 +251,12 @@ itself* as a verification obligation, defended by independence in layers:
    terms — inlining `g`'s semantics into the caller's obligation — so a caller becomes translatable and
    **inlining and IPSCCP-style transforms are verified across the call boundary** (`opt`'s inlined
    `foo(x)=bar(x)+1 → 2x+1` proves; a wrong inline refutes), with recursion a bounded sound decline.
-   What remains unmodeled is signature changes (arg promotion) and non-scalar/multi-block callees. This
-   is the broad-reach complement to
+   And **signature changes** are handled: a parameter-removing transform (`deadargelim`) is a refinement
+   iff every removed parameter was dead (unused) and the function over its surviving parameters refines
+   — so removing a dead argument proves and removing a live one refutes. The composition axis is thus
+   covered end to end — pass fixpoint, multi-pass pipeline, module deletion, interprocedural value flow,
+   signature changes — leaving only argument *promotion* and non-scalar callees. This is the broad-reach
+   complement to
    source-recovery's narrow-but-explanatory obligations. The two **meet at attribution**: for each
    proved whole-function transform, the recovered fold whose `(before, after)` matches it — under a
    variable mapping, checked by SMT so an equivalent form still matches — is credited as the

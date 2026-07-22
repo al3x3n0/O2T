@@ -697,6 +697,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/interproc_tv_fixture.py; else echo 'interproc_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Signature changes: verify a parameter-removing transform (deadargelim) -- a removed arg must be
+    # dead, the function over surviving args must refine; removing a live arg is refuted.
+    add_test(
+        NAME signature_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/signature_tv_fixture.py; else echo 'signature_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Module-level composition: verify a whole-module transform incl. function deletion (a deleted
     # function must be provably dead; deleting live/observable code is refuted).
     add_test(
