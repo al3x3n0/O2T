@@ -85,9 +85,12 @@ def _operand(tok, width, env):
     raise Unsupported(f"operand {tok!r}")
 
 
-def translate(ll_text, func):
+def translate(ll_text, func, extra_ops=None):
     """Translate a single-BB integer function to (params, ret_term, ret_width, ret_poison, ret_ub).
-    Raises Unsupported on any unmodeled instruction/shape (so it is declined, not mis-proved)."""
+    Raises Unsupported on any unmodeled instruction/shape (so it is declined, not mis-proved).
+    `extra_ops` is an optional list of handlers `(rhs, env) -> (smt, w, poison, ub) | None` for
+    instructions beyond the built-in fragment -- ENRICHMENTS that must be independently validated
+    (o2t/validate/enrich.py) before they are installed here, so the core is grown, never guessed."""
     body = _function_body(ll_text, func)
     if body is None:
         raise Unsupported(f"function {func} not found")
@@ -110,7 +113,7 @@ def translate(ll_text, func):
             break
         if line == "ret void":
             raise Unsupported("void return")
-        _instruction(line, env)
+        _instruction(line, env, extra_ops)
     if ret_term is None:
         raise Unsupported("no scalar ret")
     # UB is a whole-function property: a div-by-zero / INT_MIN-/-1 anywhere is UB even if its result
@@ -144,7 +147,7 @@ def _own_ub(name, a, b, w):
     return smt_or(conds)
 
 
-def _instruction(line, env):
+def _instruction(line, env, extra_ops=None):
     m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
     if not m:
         raise Unsupported(line)
@@ -208,6 +211,11 @@ def _instruction(line, env):
             env[dst] = (f"((_ {ext} {dst_w - src_w}) {v})", dst_w, vp, vu)
         return
 
+    for handler in (extra_ops or ()):                 # validated enrichments (enrich.py)
+        result = handler(rhs, env)
+        if result is not None:
+            env[dst] = result
+            return
     raise Unsupported(rhs)
 
 
@@ -222,15 +230,16 @@ def run_instcombine(src_text, opt_bin="opt"):
     return run_passes(src_text, "instcombine", opt_bin)
 
 
-def validate_transform(z3_bin, src_text, opt_text, func, timeout=None):
+def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops=None):
     """Translate before/after and prove the returned value equal for all inputs -- a closed-loop
     translation validation for ANY value-preserving scalar pass (instcombine, reassociate,
     early-cse, gvn, ...). Returns a verdict dict (status proved|refuted|unsupported|error|timeout).
     `timeout` (seconds) bounds the z3 call so one pathological function cannot hang a corpus sweep --
-    a timeout is a sound DECLINE (no verdict), never a proof."""
+    a timeout is a sound DECLINE (no verdict), never a proof. `extra_ops` are validated enrichment
+    handlers (o2t/validate/enrich.py) that widen the modeled instruction set."""
     try:
-        p0, r0, w0, sp, su = translate(src_text, func)   # src: value, poison, ub
-        p1, r1, w1, tp, tu = translate(opt_text, func)   # tgt: value, poison, ub
+        p0, r0, w0, sp, su = translate(src_text, func, extra_ops)   # src: value, poison, ub
+        p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops)   # tgt: value, poison, ub
     except Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if p0 != p1 or w0 != w1:

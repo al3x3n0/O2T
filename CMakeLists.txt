@@ -681,6 +681,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/attribute_fixture.py; else echo 'attribute_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Enrichment loop: grow whole-function TV's instruction vocabulary, gated by lli EXECUTION (the
+    # independent oracle). A wrong proposed model is rejected before it can enable a false proof.
+    add_test(
+        NAME enrich_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/enrich_fixture.py; else echo 'enrich_fixture: z3/opt/lli not found, skipped'; fi"
+    )
     add_test(
         NAME mutation_catchrate_fixture
         COMMAND

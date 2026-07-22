@@ -32,7 +32,13 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   welds the two tracks: for each proved whole-function transform it credits the recovered fold whose
   before/after matches it (SMT-exact, so no mis-attribution — an unsound fold is never credited),
   leaving the unexplained remainder as honest residue. 8/14 of the vendored corpus is explained by a
-  *named* recovered fold; the residue is the enrichment work-list.
+  *named* recovered fold; the residue is the enrichment work-list. And an **enrichment loop**
+  (`enrich_fixture`) closes the harness thesis: it *grows* whole-function TV's instruction vocabulary
+  (e.g. `llvm.bswap`) by proposing an SMT model and validating it against **`lli` execution** (the
+  independent oracle) — the correct model is validated and lifts a transform from unsupported to
+  proved, a wrong model is rejected before it can enable a false proof. This is how an autonomous
+  harness can extend O2T's verifier without weakening it: the proposer suggests, an oracle it did not
+  author decides.
 - **The soundness discipline**: decline-by-default, the recovery cross-check stack, anti-vacuity
   gates, mutation teeth, "no silent mis-model." E7 (zero-escape ablation) and E2 (52/52 mutants
   caught) measure it. More rigorous than most shipped verifiers.

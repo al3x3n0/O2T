@@ -246,6 +246,17 @@ itself* as a verification obligation, defended by independence in layers:
    recovered-fold set explains 8 of 14 whole-function transforms by a *named* fold; the remainder is
    honest **residue** — a composed transform or a fold not yet recovered — which is precisely the
    work-list an enrichment loop would target.
+9. **Self-enrichment, gated by an independent oracle.** When whole-function TV declines a function as
+   `unsupported` because it uses an instruction outside the translator's fragment, an enrichment loop
+   *proposes* that instruction's SMT semantics — but a proposed model can be *wrong*, so it is never
+   trusted on its own. It is validated against `lli` **execution**: the real instruction is run on a
+   battery of concrete inputs (LLVM's own semantics) and the proposed model must agree on every one;
+   only then is it installed as an extra translator rule. This is the discipline that lets an
+   autonomous (LLM) harness *grow* O2T's verification vocabulary without weakening it: the proposer may
+   be a language model, but an oracle it did not author decides soundness. Demonstrated on `llvm.bswap`
+   — the correct byte-reversal model is lli-validated and lifts a `bswap(bswap(x))→x` transform from
+   unsupported to proved, while a wrong (identity) model is rejected by lli before it can enable a
+   false proof. Point-wise lli agreement is strong *evidence*, not a proof, and is reported as such.
 
 Beneath both tracks sits a meta-verification layer: premises must be jointly satisfiable before
 an `unsat` counts as proof (anti-vacuity), every proved contract must kill all its single-point
