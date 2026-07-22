@@ -673,6 +673,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/corpus_tv_fixture.py; else echo 'corpus_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Whole-PASS composition: verify a pass PIPELINE by composing per-pass TVs via refinement
+    # transitivity; a miscompiling pass is localized to its step.
+    add_test(
+        NAME compose_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/compose_tv_fixture.py; else echo 'compose_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Attribution (A<->B seam): explain a proved whole-function transform by the recovered fold that
     # accounts for it; the unexplained remainder is honest residue (the enrichment work-list).
     add_test(

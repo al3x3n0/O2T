@@ -236,8 +236,12 @@ itself* as a verification obligation, defended by independence in layers:
    isolated obligation. Over LLVM's own InstCombine tests (`and/or/xor/add.ll`, 715 functions) **351
    (49%) are proved sound end-to-end with zero false refutations**; the rest decline (memory /
    multi-block / vector shapes the scalar translator does not model, plus a few solver timeouts) —
-   never a false proof. This is a whole-*function* result, not yet whole-*pass* (the worklist/fixpoint
-   composition across functions is still unmodeled), and it is the broad-reach complement to
+   never a false proof. Whole-*pass* composition follows for a **pipeline**: a pass sequence
+   `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
+   **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
+   `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step
+   outside the fragment yields a sound `inconclusive`). What remains unmodeled is *cross-function /
+   module-level* composition (function deletion, IPO). This is the broad-reach complement to
    source-recovery's narrow-but-explanatory obligations. The two **meet at attribution**: for each
    proved whole-function transform, the recovered fold whose `(before, after)` matches it — under a
    variable mapping, checked by SMT so an equivalent form still matches — is credited as the
