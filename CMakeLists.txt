@@ -681,6 +681,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/compose_tv_fixture.py; else echo 'compose_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Pointer-side-effect memory: TV over the MEMORY STATE via the SMT theory of arrays (aliasing-
+    # precise). DSE of a dead store proves; dropping a live store / alias-unsound loads refute.
+    add_test(
+        NAME mem_state_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/mem_state_tv_fixture.py; else echo 'mem_state_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Local scalar memory: whole-function TV for non-escaping alloca/store/load (symbolic mem2reg),
     # validated against opt's own mem2reg output and lli. Verifies mem2reg/sroa; escapes decline.
     add_test(

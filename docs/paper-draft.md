@@ -240,8 +240,12 @@ itself* as a verification obligation, defended by independence in layers:
    condition, each `phi` an `ite`), and **local scalar memory** by symbolic mem2reg over non-escaping
    allocas (each alloca a cell, `store`/`load` updating/reading it; an escaping pointer declines, so no
    aliasing is assumed) — which verifies `mem2reg`/`sroa` by proving the before refines opt's own SSA
-   output. Both value models are validated against `lli` execution; loops, vectors, and pointer-side-
-   effect memory remain out of the fragment. Whole-*pass* composition follows for a **pipeline**: a pass sequence
+   output. Both value models are validated against `lli` execution. Functions with **pointer-side-effect
+   memory** (writes through pointer arguments) are TV'd over the **memory state** with the SMT theory of
+   arrays — memory is an array `select`/`store`-ed by an opaque pointer address, so aliasing is modeled
+   *exactly* (`select(store(m,p,v),q)=ite(p=q,v,select(m,q))`) with no alias analysis; a transform is a
+   refinement iff the return value and the final memory agree, so `dse` of a dead store proves while
+   dropping a live store — or an alias-unsound load — refutes. Loops and vectors remain out. Whole-*pass* composition follows for a **pipeline**: a pass sequence
    `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
    **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
    `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step
