@@ -681,6 +681,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/compose_tv_fixture.py; else echo 'compose_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Module-level composition: verify a whole-module transform incl. function deletion (a deleted
+    # function must be provably dead; deleting live/observable code is refuted).
+    add_test(
+        NAME module_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/module_tv_fixture.py; else echo 'module_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Attribution (A<->B seam): explain a proved whole-function transform by the recovered fold that
     # accounts for it; the unexplained remainder is honest residue (the enrichment work-list).
     add_test(

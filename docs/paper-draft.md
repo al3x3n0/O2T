@@ -240,8 +240,12 @@ itself* as a verification obligation, defended by independence in layers:
    `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
    **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
    `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step
-   outside the fragment yields a sound `inconclusive`). What remains unmodeled is *cross-function /
-   module-level* composition (function deletion, IPO). This is the broad-reach complement to
+   outside the fragment yields a sound `inconclusive`). *Module-level* composition covers what
+   per-function proofs cannot see: a whole-module transform is a refinement iff every surviving function
+   refines *and* every deleted function was provably dead (internal linkage, unreferenced in the
+   result) — so `globaldce` removing dead code proves, while deleting an externally-visible or
+   still-referenced function is refuted. What remains unmodeled is interprocedural *value flow*
+   (inlining, IPSCCP) and signature changes (arg promotion). This is the broad-reach complement to
    source-recovery's narrow-but-explanatory obligations. The two **meet at attribution**: for each
    proved whole-function transform, the recovered fold whose `(before, after)` matches it — under a
    variable mapping, checked by SMT so an equivalent form still matches — is credited as the
