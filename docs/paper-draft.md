@@ -28,7 +28,17 @@ classes, **no corruption escapes the stack**, and two layers are shown to be uni
 load-bearing. On an unmodified 38,267-line corpus of upstream LLVM 18 InstCombine and
 InstructionSimplify source, O2T proves twelve fold obligations verbatim — including both arms of
 `foldIsPowerOf2OrZero`, genuine bit-counting theorems — with **zero false proofs and zero false
-refutations** across six measured runs. For loop passes, whose effect spans unboundedly many
+refutations** across six measured runs. A second, complementary track validates the *real* transform
+on *real code*: it runs the actual `opt` and proves its whole-function output a sound refinement of
+the input over a complete bounded-code fragment — acyclic branch/phi control flow, byte-addressable
+memory under the theory of arrays (aliasing exact, no alias analysis), fixed and scalable vectors, and
+interprocedural value flow — proving **351 of 715 of LLVM's own InstCombine test functions end-to-end
+with zero false refutations**, composing those proofs up to pipelines, module deletion, and signature
+changes, and meeting the recovery track at **attribution**, where a proved transform is credited to
+the recovered fold that provably matches it. Where a function falls outside the fragment, an
+enrichment loop lets an LLM propose the missing instruction semantics — ratified by `lli` execution
+before use — so the verifier grows its own vocabulary without ever trusting the proposer to decide
+soundness. For loop passes, whose effect spans unboundedly many
 iterations, O2T lifts intent into a recurrence DSL and proves transforms for *all* trip counts via
 an integer-ring discharge (sound for every bitwidth by the homomorphism ℤ → ℤ/2ⁿ), template-based
 invariant synthesis with k-induction, and relational two-loop simulation, driven from LLVM's own
@@ -89,8 +99,14 @@ source**. Doing so requires solving four problems that per-pair tools never face
 - **All-trip-count loop validation** (§5). An integer-ring discharge sound for every bitwidth;
   Faulhaber-aware invariant synthesis with k-induction; relational two-loop simulation with
   inferred simulation relations.
-- **Closed-loop translation validation** (§6) of real `opt` output across scalar, vector,
-  memory, and CFG transforms, with minimized concrete counterexamples on failure.
+- **A second verification track: closed-loop translation validation of the real transform** (§6).
+  The actual `opt` output is proved a sound refinement of the input over a complete bounded-code
+  fragment — branch/phi control flow, byte-addressable memory (theory of arrays, exact aliasing),
+  fixed and scalable vectors, interprocedural value flow — reaching 351/715 of LLVM's own InstCombine
+  tests with zero false refutations; refinement composes up to pipelines, module deletion, and
+  signature changes; the recovery track and this one **meet at attribution**, crediting a proved
+  transform to the recovered fold that provably matches it; and a self-enrichment loop grows the
+  fragment behind an execution oracle. Minimized concrete counterexamples on failure.
 - **Scaling under a strict trust model** (§7): a deterministic pass-aware orchestrator and an
   LLM-driven triage agent whose every output is quarantined, provenance-tagged, and gate-inert.
 - **A reproducible artifact** (§10): 445 executable fixtures; a claim→fixture map connecting
@@ -220,81 +236,10 @@ itself* as a verification obligation, defended by independence in layers:
    a trimmed rendering.
 6. **Certificates and abduction.** Verdicts carry re-checkable certificates; when a fold refutes,
    abduction synthesizes the *missing precondition*, converting a rejection into a diagnosis.
-7. **Observational grounding.** All of the above certify the *recovery*; this certifies that the
-   recovery matches the *pass's actual behavior*. The recovered `before` is emitted as LLVM IR, the
-   real `opt -passes=instcombine` is run, and the optimizer's output is checked against the recovered
-   `after` — the peephole analogue of the loop track's translation validation, closing the loop from
-   *source-recovered intent* to *what the compiled pass does*. A fold is **confirmed** when the pass
-   performs it (equivalent forms accepted), **not-fired** when the pass declines it on inputs that do
-   not establish the recovered precondition (checked under that precondition, so a guard is honored
-   rather than mis-flagged), and **divergent** when the pass produces something the recovered `after`
-   does not — a discrepancy the symbolic proof alone cannot see, since it never runs the pass.
-8. **Whole-function translation validation.** Where observational grounding checks one recovered fold,
-   this validates the *entire* transformation on *real code*: for a corpus of real IR functions the
-   actual `opt -passes=instcombine` is run and the whole-function output is proved a sound refinement
-   of the input (Alive2-style), verifying the *composition* of whatever folds fired rather than an
-   isolated obligation. Over LLVM's own InstCombine tests (`and/or/xor/add.ll`, 715 functions) **351
-   (49%) are proved sound end-to-end with zero false refutations**; the rest decline (memory / vector /
-   loop shapes the translator does not model, plus a few solver timeouts) — never a false proof.
-   Acyclic **branch/phi** functions are handled by symbolically executing the CFG (each block a path
-   condition, each `phi` an `ite`), and **local scalar memory** by symbolic mem2reg over non-escaping
-   allocas (each alloca a cell, `store`/`load` updating/reading it; an escaping pointer declines, so no
-   aliasing is assumed) — which verifies `mem2reg`/`sroa` by proving the before refines opt's own SSA
-   output. Both value models are validated against `lli` execution. Functions with **pointer-side-effect
-   memory** (writes through pointer arguments) are TV'd over the **memory state** with the SMT theory of
-   arrays — memory is an array `select`/`store`-ed by an opaque pointer address, so aliasing is modeled
-   *exactly* (`select(store(m,p,v),q)=ite(p=q,v,select(m,q))`) with no alias analysis; a transform is a
-   refinement iff the return value and the final memory agree, so `dse` of a dead store proves while
-   dropping a live store — or an alias-unsound load — refutes. **Vectors** are handled by a lane model
-   — a vector value is a list of per-lane terms, so element-wise ops lower lane-by-lane and
-   `shufflevector`/`extractelement`/`insertelement` are exact permutation/index operations — verifying
-   vector folds (a wrong lane or shuffle mask refutes). **Pointer arithmetic** (`getelementptr`) is
-   address arithmetic over the memory array, so `p[i]` and `p[j]` alias iff `i=j` — gep reassociation
-   `(p+i)+j=p+(i+j)` proves and an alias-unsound load refutes, all for free from the theory of arrays.
-   **Scalable vectors** (runtime length) are handled at one *symbolic lane*: since element-wise ops do
-   not cross lanes, a proof for an unconstrained lane index covers all lanes, so scalable folds prove
-   while any cross-lane op declines (keeping the per-lane model sound). Memory is **byte-addressable**,
-   so `i8`/struct geps, mixed-width access, and **type punning** (store an `i32`, load its low `i8`)
-   are all one model — a struct field is a byte offset, distinct fields provably do not alias. **The
-   bounded-code fragment is complete**; the only category outside it is *loops*, which are the
-   recurrence track's domain (all-trip-count proofs), not bounded translation validation. Whole-*pass* composition follows for a **pipeline**: a pass sequence
-   `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
-   **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
-   `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step
-   outside the fragment yields a sound `inconclusive`). *Module-level* composition covers what
-   per-function proofs cannot see: a whole-module transform is a refinement iff every surviving function
-   refines *and* every deleted function was provably dead (internal linkage, unreferenced in the
-   result) — so `globaldce` removing dead code proves, while deleting an externally-visible or
-   still-referenced function is refuted. Interprocedural *value flow* is now reached too: a direct
-   `call @g(args)` is modeled by translating the callee with its parameters bound to the argument
-   terms — inlining `g`'s semantics into the caller's obligation — so a caller becomes translatable and
-   **inlining and IPSCCP-style transforms are verified across the call boundary** (`opt`'s inlined
-   `foo(x)=bar(x)+1 → 2x+1` proves; a wrong inline refutes), with recursion a bounded sound decline.
-   And **signature changes** are handled: a parameter-removing transform (`deadargelim`) is a refinement
-   iff every removed parameter was dead (unused) and the function over its surviving parameters refines
-   — so removing a dead argument proves and removing a live one refutes. The composition axis is thus
-   covered end to end — pass fixpoint, multi-pass pipeline, module deletion, interprocedural value flow,
-   signature changes — leaving only argument *promotion* and non-scalar callees. This is the broad-reach
-   complement to
-   source-recovery's narrow-but-explanatory obligations. The two **meet at attribution**: for each
-   proved whole-function transform, the recovered fold whose `(before, after)` matches it — under a
-   variable mapping, checked by SMT so an equivalent form still matches — is credited as the
-   *explanation* (sound *and* accounted for by source-recovered intent). The exact match makes
-   mis-attribution impossible: an unsound fold is never credited. Over the vendored real-test corpus a
-   recovered-fold set explains 8 of 14 whole-function transforms by a *named* fold; the remainder is
-   honest **residue** — a composed transform or a fold not yet recovered — which is precisely the
-   work-list an enrichment loop would target.
-9. **Self-enrichment, gated by an independent oracle.** When whole-function TV declines a function as
-   `unsupported` because it uses an instruction outside the translator's fragment, an enrichment loop
-   *proposes* that instruction's SMT semantics — but a proposed model can be *wrong*, so it is never
-   trusted on its own. It is validated against `lli` **execution**: the real instruction is run on a
-   battery of concrete inputs (LLVM's own semantics) and the proposed model must agree on every one;
-   only then is it installed as an extra translator rule. This is the discipline that lets an
-   autonomous (LLM) harness *grow* O2T's verification vocabulary without weakening it: the proposer may
-   be a language model, but an oracle it did not author decides soundness. Demonstrated on `llvm.bswap`
-   — the correct byte-reversal model is lli-validated and lifts a `bswap(bswap(x))→x` transform from
-   unsupported to proved, while a wrong (identity) model is rejected by lli before it can enable a
-   false proof. Point-wise lli agreement is strong *evidence*, not a proof, and is reported as such.
+
+These six layers certify the *recovery* — that O2T reads the pass source correctly. They say
+nothing about whether the compiled pass *behaves* as the recovered intent predicts; that is the
+job of the second track (§6), and the two tracks meet at attribution (§6).
 
 Beneath both tracks sits a meta-verification layer: premises must be jointly satisfiable before
 an `unsat` counts as proof (anti-vacuity), every proved contract must kill all its single-point
@@ -337,17 +282,109 @@ pairings inductive. The discovered relation is often simpler than either closed 
 reduction is certified by the *linear* relation `{k = c·i, acc = acc}` over a *quadratic*
 accumulator — and a wrong stride admits no inductive pairing and is refuted.
 
-## 6. Closed-loop translation validation and witnesses
+## 6. Track B: closed-loop translation validation
 
-The loop track closes against reality: `opt -passes=X` is run on real IR, the literal emitted
-instructions are parsed back, and equivalence (or refinement) is proved between input and output.
-Coverage spans InstCombine scalar folds (flag-introduction refuted), SLP vectorization per output
-lane, mem2reg across multiple blocks with φ placement, DSE over a theory of arrays (final memory
-plus surviving loads), SimplifyCFG if-conversion, and indvars' loop-to-closed-form rewrites
-(surfaced honestly as `loop-eliminated` rather than claimed as loop equivalence).
+Track A (§3–§4) recovers what a pass *intends* from its source and certifies that reading. It is
+narrow but explanatory: it names the fold and its precondition, but it never runs the pass. Track B
+is the complement — broad but behavioral. It takes the *real* transform on *real code*: the actual
+`opt -passes=X` is run, its literal emitted instructions are parsed back, and the output is proved a
+sound refinement of the input (Alive2-style). It verifies the *composition of whatever folds fired*,
+not an isolated obligation, and it sees exactly what Track A cannot — the compiled pass's behavior.
+The two tracks are independent verifiers of the same passes; they **meet at attribution** (below),
+where a proved whole-function transform is explained by the recovered fold that matches it.
 
-On failure O2T emits a *minimized concrete counterexample*. The inductive-step model cannot be
-trusted for witnesses — its pre-states may be unreachable — so witnesses are found by bounded
+**Whole-function refinement of real `opt`.** For a corpus of real IR functions, `opt` is run and the
+whole-function output is proved a refinement of the input. Over LLVM's own InstCombine tests
+(`and/or/xor/add.ll`, 715 functions) **351 (49%) are proved sound end-to-end with zero false
+refutations**; the rest decline on shapes the translator does not model, plus a few solver timeouts —
+never a false proof. The translator's fragment is deliberately bounded and every boundary declines
+rather than approximates:
+
+- **Control flow.** Acyclic **branch/phi** functions are symbolically executed — each block carries a
+  path condition, each `phi` lowers to an `ite` — so straight-line and if-converted code is handled
+  directly.
+- **Memory.** Non-escaping **local memory** is symbolic mem2reg over allocas (each alloca a cell; an
+  escaping pointer declines, so no aliasing is assumed), which verifies `mem2reg`/`sroa` by proving
+  the input refines `opt`'s own SSA output. **Pointer-side-effect memory** (writes through pointer
+  arguments) is TV'd over the **memory state** with the SMT theory of arrays: memory is an array
+  `select`/`store`-ed by an opaque pointer address, so aliasing is modeled *exactly*
+  (`select(store(m,p,v),q)=ite(p=q,v,select(m,q))`) with no alias analysis. A transform refines iff
+  the return value *and* the final memory agree, so `dse` of a dead store proves while dropping a live
+  store — or an alias-unsound load — refutes. Memory is **byte-addressable**, so `i8`/struct geps,
+  mixed-width access, and **type punning** (store an `i32`, load its low `i8`) are one model, and a
+  struct field is a byte offset whose distinct fields provably do not alias. **Pointer arithmetic**
+  (`getelementptr`) is address arithmetic over that array, so `p[i]` and `p[j]` alias iff `i=j` — gep
+  reassociation `(p+i)+j=p+(i+j)` proves and an alias-unsound load refutes, for free from the theory.
+- **Vectors.** A **fixed vector** is a list of per-lane terms, so element-wise ops lower lane-by-lane
+  and `shufflevector`/`extractelement`/`insertelement` are exact permutation/index operations (a
+  wrong lane or shuffle mask refutes). **Scalable vectors** (runtime length) are proved at one
+  *symbolic lane*: since element-wise ops do not cross lanes, a proof for an unconstrained lane index
+  covers all lanes, so scalable folds prove while any cross-lane op declines — keeping the per-lane
+  model sound.
+- **Interprocedural value flow.** A direct `call @g(args)` is modeled by translating the callee with
+  its parameters bound to the argument terms — inlining `g`'s semantics into the caller's obligation —
+  so **inlining and IPSCCP-style transforms are verified across the call boundary** (`opt`'s inlined
+  `foo(x)=bar(x)+1 → 2x+1` proves; a wrong inline refutes), with recursion a bounded sound decline.
+
+The value models (scalar, memory, lanes) are cross-validated against `lli` **execution**, so the
+translator's own semantics are independently checked, not merely assumed. **The bounded-code fragment
+is complete**: the only category outside it is *loops*, which are the recurrence track's domain
+(all-trip-count proofs, below), not bounded translation validation.
+
+**The loop track closes the same way.** For loop passes, `opt -passes=X` is run on real IR and
+equivalence (or refinement) is proved between input and output across trip counts. Coverage spans
+InstCombine scalar folds (flag-introduction refuted), SLP vectorization per output lane, mem2reg
+across multiple blocks with φ placement, DSE over a theory of arrays (final memory plus surviving
+loads), SimplifyCFG if-conversion, and indvars' loop-to-closed-form rewrites (surfaced honestly as
+`loop-eliminated` rather than claimed as loop equivalence).
+
+**Observational grounding of a single fold.** Between the two tracks sits a per-fold bridge that
+checks a *recovered* fold against the pass's actual behavior. The recovered `before` is emitted as
+IR, `opt -passes=instcombine` is run, and the output is checked against the recovered `after`. A fold
+is **confirmed** when the pass performs it (equivalent forms accepted), **not-fired** when the pass
+declines it on inputs that do not establish the recovered precondition (checked under that
+precondition, so a guard is honored rather than mis-flagged), and **divergent** when the pass
+produces something the recovered `after` does not — a discrepancy the symbolic proof alone cannot see,
+because Track A never runs the pass.
+
+**Composition.** Whole-function refinement composes up the program structure by refinement
+transitivity — refinement is a preorder:
+
+- A **pipeline** `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step; if every
+  step refines then `fn` refines `f0`, with no direct `f0→fn` proof needed and a miscompiling pass
+  *localized* to its step (a step outside the fragment yields a sound `inconclusive`).
+- A **module-level** transform refines iff every surviving function refines *and* every deleted
+  function was provably dead (internal linkage, unreferenced in the result) — so `globaldce` removing
+  dead code proves, while deleting an externally-visible or still-referenced function refutes.
+- A **signature change** (`deadargelim`) refines iff every removed parameter was dead and the function
+  over its surviving parameters refines — removing a dead argument proves, a live one refutes.
+
+The composition axis is thus covered end to end — pass fixpoint, multi-pass pipeline, module
+deletion, interprocedural value flow, signature change — leaving only argument *promotion* and
+non-scalar callees.
+
+**Attribution: the two tracks meet.** For each proved whole-function transform, the recovered fold
+whose `(before, after)` matches it — under a variable mapping, checked by SMT so an equivalent form
+still matches — is credited as the *explanation*: the transform is sound *and* accounted for by
+source-recovered intent. The exact SMT match makes mis-attribution impossible — an unsound fold is
+never credited. Over the vendored real-test corpus a recovered-fold set explains 8 of 14
+whole-function transforms by a *named* fold; the remainder is honest **residue** (a composed
+transform, or a fold not yet recovered) — precisely the work-list the enrichment loop targets.
+
+**Self-enrichment grows the fragment, gated by an independent oracle.** When whole-function TV
+declines a function because it uses an instruction outside the translator's fragment, an enrichment
+loop *proposes* that instruction's SMT semantics — but a proposed model can be *wrong*, so it is never
+trusted on its own. It is validated against `lli` execution: the real instruction is run on a battery
+of concrete inputs (LLVM's own semantics) and the proposed model must agree on every one; only then is
+it installed as an extra translator rule. This is what lets an autonomous (LLM) harness *grow* O2T's
+vocabulary without weakening it — the proposer may be a language model, but an oracle it did not author
+decides soundness (demonstrated on `llvm.bswap`: the correct byte-reversal model is validated and lifts
+a `bswap(bswap(x))→x` transform from unsupported to proved, while a wrong identity model is rejected by
+`lli` before it can enable a false proof). Point-wise `lli` agreement is strong *evidence*, not a proof,
+and is reported as such. The agent that drives this loop is §7.
+
+**Witnesses.** On failure O2T emits a *minimized concrete counterexample*. The inductive-step model
+cannot be trusted for witnesses — its pre-states may be unreachable — so witnesses are found by bounded
 forward execution and minimized over trip count and parameters.
 
 ## 7. Scaling: the orchestrator and the verification agent
@@ -372,7 +409,7 @@ verifier runs*, never *what counts as sound*.
 The same discipline lets the agent *extend the verifier itself*. An enrichment agent diagnoses the
 instructions behind whole-function TV's `unsupported` declines, asks the LLM to propose each one's SMT
 semantics, and — critically — **validates every proposal against `lli` execution** before installing
-it (§4.9). The LLM's model is data ratified by an oracle it did not author: a correct `llvm.bswap`
+it (§6). The LLM's model is data ratified by an oracle it did not author: a correct `llvm.bswap`
 model is validated and lifts the reach (a `bswap(bswap(x))→x` transform goes from unsupported to
 proved), while a wrong model is rejected by `lli` before it can enter the trust base. The loop runs
 end-to-end on a deterministic stub (no model access); going live is a single `--llm-command` flag. So
@@ -488,17 +525,26 @@ semantics, dynamic-opcode folds, `foldX` operand-parameter binding (pending call
 verification), floating point, and the KnownBits/APInt guard stratum all decline today, and the
 E6 taxonomy counts each. O2T's scalar model has no `undef` distinct from poison beyond the
 definite-value guard, and bounded-arity loop proofs are licensed by corroboration, not by
-unbounded induction. On the loop track, width-changing operations bound the integer-ring
-discharge; read-write memory beyond the current array fragment, loop-nest transforms, and
-vectorization remain future work. Standalone-arm refutations in cascades are advisory by
-construction. The agent's quarantine is protection against accidents and prompt-injected
-sloppiness, not a security sandbox, and is documented as such.
+unbounded induction. Track B's bounded-code fragment is complete for straight-line code but stops
+at its stated edges: argument *promotion* and non-scalar callees on the composition axis, and, in
+the memory model, pointer-validity / null-dereference UB is not tracked (sound for store
+removal/reordering, which introduce no new dereferences, but not a full UB account). Loops are out
+of Track B by design — they are the recurrence track's domain. On that loop track, width-changing
+operations bound the integer-ring discharge, and loop-nest transforms and loop *vectorization*
+(as opposed to the bounded SLP/lane model) remain future work. Standalone-arm refutations in
+cascades are advisory by construction. The agent's quarantine is protection against accidents and
+prompt-injected sloppiness, not a security sandbox, and is documented as such.
 
 ## 12. Conclusion
 
-Verifying the pass — not the pair — is tractable. Structural recovery with a certified reading
-turns real peephole source into theorems; recurrence lifting with an integer-ring discharge turns
-loop transforms into all-trip-count proofs; closed-loop validation ties both to the optimizer
-that actually runs; and an agent scales the pipeline while staying outside the trusted base. The
-discipline that makes it credible is uniform across all of it: decline what you cannot model,
-cross-check what you can, measure the boundary, and let every claim be a test.
+Verifying the pass — not the pair — is tractable, and it is strongest when approached from two
+sides that check each other. Structural recovery with a certified reading turns real peephole
+source into theorems (Track A); whole-function translation validation proves the optimizer's actual
+output a sound refinement over a complete bounded-code fragment and composes those proofs up to
+pipelines and modules (Track B); the two meet at attribution, where a proved transform is credited
+to the recovered fold that provably explains it — sound *and* accounted for. Recurrence lifting with
+an integer-ring discharge turns loop transforms into all-trip-count proofs; a self-enrichment loop
+lets an LLM widen the verifier's vocabulary behind an execution oracle; and an agent scales the whole
+pipeline while staying outside the trusted base. The discipline that makes it credible is uniform
+across all of it: decline what you cannot model, cross-check what you can, measure the boundary, and
+let every claim be a test.
