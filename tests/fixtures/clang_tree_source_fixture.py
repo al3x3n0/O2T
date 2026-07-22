@@ -218,6 +218,28 @@ def main() -> int:
         finally:
             Path(p).unlink(missing_ok=True)
 
+    # 13. AMBIGUITY DECLINE (protocol-review hardening): the source-file selector picks the unique
+    #     bodied definition of the target name (a bodiless declaration + one out-of-line definition is
+    #     NOT ambiguous), but if the name has MORE THAN ONE bodied definition (genuine overloads), the
+    #     target is ambiguous and it DECLINES rather than silently picking the first -- recovering the
+    #     wrong overload and attributing it to the name would be a false-refutation vector. Plain C++,
+    #     no LLVM headers, so it exercises _dump_source_file's selection directly.
+    def _dump(src, name):
+        with tempfile.NamedTemporaryFile("w", suffix=".cpp", delete=False) as tf:
+            tf.write(src)
+            p = tf.name
+        try:
+            return ct._dump_source_file(p, name, [], clang_bin=clang, timeout=60)
+        finally:
+            Path(p).unlink(missing_ok=True)
+    assert _dump("int foo(int x) { return x + 1; }\n", "foo") is not None, "unique def must resolve"
+    assert _dump("int foo(int x);\nint foo(int x) { return x + 1; }\n", "foo") is not None, \
+        "declaration + one definition is not ambiguous"
+    assert _dump("int foo(int x) { return x+1; }\nint foo(double y) { return (int)y; }\n", "foo") is None, \
+        "two bodied overloads are ambiguous -> must decline, never guess the first"
+    assert _dump("int foobar(int x){return x+2;}\nint foo(int x){return x+1;}\n", "foo") is not None, \
+        "substring over-match (foobar) must not defeat the exact-name selection of foo"
+
     print(f"clang_tree_source_fixture OK: {proved} proved + {refuted} refuted recovered from fold "
           "source parsed against the REAL LLVM 18 headers (no stub) -- including VERBATIM upstream "
           "combineAddSubWithShlAddSub, the foldXorToXor 3-arm cascade, and BOTH arms of the two-icmp "

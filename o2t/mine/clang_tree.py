@@ -417,7 +417,11 @@ def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
     Works on an UNMODIFIED upstream `.cpp` (a free function OR an `InstCombinerImpl::` method) when
     its lib-internal header dir is on `includes` (each dir is passed as `-I`). The filter can emit
     several decls for one name -- a bodiless declaration plus the out-of-line definition -- so return
-    the first FUNCTION/METHOD decl with `fn_name` that actually has a CompoundStmt BODY."""
+    the FUNCTION/METHOD decl with `fn_name` that actually has a CompoundStmt BODY. If MORE THAN ONE
+    exact-name decl has a body (genuine overloads / redefinitions), the target is ambiguous and we
+    DECLINE (return None) rather than guess the first -- picking the wrong overload and attributing it
+    to `fn_name` would be a false-refutation vector. (The filter is a substring match, so the exact
+    `name == fn_name` check below already rejects unrelated longer names.)"""
     clang = cp.find_clang(clang_bin)
     if clang is None:
         return None
@@ -432,6 +436,7 @@ def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
         return None
     dec = json.JSONDecoder()
     i, n = 0, len(out)
+    bodied = []
     while i < n:
         while i < n and out[i] in " \t\r\n":
             i += 1
@@ -443,8 +448,10 @@ def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
             break
         if node.get("kind") in _DEFN_KINDS and node.get("name") == fn_name \
                 and _body_compound(node) is not None:
-            return node
-    return None
+            bodied.append(node)
+    if len(bodied) != 1:                 # 0 = not found; >1 = ambiguous overloads -> decline, never guess
+        return None
+    return bodied[0]
 
 
 def recover_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
