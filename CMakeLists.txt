@@ -689,6 +689,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/vec_tv_fixture.py; else echo 'vec_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # GEP / pointer arithmetic: memory-state TV through getelementptr (address arithmetic over the
+    # array); aliasing exact (p[i] vs p[j] alias iff i==j). Reassociation proves; alias-unsound refutes.
+    add_test(
+        NAME gep_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/gep_tv_fixture.py; else echo 'gep_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Pointer-side-effect memory: TV over the MEMORY STATE via the SMT theory of arrays (aliasing-
     # precise). DSE of a dead store proves; dropping a live store / alias-unsound loads refute.
     add_test(

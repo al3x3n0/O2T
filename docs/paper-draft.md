@@ -248,8 +248,11 @@ itself* as a verification obligation, defended by independence in layers:
    dropping a live store — or an alias-unsound load — refutes. **Vectors** are handled by a lane model
    — a vector value is a list of per-lane terms, so element-wise ops lower lane-by-lane and
    `shufflevector`/`extractelement`/`insertelement` are exact permutation/index operations — verifying
-   vector folds (a wrong lane or shuffle mask refutes). Only loops (the recurrence track's domain) and
-   irregular shapes (scalable vectors, gep/pointer arithmetic) remain out. Whole-*pass* composition follows for a **pipeline**: a pass sequence
+   vector folds (a wrong lane or shuffle mask refutes). **Pointer arithmetic** (`getelementptr`) is
+   address arithmetic over the memory array, so `p[i]` and `p[j]` alias iff `i=j` — gep reassociation
+   `(p+i)+j=p+(i+j)` proves and an alias-unsound load refutes, all for free from the theory of arrays.
+   Only loops (the recurrence track's domain) and a few irregular shapes (scalable vectors, struct/i8
+   geps) remain out. Whole-*pass* composition follows for a **pipeline**: a pass sequence
    `f0 →p1→ f1 →p2→ … →pn→ fn` is verified by translation-validating each step and composing by
    **refinement transitivity** — refinement is a preorder, so if every step refines then `fn` refines
    `f0`, with no direct `f0→fn` proof needed and a miscompiling pass *localized* to its step (a step

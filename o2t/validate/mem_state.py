@@ -38,6 +38,37 @@ def _signature(ll_text, func):
     return out
 
 
+def _idx64(tok, env):
+    """A gep index operand -> a 64-bit SMT term (sign-extended, as gep indices are signed)."""
+    if tok in env:
+        term, w, _, _ = env[tok]
+        if w == 64:
+            return term
+        return f"((_ sign_extend {64 - w}) {term})" if w < 64 else f"((_ extract 63 0) {term})"
+    if re.fullmatch(r"-?\d+", tok):
+        return si._const(int(tok), 64)
+    raise si.Unsupported(f"gep index {tok!r}")
+
+
+def _gep(line, addr, env):
+    """`%q = getelementptr [inbounds] i32, ptr %base, iW %idx` (or the `[N x i32], ..., 0, %idx` array
+    form) -> (dst, new address term = base + idx). ELEMENT-addressed (stride 1), consistent with the
+    word array; the array theory then handles aliasing (two geps alias iff their addresses are equal).
+    Returns None if the line is not a gep; declines an unmodeled gep (struct / i8 / other type)."""
+    m = re.fullmatch(r"(%[\w.]+)\s*=\s*getelementptr\s+(?:inbounds\s+)?(.+)", line)
+    if not m:
+        return None
+    dst, rest = m.group(1), m.group(2)
+    e1 = re.fullmatch(r"i32,\s+ptr\s+(%[\w.]+),\s+i\d+\s+(\S+)", rest)
+    e2 = re.fullmatch(r"\[\d+\s+x\s+i32\],\s+ptr\s+(%[\w.]+),\s+i\d+\s+0,\s+i\d+\s+(\S+)", rest)
+    g = e1 or e2
+    if not g:
+        raise si.Unsupported(f"gep form {rest[:40]!r}")
+    if g.group(1) not in addr:
+        raise si.Unsupported("gep on a non-pointer base")
+    return dst, f"(bvadd {addr[g.group(1)]} {_idx64(g.group(2), env)})"
+
+
 def _mem_translate(ll_text, func):
     """Symbolically execute a single-BB function over the memory array; return
     (ret_term|None, ret_width, final_mem_term). Reuses scalar_ir for the scalar instructions."""
@@ -76,7 +107,11 @@ def _mem_translate(ll_text, func):
                 raise si.Unsupported("load width/target out of scope")
             env[lm.group(1)] = (f"(select {mem} {addr[lm.group(3)]})", 32, "false", "false")
             continue
-        si._instruction(line, env, None, None)          # scalar op (alloca/gep/etc. decline here)
+        gm = _gep(line, addr, env)                       # getelementptr on an i32 pointer -> a new address
+        if gm:
+            addr[gm[0]] = gm[1]
+            continue
+        si._instruction(line, env, None, None)          # scalar op (alloca/other-gep decline here)
     return ret_term, ret_width, mem
 
 
