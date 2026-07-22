@@ -10,9 +10,18 @@ soundly with no alias analysis.
 
 A transform is a refinement iff, for the same initial memory and arguments, the RETURN VALUE and the
 FINAL MEMORY STATE agree. So DSE removing a dead (overwritten) store proves; removing a live store, or
-changing a stored value, refutes. Scope: single-BB, i32 word load/store to opaque pointer ARGUMENTS
-(no gep / pointer arithmetic / alloca -> decline); pointer validity / null-deref UB is not modeled (a
-documented gap -- sound for store removal/reordering, which introduce no new dereferences).
+changing a stored value, refutes.
+
+A direct `call` to a DEFINED callee is inlined THROUGH the memory array: pointer arguments bind to the
+caller's addresses, scalar arguments to terms, and the callee's memory effects thread back into the
+caller. This reaches the two composition-axis edges Track B named last -- NON-SCALAR (pointer/void)
+callees, and ARGUMENT PROMOTION (a `ptr` parameter a callee only loads, turned into a by-value scalar
+parameter with the load hoisted to callers; see o2t/validate/argprom_tv.py).
+
+Scope: single-BB per function, byte-addressable load/store and getelementptr over opaque pointer
+ARGUMENTS, direct defined-callee inlining (bounded recursion); pointer validity / null-deref UB is not
+modeled (a documented gap -- sound for store removal/reordering and load-hoisting where the load already
+occurred, which introduce no new observable dereference).
 """
 
 from __future__ import annotations
@@ -23,6 +32,12 @@ import subprocess
 from o2t.validate import scalar_ir as si
 
 _PARAM_RE = re.compile(r"(ptr|i(\d+))\s+(%[\w.]+)")
+_MAX_CALL_DEPTH = 6
+
+
+def _split_args(arg_str):
+    """`ptr %q, i32 %y` -> ['ptr %q', 'i32 %y'] (scalar/pointer args, no nested commas)."""
+    return [a.strip() for a in arg_str.split(",")] if arg_str.strip() else []
 
 
 def _signature(ll_text, func):
@@ -117,18 +132,28 @@ def _gep(line, addr, env):
     raise si.Unsupported(f"gep form {rest[:40]!r}")
 
 
-def _mem_translate(ll_text, func):
+def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
     """Symbolically execute a single-BB function over the memory array; return
-    (ret_term|None, ret_width, final_mem_term). Reuses scalar_ir for the scalar instructions."""
+    (ret_term|None, ret_width, final_mem_term). Reuses scalar_ir for the scalar instructions.
+
+    `module` is where callees are looked up (defaults to `ll_text`); `bind` = (env, addr, mem)
+    supplies a caller's scalar-argument terms, pointer-argument ADDRESSES, and incoming memory when
+    this function is being INLINED at a call site. So a `call` threads the memory array THROUGH the
+    callee -- pointer-argument (non-scalar) callees and argument promotion are both verified this way.
+    Bounded by `_MAX_CALL_DEPTH` (recursion / over-deep declines)."""
+    module = module if module is not None else ll_text
     body = si._function_body(ll_text, func)
     if body is None:
         raise si.Unsupported(f"function {func} not found")
     if re.search(r"^\s*br\b", body, re.M):
         raise si.Unsupported("multi-block")
-    sig = _signature(ll_text, func) or []
-    env = {n: (n, w, "false", "false") for w, n in sig if w != "ptr"}
-    addr = {n: n for w, n in sig if w == "ptr"}         # pointer arg -> its (opaque i64) address term
-    mem = "mem0"
+    if bind is not None:
+        env, addr, mem = dict(bind[0]), dict(bind[1]), bind[2]
+    else:
+        sig = _signature(ll_text, func) or []
+        env = {n: (n, w, "false", "false") for w, n in sig if w != "ptr"}
+        addr = {n: n for w, n in sig if w == "ptr"}     # pointer arg -> its (opaque i64) address term
+        mem = "mem0"
     ret_term, ret_width = None, None
     for raw in body.splitlines():
         line = raw.strip()
@@ -160,6 +185,32 @@ def _mem_translate(ll_text, func):
         gm = _gep(line, addr, env)                       # getelementptr on an i32 pointer -> a new address
         if gm:
             addr[gm[0]] = gm[1]
+            continue
+        cm = re.fullmatch(r"(?:(%[\w.]+)\s*=\s*)?call\s+(?:void|i(\d+))\s+@([\w.$]+)\s*\((.*)\)", line)
+        if cm and si._function_body(module, cm.group(3)) is not None:      # a DEFINED callee -> inline it
+            dst, callee, arg_str = cm.group(1), cm.group(3), cm.group(4)   # (declared/intrinsic fall thru)
+            if depth >= _MAX_CALL_DEPTH:
+                raise si.Unsupported("call too deep / recursion")
+            cparams = _signature(module, callee) or []
+            args = _split_args(arg_str)
+            if len(args) != len(cparams):
+                raise si.Unsupported("call arity mismatch")
+            cenv, caddr = {}, {}
+            for (kind, pname), a in zip(cparams, args):  # bind ptr args to ADDRESSES, scalars to terms
+                am = re.fullmatch(r"(?:ptr|i\d+)\s+(\S+)", a)
+                if not am:
+                    raise si.Unsupported(f"call arg {a!r}")
+                if kind == "ptr":
+                    if am.group(1) not in addr:
+                        raise si.Unsupported("pointer argument is not a known address")
+                    caddr[pname] = addr[am.group(1)]
+                else:
+                    cenv[pname] = si._operand(am.group(1), kind, env)
+            cret, cw, mem = _mem_translate(module, callee, module, (cenv, caddr, mem), depth + 1)
+            if dst is not None:                          # a value-returning call
+                if cret is None:
+                    raise si.Unsupported("value use of a void call")
+                env[dst] = (cret, cw, "false", "false")
             continue
         si._instruction(line, env, None, None)          # scalar op (alloca/other-gep decline here)
     return ret_term, ret_width, mem

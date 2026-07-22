@@ -697,6 +697,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/gep_tv_fixture.py; else echo 'gep_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Track B's last composition edges: memory-threaded interprocedural inlining reaches NON-SCALAR
+    # (void/pointer) callees and ARGUMENT PROMOTION (proved at callers vs real opt; wrong value / an
+    # external-ABI promotion refute).
+    add_test(
+        NAME argprom_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/argprom_tv_fixture.py; else echo 'argprom_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Pointer-side-effect memory: TV over the MEMORY STATE via the SMT theory of arrays (aliasing-
     # precise). DSE of a dead store proves; dropping a live store / alias-unsound loads refute.
     add_test(

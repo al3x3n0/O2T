@@ -324,7 +324,10 @@ rather than approximates:
 - **Interprocedural value flow.** A direct `call @g(args)` is modeled by translating the callee with
   its parameters bound to the argument terms — inlining `g`'s semantics into the caller's obligation —
   so **inlining and IPSCCP-style transforms are verified across the call boundary** (`opt`'s inlined
-  `foo(x)=bar(x)+1 → 2x+1` proves; a wrong inline refutes), with recursion a bounded sound decline.
+  `foo(x)=bar(x)+1 → 2x+1` proves; a wrong inline refutes), with recursion a bounded sound decline. The
+  inlining threads the **memory array** through the call — pointer arguments bind to the caller's
+  addresses, scalar arguments to terms — so **non-scalar (pointer/`void`) callees** that store or load
+  through a pointer argument are reached too, and the array theory keeps their aliasing exact.
 
 The value models (scalar, memory, lanes) are cross-validated against `lli` **execution**, so the
 translator's own semantics are independently checked, not merely assumed. **The bounded-code fragment
@@ -358,10 +361,18 @@ transitivity — refinement is a preorder:
   dead code proves, while deleting an externally-visible or still-referenced function refutes.
 - A **signature change** (`deadargelim`) refines iff every removed parameter was dead and the function
   over its surviving parameters refines — removing a dead argument proves, a live one refutes.
+- **Argument promotion** (`argpromotion`) turns an internal callee's load-only `ptr` parameter into a
+  by-value scalar and hoists the load to callers. Because the callee's signature changes, it is not
+  compared directly; the transform is proved **at the callers**, with the callee inlined on both sides
+  over the memory state — the before-caller inlines the callee's internal load, and the after-caller's
+  hoisted load must compute the identical value. Proved against real `opt -passes=argpromotion` output;
+  a caller passing the wrong hoisted value refutes, and promoting an *externally-visible* (observable-
+  ABI) callee refutes, since an out-of-module caller could break on the new signature.
 
 The composition axis is thus covered end to end — pass fixpoint, multi-pass pipeline, module
-deletion, interprocedural value flow, signature change — leaving only argument *promotion* and
-non-scalar callees.
+deletion, interprocedural value flow (including pointer/`void` callees), signature change, and
+argument promotion — leaving only by-value *aggregate* promotion and non-scalar (aggregate/vector)
+callee signatures.
 
 **Attribution: the two tracks meet.** For each proved whole-function transform, the recovered fold
 whose `(before, after)` matches it — under a variable mapping, checked by SMT so an equivalent form
@@ -525,11 +536,13 @@ semantics, dynamic-opcode folds, `foldX` operand-parameter binding (pending call
 verification), floating point, and the KnownBits/APInt guard stratum all decline today, and the
 E6 taxonomy counts each. O2T's scalar model has no `undef` distinct from poison beyond the
 definite-value guard, and bounded-arity loop proofs are licensed by corroboration, not by
-unbounded induction. Track B's bounded-code fragment is complete for straight-line code but stops
-at its stated edges: argument *promotion* and non-scalar callees on the composition axis, and, in
+unbounded induction. Track B's bounded-code fragment is complete for straight-line code and its
+composition axis now reaches pointer/`void` callees and argument promotion; what remains on that
+axis is by-value *aggregate* promotion and non-scalar (aggregate/vector) callee signatures, and, in
 the memory model, pointer-validity / null-dereference UB is not tracked (sound for store
-removal/reordering, which introduce no new dereferences, but not a full UB account). Loops are out
-of Track B by design — they are the recurrence track's domain. On that loop track, width-changing
+removal/reordering and for load-hoisting where the load already occurred — which is when
+promotion fires — but not a full UB account). Loops are out of Track B by design — they are the
+recurrence track's domain. On that loop track, width-changing
 operations bound the integer-ring discharge, and loop-nest transforms and loop *vectorization*
 (as opposed to the bounded SLP/lane model) remain future work. Standalone-arm refutations in
 cascades are advisory by construction. The agent's quarantine is protection against accidents and
