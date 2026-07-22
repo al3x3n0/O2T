@@ -681,6 +681,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/compose_tv_fixture.py; else echo 'compose_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Vectors: whole-function TV via a LANE MODEL (element-wise + shuffle/extract/insert), constant
+    # indices/masks. Vector folds prove; a wrong lane or shuffle mask refutes; scalable vectors decline.
+    add_test(
+        NAME vec_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/vec_tv_fixture.py; else echo 'vec_tv_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Pointer-side-effect memory: TV over the MEMORY STATE via the SMT theory of arrays (aliasing-
     # precise). DSE of a dead store proves; dropping a live store / alias-unsound loads refute.
     add_test(

@@ -29,7 +29,7 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   Acyclic **branch/phi** functions are now handled by symbolic CFG execution (`multiblock_tv_fixture`),
   and **local scalar memory** by symbolic mem2reg over non-escaping allocas (`memory_tv_fixture` —
   verifies mem2reg/sroa against opt's own SSA output; escapes decline); both models validated against
-  `lli` execution. **Pointer-side-effect memory** (writes through pointer args) is TV'd over the memory state with the SMT theory of arrays (`mem_state_tv_fixture` — aliasing-precise; `dse` of a dead store proves, dropping a live store or an alias-unsound load refutes). Loops and vectors remain out of the fragment. This verifies the *composition* of whatever folds fired — a whole-function (not
+  `lli` execution. **Pointer-side-effect memory** (writes through pointer args) is TV'd over the memory state with the SMT theory of arrays (`mem_state_tv_fixture` — aliasing-precise; `dse` of a dead store proves, dropping a live store or an alias-unsound load refutes). **Vectors** are handled by a lane model (`vec_tv_fixture` — element-wise ops + shuffle/extract/insert; vector folds prove, a wrong lane or shuffle mask refutes; scalable vectors decline). Only loops (the recurrence track's domain) and irregular shapes (scalable vectors, gep) remain out of the fragment. This verifies the *composition* of whatever folds fired — a whole-function (not
   whole-pass) end-to-end result whose reach (49%) far exceeds source-recovery (Track A, ~4%) because
   it TVs the real IR directly, with the miscompile teeth biting. **Attribution** (`attribute_fixture`)
   welds the two tracks: for each proved whole-function transform it credits the recovered fold whose
