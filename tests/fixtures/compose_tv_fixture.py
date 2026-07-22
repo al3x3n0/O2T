@@ -59,11 +59,11 @@ def main() -> int:
     assert rb["steps"][0]["status"] == "proved" and rb["steps"][1]["status"] == "refuted", \
         ("the miscompile must localize to instcombine", rb["steps"])
 
-    # 4. HONEST inconclusive: an intermediate outside the scalar fragment (memory) makes that step
-    #    unsupported -> the chain is inconclusive, never a false whole-pipeline proof.
+    # 4. HONEST inconclusive: an intermediate outside the scalar fragment (a call to an external
+    #    function) makes that step unsupported -> the chain is inconclusive, never a false proof.
     uns = list(irs)
-    uns[2] = ("define i32 @f(i32 %a) {\n  %p = alloca i32\n  store i32 %a, ptr %p\n"
-              "  %v = load i32, ptr %p\n  ret i32 %v\n}\n")
+    uns[2] = ("declare i32 @ext(i32)\n"
+              "define i32 @f(i32 %a) {\n  %v = call i32 @ext(i32 %a)\n  ret i32 %v\n}\n")
     ru = compose_tv(z3, LL, "f", STAGES, opt, irs=uns)
     assert ru["composed"] == "inconclusive", ru
 

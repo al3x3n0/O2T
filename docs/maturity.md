@@ -27,7 +27,9 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   refinement is proved. Measured over `and/or/xor/add.ll` — **351/715 functions (49%) proved sound
   end-to-end, 0 false refutations**; the rest decline (memory/vector/loop shapes, z3-timeouts).
   Acyclic **branch/phi** functions are now handled by symbolic CFG execution (`multiblock_tv_fixture`),
-  the value model validated against `lli` execution; loops/div-rem are bounded sound declines. This verifies the *composition* of whatever folds fired — a whole-function (not
+  and **local scalar memory** by symbolic mem2reg over non-escaping allocas (`memory_tv_fixture` —
+  verifies mem2reg/sroa against opt's own SSA output; escapes decline); both models validated against
+  `lli` execution. Loops, vectors, and pointer-side-effect memory remain out of the fragment. This verifies the *composition* of whatever folds fired — a whole-function (not
   whole-pass) end-to-end result whose reach (49%) far exceeds source-recovery (Track A, ~4%) because
   it TVs the real IR directly, with the miscompile teeth biting. **Attribution** (`attribute_fixture`)
   welds the two tracks: for each proved whole-function transform it credits the recovered fold whose

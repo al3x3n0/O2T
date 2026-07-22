@@ -111,6 +111,9 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
                 "depth": _depth, "extra_ops": extra_ops}
     if re.search(r"^\s*br\b", body, re.M):             # any branch -> a multi-block (CFG) function
         return _translate_multiblock(body, params, env, extra_ops, call_ctx)
+    # LOCAL scalar memory (single-BB only): symbolic mem2reg over non-escaping allocas. An escaping
+    # pointer is never in `env` as a value, so its use declines naturally -- no aliasing is assumed.
+    call_ctx["mem"] = {"cell": {}, "val": {}}          # alloca ptr -> cell id ; cell id -> (term, poison)
     ret_term = ret_width = None
     ret_poison = ret_ub = "false"
     for raw in body.splitlines():
@@ -125,6 +128,14 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
             break
         if line == "ret void":
             raise Unsupported("void return")
+        sm = re.fullmatch(r"store\s+i(\d+)\s+(\S+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
+        if sm:                                         # store v, ptr %p (%p must be a local alloca)
+            mem = call_ctx["mem"]
+            if sm.group(3) not in mem["cell"]:
+                raise Unsupported("store to a non-local/escaped pointer")
+            vt, _, vp, _ = _operand(sm.group(2), int(sm.group(1)), env)
+            mem["val"][mem["cell"][sm.group(3)]] = (vt, vp)
+            continue
         _instruction(line, env, extra_ops, call_ctx)
     if ret_term is None:
         raise Unsupported("no scalar ret")
@@ -273,6 +284,22 @@ def _instruction(line, env, extra_ops=None, call_ctx=None):
     if not m:
         raise Unsupported(line)
     dst, rhs = m.group(1), m.group(2)
+
+    if call_ctx is not None and "mem" in call_ctx:     # LOCAL scalar memory (single-BB symbolic mem2reg)
+        am = re.fullmatch(r"alloca\s+i(\d+)(?:,.*)?", rhs)
+        if am:
+            mem = call_ctx["mem"]
+            mem["cell"][dst] = len(mem["cell"])        # a fresh, distinct cell per alloca
+            return
+        lm = re.fullmatch(r"load\s+i(\d+),\s+ptr\s+(%[\w.]+)(?:,.*)?", rhs)
+        if lm:
+            mem = call_ctx["mem"]
+            cell = mem["cell"].get(lm.group(2))
+            if cell is None or cell not in mem["val"]:
+                raise Unsupported("load from an escaped/uninitialized pointer")
+            vt, vp = mem["val"][cell]                   # last store to this alloca (textual = execution order)
+            env[dst] = (vt, int(lm.group(1)), vp, "false")
+            return
 
     bm = re.fullmatch(r"(\w+)((?:\s+(?:nsw|nuw|exact|disjoint))*)\s+i(\d+)\s+(\S+),\s+(\S+)", rhs)
     if bm and bm.group(1) in _BIN:
