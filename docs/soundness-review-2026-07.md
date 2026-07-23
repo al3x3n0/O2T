@@ -98,6 +98,16 @@ The review also exposed two *systemic* weak spots beyond the individual bugs, no
   headline injects a poison-encoding bug (drops `nsw` from the model) that z3 and lli both miss and
   Alive2 catches — and shows lli *agreeing* on the same `add → add nsw` (its blind spot).
 
+**Operationalized.** These oracles are not just demo fixtures — `corpus_tv.cross_check_file` runs both
+(lli + Alive2) over O2T's *actual* whole-function TV verdicts on the vendored InstCombine corpus and
+confirms every function O2T proves. Today: **14 proved, 0 disagreements** — Track B's proved set on real
+code is independently verified by two oracles that don't share its encoding, and `disagreements == []`
+is a standing guard (`corpus_cross_check_fixture`) that fails if a future change false-proves any
+corpus function.
+
+The three independent oracles now cover the axes: `reconcile` (Track A, concrete bv8), `concrete_tv`
+(Track B, value/lli), `alive_diff` (poison/Alive2).
+
 Still open: a richer UB/`undef` model (single poison bit today), and the inherent low reach
 (decline-by-default means ~half of a real pass declines).
 
