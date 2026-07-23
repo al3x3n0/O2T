@@ -14,7 +14,31 @@ of the search space.
 > names. `CV_*` instrumentation macros and selected `COMPILERVERIF_*` aliases
 > remain for compatibility.
 
+## Quickstart
+
+```bash
+pip install -e .        # puts the `o2t` command on your PATH
+o2t doctor              # what's installed, what each gap disables
+o2t verify --selftest   # a first proof: recover + prove real InstCombine folds
+```
+
+`o2t doctor` checks the toolchain (Z3 is required; LLVM 18 `opt`/`lli`/`clang` unlock translation
+validation, the execution oracle, and the Clang-AST front-end). Then point O2T at your own pass:
+
+```bash
+o2t verify --mine fold.cpp                       # one fold from source
+o2t orchestrate --source passes/ --report r.json # a whole pass tree
+```
+
+- **[QUICKSTART.md](QUICKSTART.md)** — clone-to-first-proof in a few minutes.
+- **[docs/capabilities.md](docs/capabilities.md)** — what verifies vs. declines today (read before you
+  point it at your own pass).
+- **[CHEATSHEET.md](CHEATSHEET.md)** — the full command surface (`o2t list` enumerates the ~160 tools).
+
 ## Compatibility Aliases
+
+> *Skippable unless you have existing automation.* New integrations should use the `O2T_*` names; the
+> `COMPILERVERIF_*` / `CV_*` aliases below exist only so older scripts keep working.
 
 New integrations should use `O2T_*` CMake options, environment variables, and
 artifact model IDs. Existing automation can still use these legacy names:

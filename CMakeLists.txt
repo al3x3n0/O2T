@@ -644,6 +644,11 @@ if(O2T_BUILD_TESTS)
         NAME clang_tree_wholecpp_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/clang_tree_wholecpp_fixture.py
     )
+    # The `o2t` front-door CLI dispatcher -- hermetic (no toolchain), so it runs everywhere.
+    add_test(
+        NAME cli_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cli_fixture.py
+    )
     add_test(
         NAME frontend_robustness_fixture
         COMMAND

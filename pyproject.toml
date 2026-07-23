@@ -8,6 +8,11 @@ version = "0.1.0"
 description = "O2T (Optimizer Testing Toolkit) loop-verification core: frontend / mine / synth / prove."
 requires-python = ">=3.9"
 
+# `o2t` -- the single front-door command (dispatcher over the tools/cv-*.py shims). After
+# `pip install -e .`, `o2t doctor` / `o2t verify` / `o2t list` are on PATH.
+[project.scripts]
+o2t = "o2t.cli:main"
+
 # The loop-verification cluster is now a proper package:
 #   o2t.frontend  -- .ll / .cpp ingestion (SCEV via opt, Clang AST, regex legacy)
 #   o2t.mine      -- transform miners + relational drivers

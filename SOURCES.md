@@ -35,7 +35,14 @@ idiom header") to the file that owns it. It complements the *conceptual* docs in
 
 ## The verification core: `o2t/`
 
-### Front door — `o2t/orchestrate/`
+### The `o2t` command — `o2t/cli.py`
+The single front-door CLI (`[project.scripts] o2t`): a stdlib-only dispatcher over the ~160
+`tools/cv-*.py` shims. `o2t doctor` (toolchain check with actionable per-tool hints), `o2t verify` /
+`o2t orchestrate` / `o2t agent` (forward to the backing tools), `o2t list` / `o2t run <tool>`
+(discover + run the long tail). Gated hermetically by `cli_fixture` (needs no toolchain). See
+[`QUICKSTART.md`](QUICKSTART.md) and [`docs/capabilities.md`](docs/capabilities.md).
+
+### Pass orchestrator — `o2t/orchestrate/`
 The pass-aware entry point (`tools/cv-orchestrate.py`). See
 [`docs/orchestrator.md`](docs/orchestrator.md).
 - `classify.py` — score a pass `.cpp` into a transform **family** from the LLVM
