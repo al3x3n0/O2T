@@ -66,12 +66,27 @@ def main() -> int:
               "define i32 @f(i32 %a) {\n  %v = call i32 @ext(i32 %a)\n  ret i32 %v\n}\n")
     ru = compose_tv(z3, LL, "f", STAGES, opt, irs=uns)
     assert ru["composed"] == "inconclusive", ru
+    assert ru["net"] in ("unsupported", "inconclusive", "timeout"), ru
+
+    # 5. MASKED MISCOMPILE (zero-false-refutation): a pass introduces an unsound `nsw`, the NEXT pass
+    #    removes it, so the net f0->fn is a sound refinement even though an intermediate step refutes.
+    #    The per-step chain must NOT falsely refute the whole pipeline: `composed` follows the direct
+    #    net verdict (proved), while `steps` still LOCALIZES the buggy first pass (refuted).
+    f0 = "define i32 @f(i32 %a) {\n  %r = add i32 %a, %a\n  ret i32 %r\n}\n"
+    f1 = "define i32 @f(i32 %a) {\n  %r = add nsw i32 %a, %a\n  ret i32 %r\n}\n"   # unsound nsw introduced
+    masked = compose_tv(z3, f0, "f", STAGES, opt, irs=[f0, f1, f0])                # ...then removed
+    assert masked["steps"][0]["status"] == "refuted", ("the buggy pass must still localize", masked)
+    assert masked["steps"][1]["status"] == "proved", masked
+    assert masked["net"] == "proved" and masked["composed"] == "proved", \
+        ("a masked miscompile must NOT falsely refute a net-sound pipeline", masked)
 
     print("compose_tv_fixture OK: a pass PIPELINE (reassociate,instcombine) is verified compositionally "
           "-- each step translation-validated, the whole pipeline PROVED by refinement transitivity "
           "(consistent with the direct end-to-end TV); a miscompiling instcombine step is caught and "
           "LOCALIZED (reassociate proves, instcombine refutes -> refuted); an out-of-fragment step is a "
-          "sound inconclusive, never a false whole-pipeline proof")
+          "sound inconclusive; and a MASKED miscompile (an unsound nsw a later pass removes) is not "
+          "falsely refuted -- composed follows the direct net verdict (proved) while steps still "
+          "localize the buggy pass. Never a false whole-pipeline proof OR a false whole-pipeline refutation")
     return 0
 
 
