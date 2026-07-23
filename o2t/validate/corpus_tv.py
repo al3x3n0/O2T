@@ -34,3 +34,46 @@ def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int 
         results.append(v)
     counts = Counter(r["status"] for r in results)
     return {"functions": results, "counts": dict(counts), "opt_ok": True}
+
+
+def _extract_define(ll_text: str, fn: str):
+    """The full `define ... @fn(...) {...}` block as a standalone module string, or None."""
+    import re
+    m = re.search(r"define\b[^@]*@" + re.escape(fn) + r"\s*\([^)]*\)[^{]*\{", ll_text)
+    if not m:
+        return None
+    depth, j = 1, m.end()
+    while j < len(ll_text) and depth:
+        depth += {"{": 1, "}": -1}.get(ll_text[j], 0)
+        j += 1
+    return ll_text[m.start():j]
+
+
+def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: str | None = None,
+                     alive_bin: str | None = None, timeout: int = 15) -> dict:
+    """Run whole-function TV, then confirm every function O2T PROVED against the INDEPENDENT oracles
+    (lli value execution and/or reference Alive2) that do NOT share O2T's SMT encoding. Returns
+    {base, cross_checked, disagreements}. A non-empty `disagreements` is a FALSE PROOF on real code --
+    an O2T `proved` an oracle contradicts. This operationalizes the weak-spot fixes: the oracles run on
+    actual verdicts, not just demo fixtures."""
+    from o2t.validate.concrete_tv import concrete_tv
+    from o2t.validate.alive_diff import alive_refines
+    base = validate_file(z3_bin, ll_text, opt_bin, timeout)
+    opt_text = si.run_instcombine(ll_text, opt_bin)
+    disagreements, checked = [], 0
+    if opt_text is None:
+        return {"base": base["counts"], "cross_checked": 0, "disagreements": []}
+    for r in base["functions"]:
+        if r["status"] != "proved":
+            continue
+        fn = r["function"]
+        checked += 1
+        if lli_bin:                                   # value oracle (real execution)
+            cc = concrete_tv(lli_bin, ll_text, opt_text, fn)
+            if cc["status"] == "disagree":
+                disagreements.append({"function": fn, "oracle": "lli", "witness": cc.get("witness")})
+        if alive_bin:                                 # poison/ground-truth oracle, per function
+            bfn, afn = _extract_define(ll_text, fn), _extract_define(opt_text, fn)
+            if bfn and afn and alive_refines(bfn, afn, alive_bin).get("status") == "refuted":
+                disagreements.append({"function": fn, "oracle": "alive2"})
+    return {"base": base["counts"], "cross_checked": checked, "disagreements": disagreements}

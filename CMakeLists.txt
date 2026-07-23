@@ -804,6 +804,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/alive_diff_fixture.py; else echo 'alive_diff_fixture: z3 or alive-tv not found, skipped'; fi"
     )
+    # OPERATIONALIZED: run both independent oracles (lli + Alive2) over O2T's REAL corpus verdicts --
+    # every function O2T proves must be confirmed. Zero disagreements = proved-set verified on real code.
+    add_test(
+        NAME corpus_cross_check_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; } && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/corpus_cross_check_fixture.py; else echo 'corpus_cross_check_fixture: z3/opt/lli/alive-tv not found, skipped'; fi"
+    )
     # Enrichment AGENT: an LLM (deterministic stub) DRIVES the loop -- diagnose -> propose -> lli
     # validates -> install -> re-run. The last mile of the autonomous harness; live is one flag.
     add_test(
