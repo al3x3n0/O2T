@@ -34,6 +34,8 @@ o2t orchestrate --source passes/ --report r.json # a whole pass tree
 - **[docs/capabilities.md](docs/capabilities.md)** — what verifies vs. declines today (read before you
   point it at your own pass).
 - **[CHEATSHEET.md](CHEATSHEET.md)** — the full command surface (`o2t list` enumerates the ~160 tools).
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to contribute (and the one soundness rule);
+  **[CHANGELOG.md](CHANGELOG.md)** — release notes.
 
 ## Compatibility Aliases
 

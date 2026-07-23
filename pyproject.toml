@@ -1,17 +1,42 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "o2t"
 version = "0.1.0"
-description = "O2T (Optimizer Testing Toolkit) loop-verification core: frontend / mine / synth / prove."
+description = "Formally verify LLVM optimization passes from their source: recover intent, prove with Z3, translation-validate real opt."
+readme = "README.md"
 requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "al3x3n0" }]
+keywords = ["LLVM", "compiler", "compiler-testing", "translation-validation", "formal-verification", "SMT", "z3"]
+# Pure-stdlib runtime: the provers are EXTERNAL binaries (Z3, LLVM 18 opt/lli/clang), not pip
+# packages -- `o2t doctor` checks for them. So there are no install_requires.
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
 
 # `o2t` -- the single front-door command (dispatcher over the tools/cv-*.py shims). After
 # `pip install -e .`, `o2t doctor` / `o2t verify` / `o2t list` are on PATH.
 [project.scripts]
 o2t = "o2t.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/al3x3n0/O2T"
+Repository = "https://github.com/al3x3n0/O2T"
+Issues = "https://github.com/al3x3n0/O2T/issues"
 
 # The loop-verification cluster is now a proper package:
 #   o2t.frontend  -- .ll / .cpp ingestion (SCEV via opt, Clang AST, regex legacy)

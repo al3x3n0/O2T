@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / usage help
+    url: https://github.com/al3x3n0/O2T/discussions
+    about: For "how do I verify X" and general questions, start a Discussion.
+  - name: What can O2T verify today?
+    url: https://github.com/al3x3n0/O2T/blob/main/docs/capabilities.md
+    about: The capability map — check whether your case is in scope before filing.
