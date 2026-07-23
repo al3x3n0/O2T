@@ -519,6 +519,14 @@ if(O2T_BUILD_TESTS)
         NAME flag_matrix_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/flag_matrix_fixture.py
     )
+    # Reach lift: model the common integer intrinsics (ctpop/abs/fshl/fshr/u{add,sub}.sat), each
+    # VALIDATED against lli (model==hand by z3, real==hand by lli). Self-skips without z3+lli.
+    add_test(
+        NAME intrinsics_ir_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/intrinsics_ir_fixture.py; else echo 'intrinsics_ir_fixture: z3 or lli not found, skipped'; fi"
+    )
     add_test(
         NAME orchestrate_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/orchestrate_fixture.py

@@ -281,6 +281,73 @@ def _own_ub(name, a, b, w):
     return smt_or(conds)
 
 
+# --- common integer intrinsics (SMT models; each lli-validated by intrinsics_ir_fixture) ----------
+def _intr_args(arg_str, w, env):
+    """Parse `iN v, iN v, ...` intrinsic args to a list of _operand tuples (types stripped)."""
+    out = []
+    for part in arg_str.split(","):
+        m = re.fullmatch(r"\s*i\d+\s+(\S+)\s*", part)
+        if not m:
+            raise Unsupported(f"intrinsic arg {part!r}")
+        out.append(_operand(m.group(1), w, env))
+    return out
+
+
+def _p(ops):                                          # combined operand poison / ub
+    return smt_or([o[2] for o in ops]), smt_or([o[3] for o in ops])
+
+
+def _intr_ctpop(ops, w):
+    a, (p, u) = ops[0][0], _p(ops)
+    bits = [f"((_ zero_extend {w - 1}) ((_ extract {i} {i}) {a}))" for i in range(w)]
+    return f"(bvadd {' '.join(bits)})", w, p, u
+
+
+def _intr_abs(ops, w):
+    if len(ops) != 2:
+        raise Unsupported("abs arity")
+    a, np = ops[0][0], ops[1][0]                       # np = the i1 is_int_min_poison flag
+    _, u = _p(ops[:1])
+    val = f"(ite (bvslt {a} (_ bv0 {w})) (bvneg {a}) {a})"
+    pois = smt_or([ops[0][2], f"(and (= {np} (_ bv1 1)) (= {a} {_const(1 << (w - 1), w)}))"])
+    return val, w, pois, u
+
+
+def _funnel(ops, w, right):
+    if len(ops) != 3:
+        raise Unsupported("funnel-shift arity")
+    a, b, c = ops[0][0], ops[1][0], ops[2][0]
+    p, u = _p(ops)
+    s = f"(bvurem {c} (_ bv{w} {w}))"
+    cat = f"(concat {a} {b})"
+    if right:
+        return f"((_ extract {w - 1} 0) (bvlshr {cat} ((_ zero_extend {w}) {s})))", w, p, u
+    return f"((_ extract {2 * w - 1} {w}) (bvshl {cat} ((_ zero_extend {w}) {s})))", w, p, u
+
+
+def _intr_uadd_sat(ops, w):
+    a, b = ops[0][0], ops[1][0]
+    p, u = _p(ops)
+    s = f"(bvadd {a} {b})"
+    return f"(ite (bvult {s} {a}) (bvnot (_ bv0 {w})) {s})", w, p, u
+
+
+def _intr_usub_sat(ops, w):
+    a, b = ops[0][0], ops[1][0]
+    p, u = _p(ops)
+    return f"(ite (bvult {a} {b}) (_ bv0 {w}) (bvsub {a} {b}))", w, p, u
+
+
+# Note: `bswap` is deliberately NOT built in -- it is the worked example for the lli-gated
+# self-enrichment path (enrich_fixture), which demonstrates growing the vocabulary from outside.
+_INTRINSICS = {
+    "ctpop": _intr_ctpop, "abs": _intr_abs,
+    "fshl": lambda ops, w: _funnel(ops, w, right=False),
+    "fshr": lambda ops, w: _funnel(ops, w, right=True),
+    "uadd.sat": _intr_uadd_sat, "usub.sat": _intr_usub_sat,
+}
+
+
 def _instruction(line, env, extra_ops=None, call_ctx=None):
     m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
     if not m:
@@ -348,6 +415,16 @@ def _instruction(line, env, extra_ops=None, call_ctx=None):
         b, _, bp, bu = _operand(mm.group(4), w, env)
         cmp = {"smin": "bvsle", "smax": "bvsge", "umin": "bvule", "umax": "bvuge"}[mm.group(2)]
         env[dst] = (f"(ite ({cmp} {a} {b}) {a} {b})", w, smt_or([ap, bp]), smt_or([au, bu]))
+        return
+
+    # Common integer intrinsics InstCombine produces/folds. Each SMT model is lli-validated
+    # (intrinsics_ir_fixture) -- the model is not trusted on its own. Value semantics; operand poison
+    # propagates, and `abs`'s int-min poison flag is modeled.
+    im2 = re.fullmatch(r"call\s+i(\d+)\s+@llvm\.([a-z]+(?:\.sat)?)\.i\d+\((.*)\)", rhs)
+    if im2 and im2.group(2) in _INTRINSICS:
+        w = int(im2.group(1))
+        ops = _intr_args(im2.group(3), w, env)
+        env[dst] = _INTRINSICS[im2.group(2)](ops, w)
         return
 
     cm = re.fullmatch(r"(zext|sext|trunc)\s+i(\d+)\s+(\S+)\s+to\s+i(\d+)", rhs)
