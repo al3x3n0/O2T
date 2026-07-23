@@ -75,6 +75,26 @@ families appear over shared variables; a single family stays sound.
   model to prove more; each was closed by making the unsound case an explicit `unsupported`/`refuted`
   with a regression test that bites.
 
+## Structural hardening (follow-up)
+
+The review also exposed two *systemic* weak spots beyond the individual bugs, now addressed:
+
+- **Track B had no independent cross-check.** Track A has concrete `reconcile` (bv8 enumeration, not
+  sharing the SMT encoding); Track B's whole-function TV rested on one hand-written encoding checked by
+  one z3 call, and the second solver reuses the same SMT — so an encoding bug was invisible (how
+  `udiv exact` survived). **Fix:** `o2t/validate/concrete_tv.py` runs both sides with `lli` (real
+  semantics) and cross-checks values; `cross_checked_tv` downgrades a z3 `proved` to
+  `refuted-by-execution` when lli disagrees. It is a *value* oracle (poison stays z3's). Gated by
+  `concrete_tv_fixture`, which catches an injected value-encoding false proof.
+- **Flag coverage was not exhaustive.** Both false proofs came from a fixture claiming coverage it
+  never exercised. **Fix:** `flag_matrix_fixture` enumerates every `(op, flag)` in `VALID_FLAGS`,
+  asserts introduce-refutes / remove-proves, and asserts the exercised set *equals* `VALID_FLAGS` — so
+  no flag can be a silent no-op again.
+
+Still open (named, not yet built): a differential against reference **Alive2** (the only oracle that
+independently covers *poison* refinement, closing `concrete_tv`'s blind spot), and a richer UB/`undef`
+model.
+
 ## Regression teeth
 
 | finding | test |
