@@ -14,11 +14,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from o2t.frontend import robustness as fr  # noqa: E402
+from o2t import toolchain  # noqa: E402
+from o2t.frontend import robustness as fr  # noqa: F401,E402
 
 
 def main() -> int:
-    opt = shutil.which("opt") or (str(fr._HOMEBREW_OPT) if fr._HOMEBREW_OPT.exists() else None)
+    opt = toolchain.resolve_opt("opt")   # env -> PATH(versioned) -> homebrew (o2t/toolchain.py)
     if opt is None:
         print("frontend_robustness_fixture: opt(18) not found, skipped")
         return 0
