@@ -12,7 +12,8 @@ initial memories and arguments. The array theory models ALIASING PRECISELY -- no
     REFUTED (unsound when p != q), while a same-pointer store/load PROVES. The theory of arrays gets
     may-alias exactly right.
 Scope: single-BB, i32 word store/load to opaque pointer arguments; pointer validity / null-deref UB is
-not modeled (sound for store removal/reordering, which add no new dereferences). Needs z3 + opt 18.
+not modeled, but ENFORCED via a new-dereference guard -- a transform whose target dereferences an
+address the source does not is DECLINED, never proved. Needs z3 + opt 18.
 """
 
 from __future__ import annotations
@@ -63,11 +64,27 @@ def main() -> int:
     same_ok = ("define i32 @g(ptr %p, ptr %q, i32 %x) {\n  store i32 %x, ptr %p\n  ret i32 %x\n}\n")
     assert mem_state_tv(z3, same_ptr, same_ok, "g")["status"] == "proved", "same-pointer load == x"
 
+    # 5. NEW-DEREFERENCE guard: this model does not track pointer validity, so a transform whose TARGET
+    #    dereferences an address the SOURCE does not (a load/store that could fault where the source is
+    #    defined) is DECLINED, never proved -- the null-deref gap is enforced, not merely documented.
+    no_deref = "define i32 @h(ptr %p, i32 %x) {\n  ret i32 %x\n}\n"
+    new_load = "define i32 @h(ptr %p, i32 %x) {\n  %v = load i32, ptr %p\n  ret i32 %x\n}\n"
+    r = mem_state_tv(z3, no_deref, new_load, "h")
+    assert r["status"] == "unsupported" and "dereference" in r.get("reason", ""), \
+        ("an introduced load through an untracked pointer must DECLINE, not prove", r)
+    #    ...while a transform that only READS pointers the source already read still proves (guard is not
+    #    over-eager): loading %p that the source also loads is fine.
+    reads_p = "define i32 @h(ptr %p, i32 %x) {\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n"
+    reads_ok = "define i32 @h(ptr %p, i32 %x) {\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n"
+    assert mem_state_tv(z3, reads_p, reads_ok, "h")["status"] == "proved", \
+        "a source-dereferenced pointer is fine to re-read (guard must not over-decline)"
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "
-          "load of %q returns %x is refuted when p,q may alias, while a same-pointer load proves. The "
-          "pointer-side-effect memory gap, closed for store removal/reordering")
+          "load of %q returns %x is refuted when p,q may alias, while a same-pointer load proves; and an "
+          "INTRODUCED dereference (a load through an untracked pointer the source never touches) is "
+          "DECLINED, not proved -- the null-deref gap is enforced. Closed for store removal/reordering")
     return 0
 
 

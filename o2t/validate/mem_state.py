@@ -19,9 +19,11 @@ callees, and ARGUMENT PROMOTION (a `ptr` parameter a callee only loads, turned i
 parameter with the load hoisted to callers; see o2t/validate/argprom_tv.py).
 
 Scope: single-BB per function, byte-addressable load/store and getelementptr over opaque pointer
-ARGUMENTS, direct defined-callee inlining (bounded recursion); pointer validity / null-deref UB is not
-modeled (a documented gap -- sound for store removal/reordering and load-hoisting where the load already
-occurred, which introduce no new observable dereference).
+ARGUMENTS, direct defined-callee inlining (bounded recursion). Pointer validity / null-deref UB is not
+modeled, but the gap is ENFORCED rather than assumed: a NEW-DEREFERENCE guard declines any transform
+whose TARGET dereferences an address the SOURCE does not (a load/store the source lacks could fault
+where the source is defined). So store removal/reordering and load-hoisting-where-the-load-already-
+occurred (argument promotion) prove, while an introduced dereference declines -- never a false proof.
 """
 
 from __future__ import annotations
@@ -157,6 +159,7 @@ def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
         addr = {n: n for w, n in sig if w == "ptr"}     # pointer arg -> its (opaque i64) address term
         mem = "mem0"
     ret_term, ret_width = None, None
+    derefs = []                                          # address terms this function DEREFERENCES
     for raw in body.splitlines():
         line = raw.strip()
         if not line or line.startswith(";"):
@@ -175,6 +178,7 @@ def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
             if w % 8 or sm.group(3) not in addr:
                 raise si.Unsupported("store width/target out of scope")
             vt, _, _, _ = si._operand(sm.group(2), w, env)
+            derefs.append(addr[sm.group(3)])
             mem = _store_bytes(mem, addr[sm.group(3)], vt, w)
             continue
         lm = re.fullmatch(r"(%[\w.]+)\s*=\s*load\s+i(\d+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
@@ -182,6 +186,7 @@ def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
             w = int(lm.group(2))
             if w % 8 or lm.group(3) not in addr:
                 raise si.Unsupported("load width/target out of scope")
+            derefs.append(addr[lm.group(3)])
             env[lm.group(1)] = (_load_bytes(mem, addr[lm.group(3)], w), w, "false", "false")
             continue
         gm = _gep(line, addr, env)                       # getelementptr on an i32 pointer -> a new address
@@ -208,14 +213,15 @@ def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
                     caddr[pname] = addr[am.group(1)]
                 else:
                     cenv[pname] = si._operand(am.group(1), kind, env)
-            cret, cw, mem = _mem_translate(module, callee, module, (cenv, caddr, mem), depth + 1)
+            cret, cw, mem, cderefs = _mem_translate(module, callee, module, (cenv, caddr, mem), depth + 1)
+            derefs.extend(cderefs)                       # the callee's dereferences thread up to the caller
             if dst is not None:                          # a value-returning call
                 if cret is None:
                     raise si.Unsupported("value use of a void call")
                 env[dst] = (cret, cw, "false", "false")
             continue
         si._instruction(line, env, None, None)          # scalar op (alloca/other-gep decline here)
-    return ret_term, ret_width, mem
+    return ret_term, ret_width, mem, derefs
 
 
 def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
@@ -224,8 +230,8 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     if _signature(before_ll, func) != _signature(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
     try:
-        rb, wb, mb = _mem_translate(before_ll, func)
-        ra, wa, ma = _mem_translate(after_ll, func)
+        rb, wb, mb, db = _mem_translate(before_ll, func)
+        ra, wa, ma, da = _mem_translate(after_ll, func)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if wb != wa or (rb is None) != (ra is None):
@@ -234,6 +240,26 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     decls = ["(declare-const mem0 (Array (_ BitVec 64) (_ BitVec 8)))"]
     for w, n in sig:
         decls.append(f"(declare-const {n} (_ BitVec {64 if w == 'ptr' else w}))")
+
+    # NEW-DEREFERENCE guard: this model does not track pointer validity, so it is only sound when the
+    # TARGET dereferences no address the SOURCE does not (store removal / reordering / load-hoisting
+    # where the load already occurred). If some target address can differ from EVERY source address,
+    # the target may fault where the source is defined -- an unmodeled null-deref UB -- so DECLINE
+    # rather than mis-prove. (`(and)` over an empty source deref-set is true, so any target deref with
+    # an empty source set is flagged; a target deref matching a source deref on all inputs is unsat.)
+    if da:
+        new_deref = si.smt_or([si.smt_and([f"(not (= {a} {b}))" for b in db]) for a in da])
+        probe = "\n".join(["(set-logic QF_ABV)", *decls,
+                           f"(assert {new_deref})", "(check-sat)", ""])
+        try:
+            pout = subprocess.run([z3_bin, "-in"], input=probe, capture_output=True, text=True,
+                                  timeout=timeout).stdout
+        except subprocess.TimeoutExpired:
+            return {"status": "timeout", "function": func}
+        if (pout.strip().splitlines() or ["error"])[0].strip() != "unsat":
+            return {"status": "unsupported", "function": func,
+                    "reason": "target introduces a dereference the source lacks (null-deref UB not modeled)"}
+
     diffs = ([f"(not (= {rb} {ra}))"] if rb is not None else []) + [f"(not (= {mb} {ma}))"]
     smt = "\n".join(["(set-logic QF_ABV)", *decls,
                      f"(assert {si.smt_or(diffs)})", "(check-sat)", "(get-model)", ""])
