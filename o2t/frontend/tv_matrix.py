@@ -38,7 +38,9 @@ NEGATIVE = "output-not-preserved"        # cv-translation-validate's refuted tok
 
 
 def _resolve_opt(opt_bin: str) -> str | None:
-    return shutil.which(opt_bin) or (str(_HOMEBREW_OPT) if _HOMEBREW_OPT.exists() else None)
+    # env ($O2T_OPT) -> PATH (opt_bin, then opt-18/opt) -> homebrew llvm@18; see o2t/toolchain.py.
+    from o2t import toolchain
+    return toolchain.resolve_opt(opt_bin)
 
 
 def _run_cell(passes: str, source: Path, opt: str, z3: str, mutate: bool = False) -> list[dict]:

@@ -22,35 +22,22 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from o2t import toolchain
+from o2t.toolchain import resolve as _resolve       # env -> PATH (versioned) -> homebrew llvm@18
+
 _PKG = Path(__file__).resolve().parent          # <repo>/o2t
 _REPO = _PKG.parent                             # <repo>
-_HOMEBREW = Path("/opt/homebrew/opt/llvm@18/bin")
+_HOMEBREW = toolchain.HOMEBREW_LLVM18
 
 
 def _tools_dir() -> Path:
     """Where the cv-* shims live. Honors $O2T_HOME; defaults to the repo containing this package
     (works for a clone and for `pip install -e .`)."""
     return Path(os.environ.get("O2T_HOME", _REPO)) / "tools"
-
-
-def _resolve(env_names: list[str], candidates: list[str], homebrew: str | None) -> str | None:
-    """env override -> PATH -> macOS homebrew llvm@18 fallback. Returns an absolute path or None."""
-    for e in env_names:
-        v = os.environ.get(e)
-        if v and (Path(v).exists() or shutil.which(v)):
-            return str(Path(v)) if Path(v).exists() else shutil.which(v)
-    for c in candidates:
-        p = shutil.which(c)
-        if p:
-            return p
-    if homebrew and (_HOMEBREW / homebrew).exists():
-        return str(_HOMEBREW / homebrew)
-    return None
 
 
 def _version(path: str) -> str:

@@ -38,7 +38,9 @@ IV_NAMES = {"IV", "Iv", "IndVar", "AR", "AddRec"}
 
 
 def find_clang(clang_bin="clang"):
-    return shutil.which(clang_bin) or (_FALLBACK_CLANG if Path(_FALLBACK_CLANG).exists() else None)
+    # env ($O2T_CLANG) -> PATH (clang_bin, then clang-18/clang) -> homebrew llvm@18; o2t/toolchain.py.
+    from o2t import toolchain
+    return toolchain.resolve_clang(clang_bin)
 
 
 def dump_ast(cpp_path, stub, clang_bin="clang"):

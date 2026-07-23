@@ -649,6 +649,12 @@ if(O2T_BUILD_TESTS)
         NAME cli_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cli_fixture.py
     )
+    # External-tool discovery (env -> PATH(versioned) -> homebrew) -- hermetic, the layer that lets
+    # O2T run off macOS.
+    add_test(
+        NAME toolchain_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/toolchain_fixture.py
+    )
     add_test(
         NAME frontend_robustness_fixture
         COMMAND

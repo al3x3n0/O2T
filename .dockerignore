@@ -1,0 +1,9 @@
+.git
+build
+build-*
+dist
+*.egg-info
+**/__pycache__
+*.whl
+.DS_Store
+.claude

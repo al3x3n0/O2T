@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback: the CLI + tool-discovery layer must work with NO external tools installed.
+  hermetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Package builds and installs
+        run: |
+          python -m pip install --upgrade pip build
+          pip install -e .
+      - name: Toolchain-free fixtures
+        run: |
+          python tests/fixtures/toolchain_fixture.py
+          python tests/fixtures/cli_fixture.py
+      - name: doctor reports NOT READY without z3 (exit 1)
+        run: |
+          if o2t doctor; then echo "expected doctor to fail without z3"; exit 1; fi
+          echo "doctor correctly signalled a missing required tool"
+
+  # The real gate: Z3 + LLVM 18 on clean Ubuntu, then the fixture suite via ctest.
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (z3 + LLVM 18)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip cmake g++ make \
+            z3 llvm-18 llvm-18-tools llvm-18-dev clang-18 libclang-18-dev
+          # Expose LLVM 18 under plain names for the Python resolver AND the CMake `command -v` guards.
+          for t in opt lli clang clang++ llvm-as llc; do \
+            sudo ln -sf /usr/lib/llvm-18/bin/$t /usr/local/bin/$t; done
+      - name: Install o2t
+        run: pip3 install --break-system-packages -e .
+      - name: Toolchain check
+        run: o2t doctor          # exits non-zero only if the required solver is missing
+        env:
+          O2T_CLANG: /usr/lib/llvm-18/bin/clang
+      - name: Smoke — verify a pass end to end
+        run: o2t verify --selftest
+      - name: Configure + build
+        run: |
+          cmake -S . -B build
+          cmake --build build -j"$(nproc)"
+      - name: Run the gate
+        # Exclude the two known-pathological long runners (documented in the project state); everything
+        # else runs. Per-test cap keeps a hang from burning the job. Raise/remove for a nightly full run.
+        run: |
+          ctest --test-dir build --output-on-failure --timeout 1200 \
+                -E 'campaign|globalopt_strict'
+        env:
+          O2T_CLANG: /usr/lib/llvm-18/bin/clang
+
+  # Validate the reproducible-environment Dockerfile builds (does not run the full gate inside).
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image and smoke-test it
+        run: |
+          docker build -t o2t .
+          docker run --rm o2t o2t doctor
+          docker run --rm o2t o2t verify --selftest
