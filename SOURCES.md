@@ -117,6 +117,10 @@ Closed-loop **translation validation** and family contracts (run real `opt`, pro
 literal output equals input, with two-sided teeth). These are the oracle/reference
 tier for LLVM's *built-in* passes.
 - Peephole/scalar: `scalar_ir.py`, `translation.py`, `differential.py`, `witness.py`.
+- Independent cross-check: `concrete_tv.py` — the Track-B analogue of Track A's `reconcile`. Runs
+  before/after with `lli` (real semantics, not O2T's SMT encoding) and cross-checks the values, so a
+  value-encoding false proof z3's single encoding would share is caught (`refuted-by-execution`).
+  Gated by `concrete_tv_fixture` (catches an injected encoding bug).
 - Memory: `dse_ir.py`, `memory_model.py`, `mem2reg_ir.py`.
 - Vectorize: `slp_ir.py`, `slp_model.py`.
 - CFG: `cfg_shape.py` (diamond→select if-conversion), `globalopt_model.py`, `dce_model.py`.
