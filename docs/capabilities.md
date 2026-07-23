@@ -52,6 +52,10 @@ non-answer), **never** a false `proved`.
 - If it leans on `KnownBits`/`APInt` range facts, floating point, or exotic control flow, expect honest
   declines on those folds — not wrong answers.
 - A `refuted` verdict comes with a concrete counterexample you can replay against real `opt`.
+- You can **independently cross-check** every `proved` whole-function transform against oracles that do
+  not share O2T's SMT encoding — `o2t run tv-corpus <your.ll> --cross-check` runs `lli` (real execution)
+  and reference Alive2 (`alive-tv`, poison/UB) over the proved set and flags any disagreement (a
+  possible false proof), so you needn't take O2T's encoder on trust.
 - Coverage is a moving frontier; the self-enrichment loop (`o2t agent`) can grow the modeled vocabulary
   behind an execution oracle, so a decline today can become a proof tomorrow — but only once an oracle
   the proposer didn't author has ratified the new semantics.
