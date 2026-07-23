@@ -21,12 +21,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-_FALLBACK_CLANG = "/opt/homebrew/opt/llvm@18/bin/clang"
 DEFAULT_VALUES = (0, 1, 2, 3, 4, 5, 8)
 
 
 def find_clang(clang_bin="clang"):
-    return shutil.which(clang_bin) or (_FALLBACK_CLANG if Path(_FALLBACK_CLANG).exists() else None)
+    from o2t import toolchain          # env -> PATH(versioned) -> homebrew; see o2t/toolchain.py
+    return toolchain.resolve_clang(clang_bin)
 
 
 def defined_names(ll_text):

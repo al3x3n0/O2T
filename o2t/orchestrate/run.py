@@ -34,10 +34,11 @@ def resolve_context(z3_bin="z3", opt_bin="opt", clang_bin="clang",
                     force_pass_runner=False) -> dict:
     """Resolve the binaries the strategies need into a run context (absent -> None)."""
     miner = Path(ast_miner) if ast_miner else DEFAULT_AST_MINER
+    from o2t import toolchain          # env -> PATH(versioned) -> homebrew; see o2t/toolchain.py
     return {
-        "z3": shutil.which(z3_bin),
-        "opt": shutil.which(opt_bin) or _fallback("opt"),
-        "clang": shutil.which(clang_bin) or _fallback("clang"),
+        "z3": toolchain.resolve_z3(z3_bin),
+        "opt": toolchain.resolve_opt(opt_bin),
+        "clang": toolchain.resolve_clang(clang_bin),
         "ast-miner": str(miner) if miner.exists() else None,
         "klee": _klee_available(),
         "model-checker": _model_checker_available(model_checker_bin),
@@ -54,14 +55,6 @@ def _model_checker_available(model_checker_bin: str | None = None):
     if model_checker_bin:
         return shutil.which(model_checker_bin)
     return shutil.which("cbmc") or shutil.which("esbmc")
-
-
-_HOMEBREW_LLVM = Path("/opt/homebrew/opt/llvm@18/bin")
-
-
-def _fallback(tool: str) -> str | None:
-    cand = _HOMEBREW_LLVM / tool
-    return str(cand) if cand.exists() else None
 
 
 def _run_json(argv: list[str]) -> dict:

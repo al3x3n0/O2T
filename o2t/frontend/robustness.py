@@ -27,7 +27,6 @@ ROOT = Path(__file__).resolve().parents[2]
 FIX = ROOT / "tests" / "fixtures"
 ROTATED = FIX / "scev_rotated_loops.ll"       # rotated + multi-block + LCSSA (clang -O1 shape)
 SIMPLE = FIX / "llvm_loops.ll"                 # single-block textbook loops (the control)
-_HOMEBREW_OPT = Path("/opt/homebrew/opt/llvm@18/bin/opt")
 
 
 def _regex_recovers(body: str) -> bool:
@@ -89,7 +88,8 @@ def main(argv=None) -> int:
     ap.add_argument("--opt-bin", default="opt")
     ap.add_argument("--report", type=Path)
     args = ap.parse_args(argv)
-    opt = shutil.which(args.opt_bin) or (str(_HOMEBREW_OPT) if _HOMEBREW_OPT.exists() else None)
+    from o2t import toolchain          # env -> PATH(versioned) -> homebrew; see o2t/toolchain.py
+    opt = toolchain.resolve_opt(args.opt_bin)
     if opt is None:
         print("cv-frontend-robustness: opt (18) required", file=sys.stderr)
         return 2

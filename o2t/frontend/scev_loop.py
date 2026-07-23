@@ -25,11 +25,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-_FALLBACK_OPT = "/opt/homebrew/opt/llvm@18/bin/opt"
 
 
 def find_opt(opt_bin="opt"):
-    return shutil.which(opt_bin) or (_FALLBACK_OPT if Path(_FALLBACK_OPT).exists() else None)
+    from o2t import toolchain          # env -> PATH(versioned) -> homebrew; see o2t/toolchain.py
+    return toolchain.resolve_opt(opt_bin)
 
 
 def run_scev(ll_text, opt_bin="opt"):

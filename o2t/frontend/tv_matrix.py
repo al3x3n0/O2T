@@ -29,7 +29,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools"
 BENCH = ROOT / "tests" / "fixtures" / "translation_validation.ll"
-_HOMEBREW_OPT = Path("/opt/homebrew/opt/llvm@18/bin/opt")
 
 # Sound loop passes whose output this prover covers (loop->loop) or reports (loop->closed-form).
 DEFAULT_PASSES = ("licm", "loop-rotate", "simple-loop-unswitch", "loop-instsimplify", "indvars")
