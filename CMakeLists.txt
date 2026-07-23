@@ -512,6 +512,13 @@ if(O2T_BUILD_TESTS)
         NAME closed_form_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/closed_form_fixture.py
     )
+    # Exhaustive poison-flag coverage: every (op, flag) in VALID_FLAGS must REFUTE on introduction and
+    # PROVE on removal, and the set exercised must EQUAL VALID_FLAGS -- a flag silently modeled as a
+    # no-op (as `udiv exact` once was) can no longer slip through. Self-skips without z3.
+    add_test(
+        NAME flag_matrix_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/flag_matrix_fixture.py
+    )
     add_test(
         NAME orchestrate_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/orchestrate_fixture.py
