@@ -181,8 +181,22 @@ exit:
     # 9) a non-canonical loop (no acc phi returned) declines, not crashes.
     assert cf.recognize_source_loop("define i32 @g() {\nentry:\n  ret i32 0\n}", "g") is None
 
+    # 10) SIGNEDNESS carry (soundness): smax/smin and umax/umin both lower to `ite(>=)`/`ite(<=)` over
+    #     Int, so the ring-homomorphism carry to bv is sound only under ONE representative choice.
+    #     A single family proves; MIXING signed and unsigned min/max must DECLINE, never mis-prove --
+    #     `smax(a,b) == umax(a,b)` is a true Int identity here yet FALSE at every width (a=0xFFFFFFFF:
+    #     smax=0, umax=0xFFFFFFFF), so proving it would be a false proof.
+    a, b = cf._var("a"), cf._var("b")
+    mixed = cf.prove_equal(z3, cf._op("smax", a, b), cf._op("umax", a, b))
+    assert mixed[0] == "unsupported" and "min-max" in mixed[1].get("reason", ""), \
+        ("mixed signed/unsigned min-max must DECLINE, not prove", mixed)
+    # single-family stays sound: a signed identity proves, an unsigned identity proves.
+    assert cf.prove_equal(z3, cf._op("smax", a, b), cf._op("smax", b, a))[0] == "proved", "smax commut"
+    assert cf.prove_equal(z3, cf._op("umin", a, b), cf._op("umin", b, a))[0] == "proved", "umin commut"
+
     print("closed_form_fixture OK: affine..cubic closed forms (N-ary zext/trunc/udiv widening) proved "
-          "over all n; widening lemmas hold; source- AND optimizer-side corruptions refuted")
+          "over all n; widening lemmas hold; source- AND optimizer-side corruptions refuted; and MIXED "
+          "signed/unsigned min-max DECLINES (the Int ite aliasing does not carry to bv), single family proves")
     return 0
 
 

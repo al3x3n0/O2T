@@ -474,6 +474,22 @@ def abstract_widenings(z3_bin, expr):
 
 
 # --- discharge --------------------------------------------------------------------------
+def _minmax_families(node, out):
+    """Collect the min/max SIGNEDNESS families present: 'signed' for smax/smin, 'unsigned' for
+    umax/umin. Both lower to the same Int `ite`, so a mix of the two cannot carry to bv soundly."""
+    o = node.get("op")
+    if o in ("smax", "smin"):
+        out.add("signed")
+    elif o in ("umax", "umin"):
+        out.add("unsigned")
+    for a in node.get("args", []):
+        _minmax_families(a, out)
+    for a in node.get("factors", []):
+        _minmax_families(a, out)
+    if "num" in node:
+        _minmax_families(node["num"], out)
+
+
 def _free_vars(node, out):
     if node["op"] == "divprod":
         out.add(node.get("_hname") or _divprod_name(node))   # the quotient's own symbol...
@@ -519,6 +535,17 @@ def prove_equal(z3_bin, source_expr, opt_expr, extra_constraints=()):
     """`source_expr == opt_expr` for ALL integer values of the free variables (Z3 unsat of
     the negation). Returns (status, model) with status in {proved, refuted, unsupported}.
     `extra_constraints` are additional SMT assertion bodies (e.g. exact-divisibility facts)."""
+    # SIGNEDNESS guard: smax/smin and umax/umin both lower to `ite(>=)`/`ite(<=)` over Int (they alias
+    # there), and the mod-2^32 carry is sound only under ONE representative choice -- signed reps
+    # [-2^31,2^31) make bv-smax == Z-max, unsigned reps [0,2^32) make bv-umax == Z-max. A single
+    # signedness family is fine, but MIXING them over the shared variables has no consistent
+    # representative, so the Int identity would NOT carry to bv (e.g. `smax(a,b) == umax(a,b)` is a
+    # true Int identity here yet false at every width). Decline the mixed case rather than mis-prove.
+    signs = set()
+    _minmax_families(source_expr, signs)
+    _minmax_families(opt_expr, signs)
+    if len(signs) > 1:
+        return "unsupported", {"reason": "mixed signed/unsigned min-max (Int ite aliasing does not carry to bv)"}
     dps = []
     _assign_divprods(source_expr, dps)
     _assign_divprods(opt_expr, dps)
