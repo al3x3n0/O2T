@@ -91,9 +91,15 @@ The review also exposed two *systemic* weak spots beyond the individual bugs, no
   asserts introduce-refutes / remove-proves, and asserts the exercised set *equals* `VALID_FLAGS` — so
   no flag can be a silent no-op again.
 
-Still open (named, not yet built): a differential against reference **Alive2** (the only oracle that
-independently covers *poison* refinement, closing `concrete_tv`'s blind spot), and a richer UB/`undef`
-model.
+- **No ground-truth oracle for *poison* refinement.** `concrete_tv` is value-only; z3's internal
+  checks share its encoding. **Fix:** `o2t/validate/alive_diff.py` — a differential against reference
+  **Alive2** (`alive-tv`), which independently models poison/undef/UB. `differential` flags an O2T
+  `proved` that Alive2 calls incorrect as `o2t-false-proof`. Gated by `alive_diff_fixture`, whose
+  headline injects a poison-encoding bug (drops `nsw` from the model) that z3 and lli both miss and
+  Alive2 catches — and shows lli *agreeing* on the same `add → add nsw` (its blind spot).
+
+Still open: a richer UB/`undef` model (single poison bit today), and the inherent low reach
+(decline-by-default means ~half of a real pass declines).
 
 ## Regression teeth
 
