@@ -80,6 +80,15 @@ def main() -> int:
           "  %e = extractelement <vscale x 4 x i32> %x, i32 0\n  ret i32 %e\n}\n")
     assert svec_tv(z3, xl, xl, "h")["status"] == "unsupported", "a cross-lane op must decline"
 
+    # POISON-REFINEMENT gate (the same class the differential fuzzer found in the memory model): the
+    # lane model compares VALUES, so a sound poison-exploiting vector fold -- `ashr x,x` (poison for
+    # shift >= width) folded to 0 -- must DECLINE, not falsely REFUTE. A poison-free wrong lane (above)
+    # still refutes.
+    pv = ("define <2 x i32> @p(<2 x i32> %x) {\n  %r = ashr <2 x i32> %x, %x\n  ret <2 x i32> %r\n}\n")
+    pz = ("define <2 x i32> @p(<2 x i32> %x) {\n  ret <2 x i32> zeroinitializer\n}\n")
+    assert vec_tv(z3, pv, pz, "p")["status"] == "unsupported", \
+        "a sound poison-exploiting vector fold must DECLINE (lane model lacks poison refinement), not refute"
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "

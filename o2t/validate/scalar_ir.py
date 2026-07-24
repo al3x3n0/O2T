@@ -270,6 +270,24 @@ def _own_poison(name, op, flags, a, b, w):
     return smt_or(conds)
 
 
+def poison_risk(ll_text, func):
+    """Does `func`'s body contain a poison-generating op that a VALUE-equality validator does not
+    refine? A flagged binop (nsw/nuw/exact/disjoint) or a shift whose amount is not a scalar in-range
+    constant (a variable, an oversize constant, or any vector shift). Such a validator may PROVE
+    soundly (value-equal => refinement) but must NOT REFUTE here -- a value mismatch could be a sound
+    poison exploitation (opt folding a poison `ashr x,x` to 0), so callers decline instead."""
+    body = _function_body(ll_text, func) or ""
+    if re.search(r"\b(nsw|nuw|exact|disjoint)\b", body):
+        return True
+    for m in re.finditer(r"\b(?:shl|lshr|ashr)\s+(i(\d+)|<[^>]+>)\s+[^,]+,\s*(\S+)", body):
+        width, amt = m.group(2), m.group(3).rstrip(",")
+        if width is None:                              # a vector shift -> conservatively poison risk
+            return True
+        if not re.fullmatch(r"-?\d+", amt) or not (0 <= int(amt) < int(width)):
+            return True                                # variable or out-of-range scalar shift
+    return False
+
+
 def _own_ub(name, a, b, w):
     """Undefined behaviour introduced by the op itself (div/rem by zero; signed INT_MIN/-1)."""
     conds = []

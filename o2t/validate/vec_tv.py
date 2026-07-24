@@ -269,6 +269,12 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
     if head == "unsat":
         return {"status": "proved", "function": func}
     if head == "sat":
+        # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
+        # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
+        # `ashr x,x` to 0), so decline rather than false-refute.
+        if si.poison_risk(before_ll, func):
+            return {"status": "unsupported", "function": func,
+                    "reason": "value mismatch under possible poison (lane model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out}
     return {"status": "error", "function": func, "reason": head}
 
@@ -296,5 +302,11 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     if head == "unsat":
         return {"status": "proved", "function": func}
     if head == "sat":
+        # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
+        # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
+        # `ashr x,x` to 0), so decline rather than false-refute.
+        if si.poison_risk(before_ll, func):
+            return {"status": "unsupported", "function": func,
+                    "reason": "value mismatch under possible poison (lane model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out}
     return {"status": "error", "function": func, "reason": head}

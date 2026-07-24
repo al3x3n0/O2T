@@ -224,20 +224,6 @@ def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
     return ret_term, ret_width, mem, derefs
 
 
-def _poison_risk(ll_text: str, func: str) -> bool:
-    """Does `func`'s body contain a poison-generating op the value-only memory model does not refine?
-    A flagged binop (nsw/nuw/exact/disjoint) or a shift whose amount is variable or out of range can be
-    poison, so a value mismatch there might be a sound poison exploitation rather than a miscompile."""
-    body = si._function_body(ll_text, func) or ""
-    if re.search(r"\b(nsw|nuw|exact|disjoint)\b", body):
-        return True
-    for m in re.finditer(r"\b(?:shl|lshr|ashr)\s+i(\d+)\s+\S+,\s+(\S+)", body):
-        amt = m.group(2)
-        if not re.fullmatch(r"-?\d+", amt) or not (0 <= int(amt) < int(m.group(1))):
-            return True
-    return False
-
-
 def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
     """TV a pointer-side-effect function over its memory state. Proved iff the return value AND the
     final memory state agree for all initial memories and arguments; refuted on a witness."""
@@ -290,7 +276,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         # ONLY when the source is poison-free; otherwise the mismatch may be a SOUND poison exploitation
         # (opt folding a poison `ashr x,x` to 0), and refuting it would be a false refutation. Decline
         # rather than refute when the source carries poison risk.
-        if _poison_risk(before_ll, func):
+        if si.poison_risk(before_ll, func):
             return {"status": "unsupported", "function": func,
                     "reason": "value mismatch under possible poison (memory model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out}
