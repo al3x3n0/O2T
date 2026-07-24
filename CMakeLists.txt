@@ -821,6 +821,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/alive_diff_fixture.py; else echo 'alive_diff_fixture: z3 or alive-tv not found, skipped'; fi"
     )
+    # Standing differential-fuzz: random IR -> real opt -> O2T Track B vs reference Alive2, hunting for
+    # a false proof (zero disagreements is the invariant). Small batch here; full campaign is manual.
+    add_test(
+        NAME fuzz_differential_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fuzz_differential_fixture.py; else echo 'fuzz_differential_fixture: z3/opt/alive-tv not found, skipped'; fi"
+    )
     # OPERATIONALIZED: run both independent oracles (lli + Alive2) over O2T's REAL corpus verdicts --
     # every function O2T proves must be confirmed. Zero disagreements = proved-set verified on real code.
     add_test(
