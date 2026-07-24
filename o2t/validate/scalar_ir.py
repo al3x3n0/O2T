@@ -313,6 +313,21 @@ def _intr_abs(ops, w):
     return val, w, pois, u
 
 
+def _ctz(ops, w, leading):
+    """ctlz/cttz as a bounded nested-ite over the bits: the position of the highest (ctlz) or lowest
+    (cttz) set bit; W if the input is zero. Poison when the is_zero_poison flag is set and x == 0."""
+    if len(ops) != 2:
+        raise Unsupported("ct{l,t}z arity")
+    a, izp = ops[0][0], ops[1][0]
+    expr = _const(w, w)                                # x == 0 -> W
+    order = range(w) if leading else range(w - 1, -1, -1)   # leading: MSB ends outermost
+    for i in order:
+        val = (w - 1 - i) if leading else i            # count of leading/trailing zeros if bit i is it
+        expr = f"(ite (= ((_ extract {i} {i}) {a}) #b1) {_const(val, w)} {expr})"
+    pois = smt_or([ops[0][2], f"(and (= {izp} (_ bv1 1)) (= {a} (_ bv0 {w})))"])
+    return expr, w, pois, ops[0][3]
+
+
 def _funnel(ops, w, right):
     if len(ops) != 3:
         raise Unsupported("funnel-shift arity")
@@ -342,6 +357,8 @@ def _intr_usub_sat(ops, w):
 # self-enrichment path (enrich_fixture), which demonstrates growing the vocabulary from outside.
 _INTRINSICS = {
     "ctpop": _intr_ctpop, "abs": _intr_abs,
+    "ctlz": lambda ops, w: _ctz(ops, w, leading=True),
+    "cttz": lambda ops, w: _ctz(ops, w, leading=False),
     "fshl": lambda ops, w: _funnel(ops, w, right=False),
     "fshr": lambda ops, w: _funnel(ops, w, right=True),
     "uadd.sat": _intr_uadd_sat, "usub.sat": _intr_usub_sat,

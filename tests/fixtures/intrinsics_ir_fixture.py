@@ -83,10 +83,26 @@ def main() -> int:
     ctpop = _fn("  %r = call i32 @llvm.ctpop.i32(i32 %x)\n  ret i32 %r", "i32 %x", "i32")
     assert vt(z3, ctpop, ctpop, "f")["status"] == "proved", "ctpop is now MODELED (was unsupported)"
 
-    print("intrinsics_ir_fixture OK: modeled ctpop/abs/fshl/fshr/uadd.sat/usub.sat -- each pinned on "
-          "hand-computed ground truth AND validated against lli via hand-equivalents (model==hand by z3, "
-          "real==hand by lli => model==real). abs idempotence now proves; a wrong fold refutes. Track B "
-          "reach lifted: these intrinsics no longer decline (bswap stays the self-enrichment example)")
+    # 5. ctlz/cttz (bounded nested-ite over the bits). No clean scalar hand-form, so each ground-truth
+    #    point is confirmed by BOTH the SMT model (z3) AND real lli execution (concrete_tv).
+    for name, call, w, expected in [
+        ("ctlz(0x80)=0", "call i8 @llvm.ctlz.i8(i8 -128, i1 false)", 8, 0),
+        ("ctlz(1)=7", "call i8 @llvm.ctlz.i8(i8 1, i1 false)", 8, 7),
+        ("ctlz(0)=8", "call i8 @llvm.ctlz.i8(i8 0, i1 false)", 8, 8),
+        ("ctlz32(1)=31", "call i32 @llvm.ctlz.i32(i32 1, i1 false)", 32, 31),
+        ("cttz(0x80)=7", "call i8 @llvm.cttz.i8(i8 -128, i1 false)", 8, 7),
+        ("cttz(0x10)=4", "call i8 @llvm.cttz.i8(i8 16, i1 false)", 8, 4),
+        ("cttz(0)=8", "call i8 @llvm.cttz.i8(i8 0, i1 false)", 8, 8),
+    ]:
+        fn = f"define i{w} @f() {{\n  %r = {call}\n  ret i{w} %r\n}}\n"
+        want = f"define i{w} @f() {{\n  ret i{w} {expected}\n}}\n"
+        assert vt(z3, fn, want, "f")["status"] == "proved", (name, "SMT model")
+        assert concrete_tv(lli, fn, want, "f")["status"] == "agree", (name, "lli confirmation")
+
+    print("intrinsics_ir_fixture OK: modeled ctpop/abs/ctlz/cttz/fshl/fshr/uadd.sat/usub.sat -- each "
+          "validated against lli (model==hand by z3 and real==hand by lli via hand-equivalents; ctlz/cttz "
+          "confirmed by model AND lli on ground-truth points). abs idempotence proves; a wrong fold "
+          "refutes. Track B reach lifted -- these intrinsics no longer decline (bswap stays enrichment's)")
     return 0
 
 
