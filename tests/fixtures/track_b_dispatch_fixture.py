@@ -71,6 +71,16 @@ def main() -> int:
     vias = {f["function"]: f.get("via") for f in vf["functions"]}
     assert vias["mem"] == "mem_state" and vias["vec"] == "vec" and vias["svec"] == "svec", vias
 
+    # 7. SOUNDNESS of the reach lift: the memory/vector proofs are OUTSIDE concrete_tv's scalar scope,
+    #    but reference Alive2 handles memory and vectors -- independently confirm the new proofs against
+    #    the ground-truth oracle (and a memory miscompile refutes there too). Optional (needs alive-tv).
+    alive = shutil.which("alive-tv")
+    if alive:
+        from o2t.validate.alive_diff import alive_refines
+        assert alive_refines(mem_b, mem_a, alive)["status"] == "proved", "Alive2 must confirm the memory proof"
+        assert alive_refines(vec_b, vec_a, alive)["status"] == "proved", "Alive2 must confirm the vector proof"
+        assert alive_refines(mem_b, mem_bad, alive)["status"] == "refuted", "Alive2 must refute the memory miscompile"
+
     print("track_b_dispatch_fixture OK: whole-function TV now DISPATCHES -- scalar first, then the "
           "pointer-memory / fixed-vector / scalable-vector validators on decline. Memory + vector "
           "functions the scalar path called `unsupported` now PROVE (via mem_state/vec/svec); a memory "
