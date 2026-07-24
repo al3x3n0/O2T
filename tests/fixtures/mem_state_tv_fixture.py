@@ -79,6 +79,16 @@ def main() -> int:
     assert mem_state_tv(z3, reads_p, reads_ok, "h")["status"] == "proved", \
         "a source-dereferenced pointer is fine to re-read (guard must not over-decline)"
 
+    # 6. POISON-REFINEMENT gate (found by the differential fuzzer): this model compares VALUES, not
+    #    poison-refinement, so a value mismatch is a genuine miscompile ONLY when the source is
+    #    poison-free. A sound poison-exploiting fold -- opt folds `ashr x,x` (poison for shift >= width)
+    #    to 0 -- must DECLINE, not falsely REFUTE. (A poison-free mismatch, case 2 above, still refutes.)
+    pois_b = ("define i32 @k(ptr %q, i32 %x) {\n  %v = ashr i32 %x, %x\n  store i32 %v, ptr %q\n"
+              "  ret i32 %v\n}\n")
+    pois_a = ("define i32 @k(ptr %q, i32 %x) {\n  store i32 0, ptr %q\n  ret i32 0\n}\n")
+    assert mem_state_tv(z3, pois_b, pois_a, "k")["status"] == "unsupported", \
+        "a sound poison-exploiting fold must DECLINE (value model lacks poison refinement), not refute"
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "

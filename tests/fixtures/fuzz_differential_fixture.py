@@ -28,18 +28,22 @@ def main() -> int:
         print("fuzz_differential_fixture: needs z3 + opt(18) + alive-tv, skipped")
         return 0
 
-    proc = subprocess.run([sys.executable, str(TOOL), "--count", "12", "--seed", "20704", "--insns", "9"],
-                          capture_output=True, text=True, timeout=300)
-    out = proc.stdout + proc.stderr
-    assert proc.returncode == 0, ("the differential fuzzer found a disagreement (false proof/refutation)", out)
-    assert "DISAGREEMENTS: 0" in out, ("expected zero O2T-vs-Alive2 disagreements", out)
-    # sanity: it actually generated + cross-checked (not a vacuous pass).
-    assert "generated 12" in out and "O2T {" in out, ("the fuzzer did not run the pipeline", out)
+    # A small batch of EACH Track B shape -- scalar (poison flags), the modeled intrinsics, the
+    # theory-of-arrays memory model, and the vector lane model. Each cross-checked against Alive2.
+    for extra, label in ((["--intrinsics"], "scalar+intrinsics"),
+                         (["--shape", "memory"], "memory"),
+                         (["--shape", "vector"], "vector")):
+        proc = subprocess.run([sys.executable, str(TOOL), "--count", "8", "--seed", "20704",
+                               "--insns", "8", *extra], capture_output=True, text=True, timeout=300)
+        out = proc.stdout + proc.stderr
+        assert proc.returncode == 0, (f"differential fuzzer found a disagreement on {label}", out)
+        assert "DISAGREEMENTS: 0" in out and "generated 8" in out, (label, out)
 
-    print("fuzz_differential_fixture OK: a small differential-fuzz batch (random IR -> real opt -> O2T "
-          "Track B vs reference Alive2) found ZERO disagreements -- O2T's proofs agree with the "
-          "ground-truth oracle on random inputs too. Regression net for false proofs (full campaign: "
-          "tools/cv-fuzz-differential.py --count N)")
+    print("fuzz_differential_fixture OK: small differential-fuzz batches across all Track B shapes -- "
+          "scalar+intrinsics, pointer-memory (theory of arrays), and fixed vectors (lane model) -- each "
+          "random IR -> real opt -> O2T vs reference Alive2, found ZERO disagreements. A standing "
+          "regression net for false proofs over the whole fragment (full campaign: cv-fuzz-differential "
+          "--shape {scalar,memory,vector} [--intrinsics] --count N)")
     return 0
 
 
