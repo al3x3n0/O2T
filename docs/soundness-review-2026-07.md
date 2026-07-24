@@ -112,11 +112,16 @@ The three independent oracles now cover the axes: `reconcile` (Track A, concrete
 automates that hunt. It generates random scalar functions — *with random poison flags*
 (`nsw`/`nuw`/`exact`/`disjoint`), the surface where both false proofs lived — runs real
 `opt -passes=instcombine`, and cross-checks O2T's Track B TV against reference Alive2; an O2T `proved`
-that Alive2 calls incorrect is a false proof. Across **two seeds and 1,200 random functions, zero
-disagreements** — O2T proved 1,159, and Alive2 independently decided and agreed on all ~1,052
-non-trivial ones (the rest no-ops it skips). After the two encoding fixes, the fuzzer finds no more on
-the surface where both bugs lived — empirical evidence the encoding is sound there, not just on the
-curated corpus. `fuzz_differential_fixture` runs a small batch every gate as a standing regression net.
+that Alive2 calls incorrect is a false proof. Across **two seeds and 1,200 random scalar functions, zero disagreements** — O2T proved 1,159, and
+Alive2 independently decided and agreed on all ~1,052 non-trivial ones (the rest no-ops it skips). The
+fuzzer then broadened to the modeled intrinsics (400 functions, 0 disagreements — the 10 new encodings
+validated) and to the memory and vector shapes — **and there it caught a real bug**: a *false
+refutation* (the safe direction, not a false proof) where `opt` folds `ashr x,x → 0` soundly (for a
+shift ≥ width the source is poison, refining to any value) but the value-only memory model, lacking
+poison refinement, saw a value mismatch and refuted. The fix gates the refutation on poison-freedom
+(decline, don't refute, when the source carries poison risk); the re-run is then clean. This is the
+value of the automated hunt — a bug in the least-reviewed encoding that 476 hand-written fixtures
+missed. `fuzz_differential_fixture` runs a small batch of every shape on each build as a standing net.
 
 Still open: a richer UB/`undef` model (single poison bit today), and the inherent low reach
 (decline-by-default means ~half of a real pass declines).
