@@ -81,6 +81,12 @@ equivalent to the input — with a minimized concrete counterexample on failure.
 | DSE TV over a theory of arrays (final memory + surviving-load values; mixed-width/volatile declined) | `dse_ir_fixture` |
 | SimplifyCFG diamond→select if-conversion TV | `cfg_shape_fixture` |
 | indvars loop→closed-form TV (surfaced as loop-eliminated) with CEGAR witness | `closed_form_fixture`, `translation_validation_fixture` |
+| Track B verdicts independently cross-checked by `lli` execution (value oracle; catches an injected value-encoding false proof) | `concrete_tv_fixture` |
+| Track B verdicts independently cross-checked by reference Alive2 (poison/undef/UB; catches an injected poison-encoding false proof `lli` misses) | `alive_diff_fixture` |
+| Both oracles run over real corpus verdicts — every proved transform confirmed, zero disagreements | `corpus_cross_check_fixture` |
+| Exhaustive poison-flag coverage (every `(op, flag)` refutes on introduce / proves on remove; completeness-enforced) | `flag_matrix_fixture` |
+| Common integer intrinsics modeled (`ctpop`/`abs`/`ctlz`/`cttz`/`fshl`/`fshr`/u,s`{add,sub}.sat`), each lli-validated | `intrinsics_ir_fixture` |
+| Unified Track B dispatcher — memory/vector functions prove via `mem_state`/`vec`/`svec` instead of declining | `track_b_dispatch_fixture` |
 
 ### C5 — Real-parser frontends over a parser-agnostic prover; reproducible artifact (design §8, §10)
 

@@ -35,10 +35,12 @@ memory under the theory of arrays (aliasing exact, no alias analysis), fixed and
 interprocedural value flow — proving **351 of 715 of LLVM's own InstCombine test functions end-to-end
 with zero false refutations**, composing those proofs up to pipelines, module deletion, and signature
 changes, and meeting the recovery track at **attribution**, where a proved transform is credited to
-the recovered fold that provably matches it. Where a function falls outside the fragment, an
-enrichment loop lets an LLM propose the missing instruction semantics — ratified by `lli` execution
-before use — so the verifier grows its own vocabulary without ever trusting the proposer to decide
-soundness. For loop passes, whose effect spans unboundedly many
+the recovered fold that provably matches it. Because this track rests on a hand-written encoding, its
+verdicts are **independently cross-checked** by oracles that do not share it — `lli` execution and
+reference Alive2 — which confirm every proved corpus transform with zero disagreements. Where a
+function falls outside the fragment, an enrichment loop lets an LLM propose the missing instruction
+semantics — ratified by `lli` execution before use — so the verifier grows its own vocabulary without
+ever trusting the proposer to decide soundness. For loop passes, whose effect spans unboundedly many
 iterations, O2T lifts intent into a recurrence DSL and proves transforms for *all* trip counts via
 an integer-ring discharge (sound for every bitwidth by the homomorphism ℤ → ℤ/2ⁿ), template-based
 invariant synthesis with k-induction, and relational two-loop simulation, driven from LLVM's own
@@ -106,7 +108,11 @@ source**. Doing so requires solving four problems that per-pair tools never face
   tests with zero false refutations; refinement composes up to pipelines, module deletion, and
   signature changes; the recovery track and this one **meet at attribution**, crediting a proved
   transform to the recovered fold that provably matches it; and a self-enrichment loop grows the
-  fragment behind an execution oracle. Minimized concrete counterexamples on failure.
+  fragment behind an execution oracle. Because this track's soundness rests on a hand-written SMT
+  encoding, its verdicts are **independently cross-checked** by oracles that do not share that encoding
+  — `lli` execution for values and reference Alive2 for poison/undef/UB — which confirm every proved
+  corpus transform with zero disagreements and catch injected encoding bugs the solver alone accepts.
+  Minimized concrete counterexamples on failure.
 - **Scaling under a strict trust model** (§7): a deterministic pass-aware orchestrator and an
   LLM-driven triage agent whose every output is quarantined, provenance-tagged, and gate-inert.
 - **A reproducible artifact** (§10): 445 executable fixtures; a claim→fixture map connecting
@@ -329,10 +335,28 @@ rather than approximates:
   addresses, scalar arguments to terms — so **non-scalar (pointer/`void`) callees** that store or load
   through a pointer argument are reached too, and the array theory keeps their aliasing exact.
 
-The value models (scalar, memory, lanes) are cross-validated against `lli` **execution**, so the
-translator's own semantics are independently checked, not merely assumed. **The bounded-code fragment
-is complete**: the only category outside it is *loops*, which are the recurrence track's domain
-(all-trip-count proofs, below), not bounded translation validation.
+These validators are unified behind one **dispatcher**: whole-function TV tries the scalar path first
+and, when it declines a shape (pointer-side-effect memory, vectors), falls through to the specialized
+validator — each sound within its scope and declining out of it, so the first proved/refuted is the
+answer. The scalar path also models the common integer intrinsics (`ctpop`, `ctlz`/`cttz`, `abs`,
+`fshl`/`fshr`, the saturating adds), each with an SMT semantics validated against `lli`. **The
+bounded-code fragment is complete**: the only category outside it is *loops*, the recurrence track's
+domain (all-trip-count proofs, below), not bounded translation validation.
+
+**Certifying the translation validation.** A mis-*encoding* of the fragment's SMT semantics is as
+dangerous as a mis-compile — and unlike the recovery (§4), Track B's whole-function refinement rested
+on a single hand-written encoding discharged by a single solver, whose internal second-solver check
+reuses the same generated SMT and so cannot see an *encoding* bug. Track B is therefore given its own
+independence, the counterpart of §4's stack, from oracles that do **not** share the encoding. First,
+`lli` **execution**: the before and after are compiled and run on a battery of inputs, and a value
+disagreement on any input demotes a `proved` to *refuted-by-execution* — this caught, for instance, a
+deliberately injected mis-lowering of `sub` as addition that the solver alone accepted. `lli` is a
+*value* oracle (it does not trap poison), so second, reference **Alive2**: for every proved transform,
+Alive2's precise poison/undef/UB refinement is consulted, and an O2T `proved` that Alive2 calls
+incorrect is flagged a false proof — this catches the purely-poison mis-encodings (an unjustified
+`nsw`/`exact`) that `lli` cannot. Run over the whole-function corpus, both oracles confirm every proved
+transform with zero disagreements; the two are complementary, and neither shares O2T's SMT lowering, so
+an encoding bug that both the solver and the recovery cross-checks miss is still caught here.
 
 **The loop track closes the same way.** For loop passes, `opt -passes=X` is run on real IR and
 equivalence (or refinement) is proved between input and output across trip counts. Coverage spans
