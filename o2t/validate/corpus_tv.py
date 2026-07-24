@@ -17,6 +17,24 @@ from collections import Counter
 from o2t.validate import scalar_ir as si
 
 
+def validate_transform_ex(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
+    """Track B DISPATCHER: try the scalar validator first (it covers the most -- scalar, branch/phi,
+    interproc, local memory); if it DECLINES the shape (pointer-side-effect memory, vectors), fall
+    through to the specialized validators. Each validator is sound within its scope and declines
+    out-of-scope, so the first `proved`/`refuted` is the answer. This lets whole-function TV cover
+    memory- and vector-heavy functions that the scalar path alone reports `unsupported`."""
+    from o2t.validate.mem_state import mem_state_tv
+    from o2t.validate.vec_tv import vec_tv, svec_tv
+    v = si.validate_transform(z3_bin, before_ll, after_ll, func, timeout=timeout)
+    if v["status"] != "unsupported":
+        return v
+    for name, validator in (("mem_state", mem_state_tv), ("vec", vec_tv), ("svec", svec_tv)):
+        vv = validator(z3_bin, before_ll, after_ll, func, timeout=timeout)
+        if vv["status"] in ("proved", "refuted"):
+            return {**vv, "via": name}
+    return v                                           # everything declined -> honest unsupported
+
+
 def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int = 15) -> dict:
     """Run `opt -passes=instcombine` on `ll_text` once, then whole-function TV every function. Returns
     {"functions": [...per-function {name, status, ...}], "counts": {status: n}, "opt_ok": bool}. Each
@@ -28,7 +46,7 @@ def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int 
     results: list[dict] = []
     for fn in si.function_names(ll_text):
         try:
-            v = si.validate_transform(z3_bin, ll_text, opt_text, fn, timeout=timeout)
+            v = validate_transform_ex(z3_bin, ll_text, opt_text, fn, timeout=timeout)
         except Exception as exc:                          # never let one function abort the sweep
             v = {"status": "error", "function": fn, "reason": str(exc)[:80]}
         results.append(v)

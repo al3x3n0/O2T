@@ -723,6 +723,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/gep_tv_fixture.py; else echo 'gep_tv_fixture: z3 or opt not found, skipped'; fi"
     )
+    # Track B DISPATCHER: whole-function TV tries scalar first, then falls through to the pointer-memory
+    # / fixed-vector / scalable-vector validators -- so those functions PROVE instead of declining
+    # (reach lift). A mixed corpus reaches 4/4 where scalar-only reached 1/4.
+    add_test(
+        NAME track_b_dispatch_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/track_b_dispatch_fixture.py; else echo 'track_b_dispatch_fixture: z3 or opt not found, skipped'; fi"
+    )
     # Track B's last composition edges: memory-threaded interprocedural inlining reaches NON-SCALAR
     # (void/pointer) callees and ARGUMENT PROMOTION (proved at callers vs real opt; wrong value / an
     # external-ABI promotion refute).
