@@ -83,6 +83,47 @@ def _gen(rng, n_params=3, n_insns=8, w=32, intrinsics=False) -> str:
     return (_declares(w) + body) if intrinsics else body
 
 
+def _gen_memory(rng, n_insns=7, w=32) -> str:
+    """Single-BB pointer-side-effect memory (mem_state scope): random stores/loads to ptr args."""
+    ptrs, vals, lines, idx = ["%p", "%q"], ["%x", "%y"], [], 0
+
+    def opnd():
+        return str(rng.choice([0, 1, -1, rng.randint(-8, 8)])) if rng.random() < 0.3 else rng.choice(vals)
+
+    for _ in range(n_insns):
+        r = rng.random()
+        if r < 0.35:
+            lines.append(f"  store i{w} {opnd()}, ptr {rng.choice(ptrs)}")
+        elif r < 0.65:
+            v = f"%v{idx}"; idx += 1
+            lines.append(f"  {v} = load i{w}, ptr {rng.choice(ptrs)}")
+            vals.append(v)
+        else:
+            v = f"%v{idx}"; idx += 1
+            lines.append(f"  {v} = {rng.choice(_BINOPS)} i{w} {opnd()}, {opnd()}")
+            vals.append(v)
+    return (f"define i{w} @f(ptr %p, ptr %q, i{w} %x, i{w} %y) {{\n" + "\n".join(lines)
+            + f"\n  ret i{w} {rng.choice(vals)}\n}}\n")
+
+
+def _gen_vector(rng, n_insns=6, w=32, lanes=4) -> str:
+    """Element-wise fixed-vector functions (vec_tv scope)."""
+    vt = f"<{lanes} x i{w}>"
+    vals, lines, idx = ["%x", "%y"], [], 0
+
+    def opnd():
+        if rng.random() < 0.3:
+            elts = ", ".join(f"i{w} {rng.choice([0, 1, -1, rng.randint(-4, 4)])}" for _ in range(lanes))
+            return f"<{elts}>"
+        return rng.choice(vals)
+
+    for _ in range(n_insns):
+        v = f"%v{idx}"; idx += 1
+        lines.append(f"  {v} = {rng.choice(_BINOPS)} {vt} {opnd()}, {opnd()}")
+        vals.append(v)
+    return f"define {vt} @f({vt} %x, {vt} %y) {{\n" + "\n".join(lines) + f"\n  ret {vt} {rng.choice(vals)}\n}}\n"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--count", type=int, default=200)
@@ -91,6 +132,9 @@ def main(argv=None) -> int:
     ap.add_argument("--params", type=int, default=3)
     ap.add_argument("--intrinsics", action="store_true",
                     help="also generate the modeled intrinsic calls (fuzz their encodings vs Alive2)")
+    ap.add_argument("--shape", choices=["scalar", "memory", "vector"], default="scalar",
+                    help="what to generate -- scalar (default), pointer memory, or fixed vectors")
+    ap.add_argument("--passes", help="opt pipeline (default: instcombine; memory: instcombine,gvn,dse)")
     args = ap.parse_args(argv)
 
     z3 = shutil.which("z3")
@@ -101,10 +145,14 @@ def main(argv=None) -> int:
         return 2
 
     rng = random.Random(args.seed)
+    passes = args.passes or ("instcombine,gvn,dse" if args.shape == "memory" else "instcombine")
+    gen = {"scalar": lambda: _gen(rng, args.params, args.insns, intrinsics=args.intrinsics),
+           "memory": lambda: _gen_memory(rng, args.insns),
+           "vector": lambda: _gen_vector(rng, args.insns)}[args.shape]
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
     for i in range(args.count):
-        before = _gen(rng, args.params, args.insns, intrinsics=args.intrinsics)
-        after = si.run_instcombine(before, opt)
+        before = gen()
+        after = si.run_passes(before, passes, opt)
         if after is None:
             opt_fail += 1
             continue
@@ -119,7 +167,9 @@ def main(argv=None) -> int:
         elif o2t == "refuted" and av == "proved":
             disagreements.append(("FALSE-REFUTATION", i, before, after))
 
-    print(f"generated {args.count} (opt-failed {opt_fail}); O2T {dict(pair)}; Alive2 {dict(alive_v)}")
+    tag = args.shape + ("+intrinsics" if args.intrinsics else "")
+    print(f"[{tag} / {passes}] generated {args.count} (opt-failed {opt_fail}); "
+          f"O2T {dict(pair)}; Alive2 {dict(alive_v)}")
     print(f"DISAGREEMENTS: {len(disagreements)}")
     for kind, i, b, a in disagreements[:10]:
         print(f"\n!! {kind} at #{i}\n-- before --\n{b}-- after --\n{a}")
