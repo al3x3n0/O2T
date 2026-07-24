@@ -93,15 +93,19 @@ def main() -> int:
         ("cttz(0x80)=7", "call i8 @llvm.cttz.i8(i8 -128, i1 false)", 8, 7),
         ("cttz(0x10)=4", "call i8 @llvm.cttz.i8(i8 16, i1 false)", 8, 4),
         ("cttz(0)=8", "call i8 @llvm.cttz.i8(i8 0, i1 false)", 8, 8),
+        ("sadd.sat(100,100)=127", "call i8 @llvm.sadd.sat.i8(i8 100, i8 100)", 8, 127),
+        ("sadd.sat(-100,-100)=-128", "call i8 @llvm.sadd.sat.i8(i8 -100, i8 -100)", 8, -128),
+        ("ssub.sat(-100,100)=-128", "call i8 @llvm.ssub.sat.i8(i8 -100, i8 100)", 8, -128),
+        ("ssub.sat(50,20)=30", "call i8 @llvm.ssub.sat.i8(i8 50, i8 20)", 8, 30),
     ]:
         fn = f"define i{w} @f() {{\n  %r = {call}\n  ret i{w} %r\n}}\n"
         want = f"define i{w} @f() {{\n  ret i{w} {expected}\n}}\n"
         assert vt(z3, fn, want, "f")["status"] == "proved", (name, "SMT model")
         assert concrete_tv(lli, fn, want, "f")["status"] == "agree", (name, "lli confirmation")
 
-    print("intrinsics_ir_fixture OK: modeled ctpop/abs/ctlz/cttz/fshl/fshr/uadd.sat/usub.sat -- each "
-          "validated against lli (model==hand by z3 and real==hand by lli via hand-equivalents; ctlz/cttz "
-          "confirmed by model AND lli on ground-truth points). abs idempotence proves; a wrong fold "
+    print("intrinsics_ir_fixture OK: modeled ctpop/abs/ctlz/cttz/fshl/fshr and u/s {add,sub}.sat -- each "
+          "validated against lli (model==hand by z3 and real==hand by lli via hand-equivalents; ctlz/cttz/"
+          "sat confirmed by model AND lli on ground-truth points). abs idempotence proves; a wrong fold "
           "refutes. Track B reach lifted -- these intrinsics no longer decline (bswap stays enrichment's)")
     return 0
 

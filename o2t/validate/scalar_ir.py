@@ -353,6 +353,18 @@ def _intr_usub_sat(ops, w):
     return f"(ite (bvult {a} {b}) (_ bv0 {w}) (bvsub {a} {b}))", w, p, u
 
 
+def _s_sat(ops, w, sub):
+    """s{add,sub}.sat: compute in w+1 bits (no overflow), then clamp to [INT_MIN, INT_MAX]."""
+    a, b = ops[0][0], ops[1][0]
+    p, u = _p(ops)
+    a1, b1 = f"((_ sign_extend 1) {a})", f"((_ sign_extend 1) {b})"
+    s = f"({'bvsub' if sub else 'bvadd'} {a1} {b1})"
+    imax_w, imin_w = _const((1 << (w - 1)) - 1, w), _const(1 << (w - 1), w)   # 0x7f.. and 0x80..
+    imax_e, imin_e = f"((_ sign_extend 1) {imax_w})", f"((_ sign_extend 1) {imin_w})"
+    lo = f"((_ extract {w - 1} 0) {s})"
+    return f"(ite (bvsgt {s} {imax_e}) {imax_w} (ite (bvslt {s} {imin_e}) {imin_w} {lo}))", w, p, u
+
+
 # Note: `bswap` is deliberately NOT built in -- it is the worked example for the lli-gated
 # self-enrichment path (enrich_fixture), which demonstrates growing the vocabulary from outside.
 _INTRINSICS = {
@@ -362,6 +374,8 @@ _INTRINSICS = {
     "fshl": lambda ops, w: _funnel(ops, w, right=False),
     "fshr": lambda ops, w: _funnel(ops, w, right=True),
     "uadd.sat": _intr_uadd_sat, "usub.sat": _intr_usub_sat,
+    "sadd.sat": lambda ops, w: _s_sat(ops, w, sub=False),
+    "ssub.sat": lambda ops, w: _s_sat(ops, w, sub=True),
 }
 
 
