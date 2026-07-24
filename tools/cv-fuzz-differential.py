@@ -27,9 +27,22 @@ _BINOPS = ["add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr"]
 _FLAGS = {"add": ["nsw", "nuw"], "sub": ["nsw", "nuw"], "mul": ["nsw", "nuw"],
           "shl": ["nsw", "nuw"], "lshr": ["exact"], "ashr": ["exact"], "or": ["disjoint"]}
 _PREDS = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"]
+# the modeled intrinsics (o2t/validate/scalar_ir.py); the fuzzer exercises these encodings vs Alive2.
+_I_UNARY = ["ctpop"]
+_I_FLAGGED = ["abs", "ctlz", "cttz"]                       # unary + an i1 flag
+_I_BINARY = ["smin", "smax", "umin", "umax", "sadd.sat", "ssub.sat", "uadd.sat", "usub.sat"]
+_I_TERNARY = ["fshl", "fshr"]
 
 
-def _gen(rng, n_params=3, n_insns=8, w=32) -> str:
+def _declares(w):
+    d = [f"declare i{w} @llvm.{n}.i{w}(i{w})" for n in _I_UNARY]
+    d += [f"declare i{w} @llvm.{n}.i{w}(i{w}, i1)" for n in _I_FLAGGED]
+    d += [f"declare i{w} @llvm.{n}.i{w}(i{w}, i{w})" for n in _I_BINARY]
+    d += [f"declare i{w} @llvm.{n}.i{w}(i{w}, i{w}, i{w})" for n in _I_TERNARY]
+    return "\n".join(d) + "\n"
+
+
+def _gen(rng, n_params=3, n_insns=8, w=32, intrinsics=False) -> str:
     vals = [f"%p{i}" for i in range(n_params)]
     lines, idx = [], 0
 
@@ -38,22 +51,36 @@ def _gen(rng, n_params=3, n_insns=8, w=32) -> str:
             return str(rng.choice([0, 1, 2, -1, rng.randint(0, w - 1), rng.randint(-8, 8)]))
         return rng.choice(vals)
 
+    def flag():
+        return rng.choice(["true", "false"])
+
     for _ in range(n_insns):
-        if rng.random() < 0.75:
+        r = rng.random()
+        v = f"%v{idx}"; idx += 1
+        if intrinsics and r < 0.35:                       # an intrinsic call -- fuzz its encoding
+            k = rng.random()
+            if k < 0.25:
+                lines.append(f"  {v} = call i{w} @llvm.{rng.choice(_I_UNARY)}.i{w}(i{w} {opnd()})")
+            elif k < 0.5:
+                lines.append(f"  {v} = call i{w} @llvm.{rng.choice(_I_FLAGGED)}.i{w}(i{w} {opnd()}, i1 {flag()})")
+            elif k < 0.8:
+                lines.append(f"  {v} = call i{w} @llvm.{rng.choice(_I_BINARY)}.i{w}(i{w} {opnd()}, i{w} {opnd()})")
+            else:
+                lines.append(f"  {v} = call i{w} @llvm.{rng.choice(_I_TERNARY)}.i{w}(i{w} {opnd()}, i{w} {opnd()}, i{w} {opnd()})")
+            vals.append(v)
+        elif r < 0.8:
             op = rng.choice(_BINOPS)
-            flag = ""
-            if op in _FLAGS and rng.random() < 0.5:      # random poison flag -- the target surface
-                flag = " " + rng.choice(_FLAGS[op])
-            v = f"%v{idx}"; idx += 1
-            lines.append(f"  {v} = {op}{flag} i{w} {opnd()}, {opnd()}")
+            fl = " " + rng.choice(_FLAGS[op]) if op in _FLAGS and rng.random() < 0.5 else ""
+            lines.append(f"  {v} = {op}{fl} i{w} {opnd()}, {opnd()}")
             vals.append(v)
         else:
-            c, v = f"%c{idx}", f"%v{idx}"; idx += 1
+            c = f"%c{idx}"
             lines.append(f"  {c} = icmp {rng.choice(_PREDS)} i{w} {opnd()}, {opnd()}")
             lines.append(f"  {v} = select i1 {c}, i{w} {opnd()}, i{w} {opnd()}")
             vals.append(v)
     sig = ", ".join(f"i{w} %p{i}" for i in range(n_params))
-    return f"define i{w} @f({sig}) {{\n" + "\n".join(lines) + f"\n  ret i{w} {rng.choice(vals)}\n}}\n"
+    body = f"define i{w} @f({sig}) {{\n" + "\n".join(lines) + f"\n  ret i{w} {rng.choice(vals)}\n}}\n"
+    return (_declares(w) + body) if intrinsics else body
 
 
 def main(argv=None) -> int:
@@ -62,6 +89,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0x02704)
     ap.add_argument("--insns", type=int, default=8)
     ap.add_argument("--params", type=int, default=3)
+    ap.add_argument("--intrinsics", action="store_true",
+                    help="also generate the modeled intrinsic calls (fuzz their encodings vs Alive2)")
     args = ap.parse_args(argv)
 
     z3 = shutil.which("z3")
@@ -74,7 +103,7 @@ def main(argv=None) -> int:
     rng = random.Random(args.seed)
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
     for i in range(args.count):
-        before = _gen(rng, args.params, args.insns)
+        before = _gen(rng, args.params, args.insns, intrinsics=args.intrinsics)
         after = si.run_instcombine(before, opt)
         if after is None:
             opt_fail += 1
