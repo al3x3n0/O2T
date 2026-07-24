@@ -112,11 +112,11 @@ The three independent oracles now cover the axes: `reconcile` (Track A, concrete
 automates that hunt. It generates random scalar functions — *with random poison flags*
 (`nsw`/`nuw`/`exact`/`disjoint`), the surface where both false proofs lived — runs real
 `opt -passes=instcombine`, and cross-checks O2T's Track B TV against reference Alive2; an O2T `proved`
-that Alive2 calls incorrect is a false proof. A **400-function batch found zero disagreements** (O2T
-proved 384; Alive2 decided and agreed on all 346 non-trivial ones, skipping the no-ops). After the
-two encoding fixes, the fuzzer finds no more on this surface — empirical evidence the encoding is now
-correct there, not just on the curated corpus. `fuzz_differential_fixture` runs a small batch every
-gate as a standing regression net.
+that Alive2 calls incorrect is a false proof. Across **two seeds and 1,200 random functions, zero
+disagreements** — O2T proved 1,159, and Alive2 independently decided and agreed on all ~1,052
+non-trivial ones (the rest no-ops it skips). After the two encoding fixes, the fuzzer finds no more on
+the surface where both bugs lived — empirical evidence the encoding is sound there, not just on the
+curated corpus. `fuzz_differential_fixture` runs a small batch every gate as a standing regression net.
 
 Still open: a richer UB/`undef` model (single poison bit today), and the inherent low reach
 (decline-by-default means ~half of a real pass declines).

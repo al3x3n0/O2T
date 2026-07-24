@@ -356,7 +356,11 @@ Alive2's precise poison/undef/UB refinement is consulted, and an O2T `proved` th
 incorrect is flagged a false proof — this catches the purely-poison mis-encodings (an unjustified
 `nsw`/`exact`) that `lli` cannot. Run over the whole-function corpus, both oracles confirm every proved
 transform with zero disagreements; the two are complementary, and neither shares O2T's SMT lowering, so
-an encoding bug that both the solver and the recovery cross-checks miss is still caught here.
+an encoding bug that both the solver and the recovery cross-checks miss is still caught here. The Alive2
+differential is also driven as a **fuzzing campaign** — random functions carrying random poison flags,
+the surface most prone to a mis-encoding, are generated, optimized, and cross-checked automatically;
+over 1,200 such functions O2T's verdicts agree with Alive2 in every decisive case, and a small batch
+runs on every build as a standing regression net.
 
 **The loop track closes the same way.** For loop passes, `opt -passes=X` is run on real IR and
 equivalence (or refinement) is proved between input and output across trip counts. Coverage spans
