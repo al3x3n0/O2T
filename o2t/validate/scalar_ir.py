@@ -206,7 +206,7 @@ def _translate_multiblock(body, params, env, extra_ops, call_ctx):
                 raise Unsupported(f"branch to unknown block %{s}")
             preds[s].append(lab)
 
-    path, edge, rets = {order[0]: "true"}, {}, []
+    path, edge, rets, branch_poison = {order[0]: "true"}, {}, [], []
     done, todo, progress = set(), list(order), True
     while todo and progress:
         progress = False
@@ -242,7 +242,9 @@ def _translate_multiblock(body, params, env, extra_ops, call_ctx):
                 edge[(lab, um.group(1))] = "true"
             else:
                 cm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)
-                cv, _, _, _ = _operand(cm.group(1), 1, env)
+                cv, _, cvp, _ = _operand(cm.group(1), 1, env)
+                if cvp != "false":                     # branching on POISON poisons the whole result
+                    branch_poison.append(f"(and {path[lab]} {cvp})")
                 cb = _bool_of(cv, 1)
                 edge[(lab, cm.group(2))], edge[(lab, cm.group(3))] = cb, f"(not {cb})"
             done.add(lab); todo.remove(lab); progress = True
@@ -254,6 +256,8 @@ def _translate_multiblock(body, params, env, extra_ops, call_ctx):
     term, poison = rets[-1][0], rets[-1][1]
     for rt, rp, _, pc in reversed(rets[:-1]):
         term, poison = f"(ite {pc} {rt} {term})", f"(ite {pc} {rp} {poison})"
+    if branch_poison:                                  # a poison branch condition poisons the result
+        poison = smt_or([poison, *branch_poison])
     return params, term, w, poison, "false"
 
 

@@ -124,6 +124,39 @@ def _gen_vector(rng, n_insns=6, w=32, lanes=4) -> str:
     return f"define {vt} @f({vt} %x, {vt} %y) {{\n" + "\n".join(lines) + f"\n  ret {vt} {rng.choice(vals)}\n}}\n"
 
 
+def _gen_cfg(rng, n_insns=3, w=32) -> str:
+    """A diamond CFG (entry -> {t,f} -> m with a phi) -- fuzzes the multi-block symbolic-execution path.
+    SSA dominance respected: t/f use only entry+params; m uses the phi + entry values."""
+    params = ["%a", "%b", "%c"]
+    idx = [0]
+
+    def straight(pool):
+        pool = list(pool)
+        out = []
+        for _ in range(n_insns):
+            op = rng.choice(_BINOPS)
+            fl = " " + rng.choice(_FLAGS[op]) if op in _FLAGS and rng.random() < 0.4 else ""
+
+            def o():
+                return str(rng.choice([0, 1, -1, rng.randint(-8, 8)])) if rng.random() < 0.3 else rng.choice(pool)
+            v = f"%v{idx[0]}"; idx[0] += 1
+            out.append(f"  {v} = {op}{fl} i{w} {o()}, {o()}")
+            pool.append(v)
+        return out, pool
+
+    ev, epool = straight(params)
+    ev.append(f"  %cnd = icmp {rng.choice(_PREDS)} i{w} {rng.choice(epool)}, {rng.choice(epool)}")
+    ev.append("  br i1 %cnd, label %t, label %f")
+    tv, tpool = straight(epool); tv.append("  br label %m")
+    fv, fpool = straight(epool); fv.append("  br label %m")
+    mv, mpool = straight(epool + ["%ph"])
+    mv.insert(0, f"  %ph = phi i{w} [ {rng.choice(tpool)}, %t ], [ {rng.choice(fpool)}, %f ]")
+    mv.append(f"  ret i{w} {rng.choice(mpool)}")
+    sig = ", ".join(f"i{w} {p}" for p in params)
+    return ("\n".join([f"define i{w} @f({sig}) {{", "entry:"] + ev + ["t:"] + tv + ["f:"] + fv
+                       + ["m:"] + mv + ["}"]) + "\n")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--count", type=int, default=200)
@@ -132,9 +165,9 @@ def main(argv=None) -> int:
     ap.add_argument("--params", type=int, default=3)
     ap.add_argument("--intrinsics", action="store_true",
                     help="also generate the modeled intrinsic calls (fuzz their encodings vs Alive2)")
-    ap.add_argument("--shape", choices=["scalar", "memory", "vector"], default="scalar",
-                    help="what to generate -- scalar (default), pointer memory, or fixed vectors")
-    ap.add_argument("--passes", help="opt pipeline (default: instcombine; memory: instcombine,gvn,dse)")
+    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg"], default="scalar",
+                    help="scalar (default), pointer memory, fixed vectors, or a branch/phi diamond (cfg)")
+    ap.add_argument("--passes", help="opt pipeline (default per shape)")
     args = ap.parse_args(argv)
 
     z3 = shutil.which("z3")
@@ -145,10 +178,12 @@ def main(argv=None) -> int:
         return 2
 
     rng = random.Random(args.seed)
-    passes = args.passes or ("instcombine,gvn,dse" if args.shape == "memory" else "instcombine")
+    passes = args.passes or {"memory": "instcombine,gvn,dse",
+                             "cfg": "instcombine,simplifycfg,sccp"}.get(args.shape, "instcombine")
     gen = {"scalar": lambda: _gen(rng, args.params, args.insns, intrinsics=args.intrinsics),
            "memory": lambda: _gen_memory(rng, args.insns),
-           "vector": lambda: _gen_vector(rng, args.insns)}[args.shape]
+           "vector": lambda: _gen_vector(rng, args.insns),
+           "cfg": lambda: _gen_cfg(rng, args.insns)}[args.shape]
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
     for i in range(args.count):
         before = gen()

@@ -32,7 +32,8 @@ def main() -> int:
     # theory-of-arrays memory model, and the vector lane model. Each cross-checked against Alive2.
     for extra, label in ((["--intrinsics"], "scalar+intrinsics"),
                          (["--shape", "memory"], "memory"),
-                         (["--shape", "vector"], "vector")):
+                         (["--shape", "vector"], "vector"),
+                         (["--shape", "cfg"], "cfg")):
         proc = subprocess.run([sys.executable, str(TOOL), "--count", "8", "--seed", "20704",
                                "--insns", "8", *extra], capture_output=True, text=True, timeout=300)
         out = proc.stdout + proc.stderr

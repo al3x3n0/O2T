@@ -98,6 +98,21 @@ def main() -> int:
             "e:\n  ret i32 %j\n}\n")
     assert si.validate_transform(z3, loop, loop, "l")["status"] == "unsupported", "a loop must decline"
 
+    # BRANCH-ON-POISON (found by the CFG differential fuzzer): a branch whose condition can be POISON
+    # (here derived from `or disjoint`, poison when c,a share a bit) poisons the whole result. The
+    # multiblock model must reflect that in the return poison -- else a fold opt derives by exploiting
+    # the poison branch (changing the value) FALSE-REFUTES. Check the return poison is satisfiable
+    # (it was hard-coded `false` before the fix).
+    bp = ("define i32 @bp(i32 %a, i32 %c) {\nentry:\n  %d = or disjoint i32 %c, %a\n"
+          "  %cnd = icmp sgt i32 %d, 0\n  br i1 %cnd, label %t, label %e\n"
+          "t:\n  br label %m\ne:\n  br label %m\n"
+          "m:\n  %r = phi i32 [ 1, %t ], [ 2, %e ]\n  ret i32 %r\n}\n")
+    _, _, _, poison, _ = si.translate(bp, "bp")
+    q = ("(set-logic QF_BV)\n(declare-const %a (_ BitVec 32))\n(declare-const %c (_ BitVec 32))\n"
+         f"(assert {poison})\n(check-sat)\n")
+    sat = subprocess.run([z3, "-in"], input=q, capture_output=True, text=True).stdout.strip()
+    assert sat.startswith("sat"), ("a poison branch condition must poison the result (was 'false')", sat)
+
     print("multiblock_tv_fixture OK: acyclic branch/phi functions are symbolically executed and "
           "whole-function TV'd -- the model AGREES WITH LLI execution on a battery of inputs (incl. "
           "INT_MIN/MAX), a diamond (min via branch+phi) is PROVED equivalent to its select-canonicalized "
