@@ -245,6 +245,12 @@ def validate_mem2reg(z3_bin, src_text, opt_text, func):
     if head == "unsat":
         return {"status": "proved", "function": func}
     if head == "sat":
+        # value-equality: a mismatch is a genuine miscompile only when the source is poison-free
+        # (a poison-exploiting source fold would else false-refute -- the class the fuzzer found).
+        from o2t.validate.scalar_ir import poison_risk
+        if poison_risk(src_text, func):
+            return {"status": "unsupported", "function": func,
+                    "reason": "value mismatch under possible poison (mem2reg model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out}
     return {"status": "error", "function": func, "reason": head}
 
