@@ -850,6 +850,13 @@ if(O2T_BUILD_TESTS)
         NAME ir_model_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ir_model_fixture.py
     )
+    # The shared semantics layer, differentiated against the text path it replaces: byte-identical
+    # SMT for every modeled shape, every intrinsic model and every (op, flag) poison/UB combination,
+    # so moving both tracks onto one reading of LLVM cannot silently change a verdict.
+    add_test(
+        NAME semantics_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/semantics_fixture.py
+    )
     # The undeclared `noundef` assumption: modeling each parameter as ONE definite constant made
     # `ret 0 -> xor %x,%x` PROVE while Alive2 refutes it (an undef argument may read differently at
     # each use). The guard declines exactly where that assumption is load-bearing; `noundef` declares
