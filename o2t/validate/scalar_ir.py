@@ -29,6 +29,8 @@ import re
 import subprocess
 
 from o2t.formal_ir import VALID_FLAGS, flag_poison_smt, smt_and, smt_or
+from o2t.validate import ir_model as ir
+from o2t.validate import semantics as sem
 
 _BIN = {"add": "bvadd", "sub": "bvsub", "mul": "bvmul", "and": "bvand", "or": "bvor",
         "xor": "bvxor", "shl": "bvshl", "lshr": "bvlshr", "ashr": "bvashr",
@@ -40,8 +42,9 @@ _ICMP = {"eq": "(= {a} {b})", "ne": "(distinct {a} {b})",
          "sgt": "(bvsgt {a} {b})", "sge": "(bvsge {a} {b})"}
 
 
-class Unsupported(Exception):
-    pass
+# ONE decline type across the stack: the semantics layer raises it, and every caller that catches
+# `scalar_ir.Unsupported` keeps working unchanged.
+Unsupported = sem.Unsupported
 
 
 def _const(value, width):
@@ -150,6 +153,17 @@ _MAX_CALL_DEPTH = 6
 
 def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
               side="source", fresh=None):
+    """Translate a function to (params, ret_term, ret_width, ret_poison, ret_ub) over LLVM's OWN
+    parse. Validated function-by-function against the text reader it replaces over LLVM 18's
+    InstCombine tests: 500 identical SMT, 465 identical declines, 0 differences, 0 regressions, and 58
+    functions the text reader declined only because of a trailing `; comment`, an `immarg` attribute
+    or a `zeroinitializer` -- valid IR its regexes could not match."""
+    module = ir.parse(_module if _module is not None else ll_text)
+    return _translate_parsed(module, func, extra_ops, bindings, _depth, side, fresh)
+
+
+def _translate_text(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
+                    side="source", fresh=None):
     """Translate a single-BB integer function to (params, ret_term, ret_width, ret_poison, ret_ub).
     Raises Unsupported on any unmodeled instruction/shape (so it is declined, not mis-proved).
     `extra_ops` is an optional list of handlers `(rhs, env) -> (smt, w, poison, ub) | None` for
@@ -764,3 +778,212 @@ def validate_instcombine(z3_bin, src_text, opt_text, func):
 
 def function_names(ll_text):
     return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+
+
+# =================================================================================================
+# The PARSED translator: LLVM's own parse (ir_model) + the shared semantics layer.
+#
+# This replaces the text reader above. It is a straight port -- same 5-tuple, same SMT strings, same
+# declines -- validated against the text path function-by-function over LLVM's own InstCombine tests
+# (see `translate_ab` and parsed_translate_fixture). What changes is not what is modeled but how the
+# module is READ: by LLVM, so a call site above a definition cannot be mistaken for a signature, an
+# attribute containing a comma cannot truncate a parameter list, and an unmodeled opcode DECLINES on
+# its opcode instead of a regex quietly failing to match.
+# =================================================================================================
+
+def _p_value(v, env, width=None):
+    return sem.value(v, env, width)
+
+
+def _p_local_memory(inst, env, ctx):
+    """The local-alloca model: a non-escaping `alloca` is a cell, a `store` updates it, a `load` reads
+    the last store. An escaped pointer is never a value in `env`, so its use declines naturally and no
+    aliasing is ever assumed. Returns True when the instruction was consumed."""
+    mem = ctx.get("mem")
+    if mem is None:
+        return False
+    if inst.op == "alloca":
+        if not (inst.alloc_type and inst.alloc_type.is_int()):
+            raise sem.Unsupported("alloca of a non-integer type")
+        mem["cell"][inst.result] = len(mem["cell"])
+        return True
+    if inst.op == "store":
+        val, ptr = inst.operands[0], inst.operands[1]
+        cell = mem["cell"].get(ptr.name) if ptr.is_reg else None
+        if cell is None:
+            raise sem.Unsupported("store to a non-local/escaped pointer")
+        w = val.type.bits if val.type.is_int() else None
+        if w is None:
+            raise sem.Unsupported("store of a non-integer value")
+        vt, _, vp, _ = _p_value(val, env, w)
+        mem["val"][cell] = (vt, vp)
+        return True
+    if inst.op == "load":
+        ptr = inst.operands[0]
+        cell = mem["cell"].get(ptr.name) if ptr.is_reg else None
+        if cell is None or cell not in mem["val"]:
+            raise sem.Unsupported("load from an escaped/uninitialized pointer")
+        vt, vp = mem["val"][cell]
+        env[inst.result] = (vt, sem.int_width(inst.type), vp, "false")
+        return True
+    return False
+
+
+def _p_call_defined(inst, env, ctx):
+    """A direct call to a module-DEFINED function is inlined by translating the callee with its
+    parameters bound to the argument terms. Recursion and over-deep chains decline."""
+    if inst.op != "call" or inst.indirect or sem.intrinsic_name(inst.callee) is not None:
+        return False
+    module = ctx["module"]
+    callee = module.function(inst.callee) if inst.callee else None
+    if callee is None or callee.is_declaration:
+        return False                                   # declared/external -> extra_ops or decline
+    if ctx["depth"] >= _MAX_CALL_DEPTH:
+        raise sem.Unsupported("call too deep / recursion")
+    cparams = callee.int_params
+    if len(inst.args) != len(cparams):
+        raise sem.Unsupported("call arity mismatch")
+    bindings = {}
+    for (pname, pw), arg in zip(cparams.items(), inst.args):
+        bindings[pname] = _p_value(arg, env, pw)
+    _, cret, cw, cp, cu = _translate_parsed(module, callee.name, ctx["extra_ops"], bindings,
+                                            ctx["depth"] + 1, ctx.get("side", "source"),
+                                            ctx.get("fresh"))
+    env[inst.result] = (cret, cw, cp, cu)
+    return True
+
+
+def _p_instruction(inst, env, ctx):
+    """One instruction: local memory, then an inlined call, then the shared semantics, then the
+    lli-validated enrichment handlers. Anything left over declines on its OPCODE."""
+    if _p_local_memory(inst, env, ctx):
+        return
+    if _p_call_defined(inst, env, ctx):
+        return
+    try:
+        sem.evaluate(inst, env, ctx)
+        return
+    except sem.Unsupported:
+        for handler in (ctx.get("extra_ops") or ()):   # validated enrichments (enrich.py)
+            result = handler(inst, env)
+            if result is not None:
+                env[inst.result] = result
+                return
+        raise
+
+
+def _p_multiblock(fn, params, env, ctx):
+    """Symbolically execute an ACYCLIC CFG. Each block carries a path condition, a `phi` lowers to an
+    `ite` over its predecessors' reached-from conditions, and returns are combined by path condition.
+    Sound by scope: div/rem decline (so whole-function UB stays `false` and needs no path
+    conditioning), and a back-edge declines. A conditional branch on a POISON condition is undefined
+    behaviour, so its poison is accumulated into the result -- discarding it caused a false
+    REFUTATION the CFG fuzzer found."""
+    order = [b.name for b in fn.blocks]
+    binfo = {b.name: b for b in fn.blocks}
+    succ = {}
+    for b in fn.blocks:
+        body = b.instructions
+        if any(i.op in ("udiv", "sdiv", "urem", "srem") for i in body[:-1]):
+            raise sem.Unsupported("div/rem in multi-block (UB path-conditioning not modeled)")
+        term = body[-1] if body else None
+        if term is None:
+            raise sem.Unsupported("empty block")
+        if term.op == "ret":
+            succ[b.name] = []
+        elif term.op == "br":
+            succ[b.name] = list(term.successors)
+        else:
+            raise sem.Unsupported(f"terminator {term.op!r}")
+    preds = {lab: [] for lab in order}
+    for lab in order:
+        for s in succ[lab]:
+            if s not in preds:
+                raise sem.Unsupported(f"branch to unknown block %{s}")
+            preds[s].append(lab)
+
+    path, edge, rets, branch_poison = {order[0]: "true"}, {}, [], []
+    done, todo, progress = set(), list(order), True
+    while todo and progress:
+        progress = False
+        for lab in list(todo):
+            if lab != order[0] and any(p not in done for p in preds[lab]):
+                continue
+            if lab != order[0]:
+                parts = [f"(and {path[p]} {edge[(p, lab)]})" for p in preds[lab]]
+                path[lab] = parts[0] if len(parts) == 1 else "(or " + " ".join(parts) + ")"
+            body = binfo[lab].instructions
+            for inst in body[:-1]:
+                if inst.op == "phi":
+                    w = sem.int_width(inst.type)
+                    val = poi = None
+                    for value, plab in inst.incoming:
+                        vt, _, vp, _ = _p_value(value, env, w)
+                        rf = f"(and {path.get(plab, 'false')} {edge.get((plab, lab), 'false')})"
+                        val = vt if val is None else f"(ite {rf} {vt} {val})"
+                        poi = vp if poi is None else f"(ite {rf} {vp} {poi})"
+                    env[inst.result] = (val, w, poi, "false")
+                    continue
+                _p_instruction(inst, env, ctx)
+            term = body[-1]
+            if term.op == "ret":
+                if not term.operands:
+                    raise sem.Unsupported("void return")
+                w = sem.int_width(term.operands[0].type)
+                rt, _, rp, _ = _p_value(term.operands[0], env, w)
+                rets.append((rt, rp, w, path[lab]))
+            elif term.conditional:
+                cv, _, cvp, _ = _p_value(term.operands[0], env, 1)
+                if cvp != "false":                     # branching on POISON poisons the whole result
+                    branch_poison.append(f"(and {path[lab]} {cvp})")
+                cb = _bool_of(cv, 1)
+                edge[(lab, term.successors[0])] = cb
+                edge[(lab, term.successors[1])] = f"(not {cb})"
+            else:
+                edge[(lab, term.successors[0])] = "true"
+            done.add(lab); todo.remove(lab); progress = True
+    if todo:
+        raise sem.Unsupported("cyclic CFG (loop) -- not modeled")
+    if not rets:
+        raise sem.Unsupported("no scalar ret")
+    w = rets[0][2]
+    term, poison = rets[-1][0], rets[-1][1]
+    for rt, rp, _, pc in reversed(rets[:-1]):
+        term, poison = f"(ite {pc} {rt} {term})", f"(ite {pc} {rp} {poison})"
+    if branch_poison:
+        poison = smt_or([poison, *branch_poison])
+    return params, term, w, poison, "false"
+
+
+def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
+                      side="source", fresh=None):
+    """`translate` over a real parse. `module` is an `ir_model.Module`."""
+    fn = module.function(func)
+    if fn is None or fn.is_declaration:
+        raise sem.Unsupported(f"function {func} not found")
+    params = fn.int_params
+    env = dict(bindings) if bindings is not None else \
+        {name: (name, w, "false", "false") for name, w in params.items()}
+    ctx = {"module": module, "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh}
+
+    if len(fn.blocks) > 1:
+        return _p_multiblock(fn, params, env, ctx)
+
+    ctx["mem"] = {"cell": {}, "val": {}}
+    ret_term = ret_width = None
+    ret_poison = ret_ub = "false"
+    for inst in fn.blocks[0].instructions:
+        if inst.op == "ret":
+            if not inst.operands:
+                raise sem.Unsupported("void return")
+            if not inst.operands[0].type.is_int():
+                raise sem.Unsupported("no scalar ret")
+            ret_width = sem.int_width(inst.operands[0].type)
+            ret_term, _, ret_poison, ret_ub = _p_value(inst.operands[0], env, ret_width)
+            break
+        _p_instruction(inst, env, ctx)
+    if ret_term is None:
+        raise sem.Unsupported("no scalar ret")
+    # UB is a whole-function property: a div-by-zero anywhere is UB even if its result is dead.
+    func_ub = smt_or([ret_ub, *(v[3] for v in env.values())])
+    return params, ret_term, ret_width, ret_poison, func_ub

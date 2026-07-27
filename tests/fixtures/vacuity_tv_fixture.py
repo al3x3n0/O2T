@@ -39,6 +39,7 @@ ROOT = FX.parents[1]
 sys.path.insert(0, str(ROOT))
 from o2t.meta import cross_check as cc  # noqa: E402
 from o2t.validate import scalar_ir as si  # noqa: E402
+from o2t.validate import semantics as sem  # noqa: E402
 
 
 def fn(body, params="i32 %x, i32 %y", ret="i32"):
@@ -80,16 +81,16 @@ def main() -> int:
     miscompile = fn("  %r = add i32 %x, %x\n  ret i32 %r")
     assert si.validate_transform(z3, before, miscompile, "f", timeout=30)["status"] == "refuted", \
         "sanity: add x,y -> add x,x is a genuine miscompile"
-    saved = si._own_ub
+    saved = sem.own_ub
     try:
-        si._own_ub = lambda name, a, b, w: "true" if name == "add" else saved(name, a, b, w)
+        sem.own_ub = lambda name, a, b, w: "true" if name == "add" else saved(name, a, b, w)
         bad = si.validate_transform(z3, before, miscompile, "f", timeout=30)
         assert bad["status"] == "proved", \
             ("with an over-approximated UB model the miscompile should FALSELY prove", bad)
         assert bad["vacuous"] is True, \
             ("the anti-vacuity probe must CATCH the over-approximated-UB false proof", bad)
     finally:
-        si._own_ub = saved
+        sem.own_ub = saved
     # reverted: the miscompile is refuted again, and the guard reports no vacuity on a refutation.
     r = si.validate_transform(z3, before, miscompile, "f", timeout=30)
     assert r["status"] == "refuted" and "vacuous" not in r, ("vacuity rides only on proofs", r)

@@ -20,24 +20,46 @@ import re
 import subprocess
 
 from o2t.validate import scalar_ir as si
+from o2t.validate import semantics as sem
 
 # Edge-case + spread 32-bit inputs -- enough to catch a wrong byte order / bit model, cheap to run.
 _INPUTS32 = [0x00000000, 0x00000001, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000,
              0x12345678, 0xDEADBEEF, 0x80000000, 0x7FFFFFFF, 0xFFFFFFFF, 0x01020304, 0xCAFEBABE]
 
 
+def _intrinsic_base(name: str | None) -> str | None:
+    """`@llvm.bswap.i32` -> `bswap`. The trailing overload suffix is dropped so one proposal covers
+    every width, which is what makes an enrichment width-independent."""
+    if not name:
+        return None
+    parts = name.lstrip("@").split(".")
+    if not parts or parts[0] != "llvm":
+        return None
+    tail = parts[1:]
+    while tail and re.fullmatch(r"[iv]\d+|p\d*|f\d+", tail[-1]):
+        tail = tail[:-1]
+    return ".".join(tail) or None
+
+
 def make_handler(proposal: dict):
-    """A translate `extra_ops` handler `(rhs, env) -> (smt, w, poison, ub) | None` from a proposal
-    {regex, smt}. Poison/UB propagate from operands; a pure intrinsic adds none of its own."""
-    rx = re.compile(proposal["regex"])
+    """A translate `extra_ops` handler `(instruction, env) -> (smt, w, poison, ub) | None`.
+
+    Matching is on the INTRINSIC IDENTITY that LLVM's parse reports, not on a regex over instruction
+    text: the enrichment fires for `@llvm.bswap.i32` because the callee IS that intrinsic, at any
+    width and whatever the surrounding syntax. Poison/UB propagate from the operands; a pure intrinsic
+    adds none of its own."""
+    want = _intrinsic_base(proposal.get("call", "").split("@", 1)[-1].split("(")[0].replace("{w}", "32")
+                           if "@" in proposal.get("call", "") else None)
     build = proposal["smt"]
 
-    def handler(rhs, env):
-        m = rx.fullmatch(rhs)
-        if m is None:
+    def handler(inst, env):
+        if inst.op != "call" or _intrinsic_base(inst.callee) != want:
             return None
-        w = int(m.group(1))
-        ops = [si._operand(g.rstrip(","), w, env) for g in m.groups()[1:]]
+        w = inst.type.bits
+        if w is None:
+            return None
+        ops = [sem.value(a, env, a.type.bits if (a.type and a.type.is_int()) else w)
+               for a in inst.args]
         args = [o[0] for o in ops]
         return build(w, *args), w, si.smt_or([o[2] for o in ops]), si.smt_or([o[3] for o in ops])
 

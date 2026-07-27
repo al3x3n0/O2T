@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 from o2t import toolchain  # noqa: E402
 from o2t.frontend import tv_matrix as tv  # noqa: E402
 from o2t.validate import scalar_ir as si  # noqa: E402
+from o2t.validate import semantics as sem  # noqa: E402
 from o2t.validate.concrete_tv import concrete_tv, cross_checked_tv  # noqa: E402
 
 
@@ -68,16 +69,16 @@ def main() -> int:
     #    (both encode to bvadd). cross_checked_tv runs lli and CATCHES it: refuted-by-execution.
     sub_fn = fn("  %r = sub i32 %x, %y\n  ret i32 %r")
     add_fn = fn("  %r = add i32 %x, %y\n  ret i32 %r")
-    saved = si._BIN["sub"]
+    saved = sem.BIN["sub"]
     try:
-        si._BIN["sub"] = "bvadd"                        # the injected encoding bug
+        sem.BIN["sub"] = "bvadd"                        # the injected encoding bug
         assert si.validate_transform(z3, sub_fn, add_fn, "f")["status"] == "proved", \
             "with the injected bug z3 should FALSELY prove sub==add (that is the false proof)"
         guarded = cross_checked_tv(z3, lli, sub_fn, add_fn, "f")
         assert guarded["status"] == "refuted-by-execution" and guarded.get("witness"), \
             ("the lli oracle must CATCH the value-encoding false proof", guarded)
     finally:
-        si._BIN["sub"] = saved
+        sem.BIN["sub"] = saved
     # sanity: with the bug reverted, sub->add is correctly refuted by z3 itself.
     assert si.validate_transform(z3, sub_fn, add_fn, "f")["status"] == "refuted", "sub != add"
 

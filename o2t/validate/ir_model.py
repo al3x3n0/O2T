@@ -201,9 +201,13 @@ class Instruction:
         return Type(self.raw["type"])
 
     @property
-    def flags(self) -> frozenset:
-        """Poison-generating flags, from LLVM's accessors -- not re-derived from text."""
-        return frozenset(self.raw.get("flags", ()))
+    def flags(self) -> tuple:
+        """Poison-generating flags, from LLVM's accessors -- not re-derived from text, and in LLVM's
+        own print order. ORDERED deliberately: consumers build SMT strings by iterating this, and an
+        unordered container made the emitted formula vary between runs under Python's randomized
+        string hashing -- a verifier whose output is not reproducible is not trustworthy, whatever the
+        semantics."""
+        return tuple(self.raw.get("flags", ()))
 
     @property
     def pred(self) -> str | None:

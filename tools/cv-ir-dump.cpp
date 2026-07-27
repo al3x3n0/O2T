@@ -186,9 +186,12 @@ std::string valueJson(const Value *V) {
 // re-derived from the instruction text.
 std::string flagsJson(const Instruction &I) {
   std::vector<std::string> flags;
+  // Emitted in LLVM's OWN print order (`nuw` before `nsw`, as the AsmWriter prints them). The order
+  // is not semantic, but it must be CANONICAL: consumers build SMT strings by iterating this list,
+  // and an unordered container made the emitted formula vary between runs.
   if (const auto *OBO = dyn_cast<OverflowingBinaryOperator>(&I)) {
-    if (OBO->hasNoSignedWrap()) flags.push_back("nsw");
     if (OBO->hasNoUnsignedWrap()) flags.push_back("nuw");
+    if (OBO->hasNoSignedWrap()) flags.push_back("nsw");
   }
   if (const auto *PE = dyn_cast<PossiblyExactOperator>(&I))
     if (PE->isExact()) flags.push_back("exact");

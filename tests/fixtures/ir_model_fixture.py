@@ -88,10 +88,10 @@ define i64 @f(i32 %x, i32 %y) {
 }
 """).function("f")
     got = {i.op: i.flags for i in flags.instructions() if i.flags}
-    assert got["or"] == {"disjoint"}, got
-    assert got["add"] == {"nsw", "nuw"}, got
-    assert got["udiv"] == {"exact"}, got
-    assert got["zext"] == {"nneg"}, got
+    assert got["or"] == ("disjoint",), got
+    assert got["add"] == ("nuw", "nsw"), ("flags must arrive in LLVM print order", got)
+    assert got["udiv"] == ("exact",), got
+    assert got["zext"] == ("nneg",), got
 
     # 5) STRUCTURED TYPES: a gep's source type arrives as a real struct, so field offsets are a
     #    computation over types rather than a regex over `{i32, i64}` text.

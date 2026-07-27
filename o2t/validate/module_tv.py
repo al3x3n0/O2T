@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import subprocess
 
+from o2t.validate import ir_model as ir
 from o2t.validate import scalar_ir as si
 
 _DEFINE_RE = re.compile(r"^define\s+(.*?)@([\w.$]+)\s*\(", re.M)
@@ -94,7 +95,22 @@ def module_tv(z3_bin: str, before_ll: str, after_ll: str, timeout: int = 15) -> 
     added = [n for n in after if n not in before]
     steps, refuted, uncertain = [], False, False
 
-    for n in survivors:
+    # A module LLVM cannot parse is not a program, so it cannot be a refinement of anything: a pass
+    # that emits invalid IR is broken outright. Deleting a still-referenced function produces exactly
+    # this (`use of undefined value '@dead'`), and it is worth stating as its own verdict rather than
+    # inferring it downstream -- the text reader tolerated the dangling reference and only caught the
+    # problem indirectly. The per-function deletion analysis below still runs, so the culprit is still
+    # localized; only the SMT work over survivors is skipped, since there is nothing well-formed to
+    # translate.
+    valid_target = True
+    try:
+        ir.parse(after_ll)
+    except ir.IrParseError as exc:
+        valid_target, refuted = False, True
+        steps.append({"function": "<module>", "kind": "module", "status": "invalid-ir",
+                      "reason": str(exc).splitlines()[0][:160]})
+
+    for n in (survivors if valid_target else []):
         v = signature_tv(z3_bin, before_ll, after_ll, n, timeout=timeout)   # handles sig changes too
         steps.append({"function": n, "kind": "survivor", "status": v["status"]})
         if v["status"] == "refuted":
