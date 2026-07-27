@@ -813,6 +813,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/concrete_tv_fixture.py; else echo 'concrete_tv_fixture: z3/opt/lli not found, skipped'; fi"
     )
+    # The undeclared `noundef` assumption: modeling each parameter as ONE definite constant made
+    # `ret 0 -> xor %x,%x` PROVE while Alive2 refutes it (an undef argument may read differently at
+    # each use). The guard declines exactly where that assumption is load-bearing; `noundef` declares
+    # it and the transform proves again. Every verdict confirmed against Alive2 when installed.
+    add_test(
+        NAME undef_param_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/undef_param_fixture.py
+    )
     # `freeze` in Track B -- the poison-laundering instruction InstCombine introduces. Its
     # nondeterministic choice is EXISTENTIAL on the target (so freezing newly introduced poison over a
     # definite source refutes) and UNIVERSAL on the source (so freeze-REMOVAL declines: without an

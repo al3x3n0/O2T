@@ -24,16 +24,16 @@ unusually rigorous soundness discipline — not a production verifier of real pa
   divergent), so the recovery is grounded against what the pass *actually does*, not just its intent.
   And **whole-function TV** (`corpus_tv_fixture`) proves the *entire* transformation sound over real
   code: for every function in LLVM's own InstCombine tests, real `opt` runs and the whole-function
-  refinement is proved. Measured over `and/or/xor/add.ll` — **417/715 functions (58%) proved sound
-  end-to-end, 0 false refutations, 0 of them vacuous**; the rest decline (loop shapes, unmodeled
-  vocabulary, ~11 timing-dependent z3-timeouts). The scalar refinement path accounts for 351 and the
-  memory/vector dispatch for the other 66. Every proof is additionally probed for **vacuity** (a
+  refinement is proved. Measured over `and/or/xor/add.ll` — **428/715 functions (60%) proved sound
+  end-to-end, 0 false refutations, 0 of them vacuous**; the rest decline (unmodeled vocabulary, vector
+  and memory shapes, a few timing-dependent z3-timeouts). The scalar refinement path accounts for 359
+  and the memory/vector dispatch for the other 69. Every proof is additionally probed for **vacuity** (a
   refinement over a source that is UB/poison everywhere is valid but says nothing) — none is.
   Acyclic **branch/phi** functions are now handled by symbolic CFG execution (`multiblock_tv_fixture`),
   and **local scalar memory** by symbolic mem2reg over non-escaping allocas (`memory_tv_fixture` —
   verifies mem2reg/sroa against opt's own SSA output; escapes decline); both models validated against
   `lli` execution. **Pointer-side-effect memory** (writes through pointer args) is TV'd over the memory state with the SMT theory of arrays (`mem_state_tv_fixture` — aliasing-precise; `dse` of a dead store proves, dropping a live store or an alias-unsound load refutes). **Vectors** are handled by a lane model (`vec_tv_fixture` — element-wise ops + shuffle/extract/insert; vector folds prove, a wrong lane or shuffle mask refutes; scalable vectors decline). **Pointer arithmetic** (`gep_tv_fixture`) is address arithmetic over the memory array — `p[i]`/`p[j]` alias iff `i==j`, so gep reassociation proves and alias-unsound loads refute, for free from the theory of arrays. **Scalable vectors** (runtime length) are TV'd at one symbolic lane (element-wise proofs cover all lanes; cross-lane ops decline) — `vec_tv_fixture` covers both fixed and scalable. Memory is **byte-addressable** (`gep_tv_fixture`), so i8/struct geps and **type punning** (store i32, load i8) are one model — struct fields are byte offsets that provably don't alias. **`freeze`** (poison laundering) is modeled on the target side (`freeze_tv_fixture` — introducing one verifies, which is what InstCombine does; REMOVING one declines, because with no `undef` model the identity shortcut proves `freeze %x -> %x`, which Alive2 refutes). **The bounded-code fragment is complete**; the only category outside it is loops (the recurrence track's domain, by design). This verifies the *composition* of whatever folds fired — a whole-function (not
-  whole-pass) end-to-end result whose reach (58%) far exceeds source-recovery (Track A, ~4%) because
+  whole-pass) end-to-end result whose reach (60%) far exceeds source-recovery (Track A, ~4%) because
   it TVs the real IR directly, with the miscompile teeth biting. **Attribution** (`attribute_fixture`)
   welds the two tracks: for each proved whole-function transform it credits the recovered fold whose
   before/after matches it (SMT-exact, so no mis-attribution — an unsound fold is never credited),

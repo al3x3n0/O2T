@@ -33,6 +33,7 @@ recovered fold that provably matches it.
 | Width-changing loop recurrences; loop-nest transforms; loop vectorization | ⚠️ declines | stated loop-track boundary |
 | In-place-mutation folds; dynamic-opcode folds; worklist fixpoints | ⚠️ declines | recovery-fragment boundary |
 | `freeze` (poison laundering) | ✅ verifies introduction (Track B) | a pass INTRODUCING `freeze` is verified (its choice is existential); REMOVING one declines — without an `undef` model the identity shortcut is a false proof reference Alive2 refutes |
+| Transforms whose soundness depends on an argument being `undef` | ⚠️ declines unless `noundef` | parameters are modeled as one definite value, i.e. `noundef` is assumed; where that assumption is load-bearing (the target's result depends on a non-`noundef` parameter the source's does not) the verdict declines. Declaring `noundef` makes it provable |
 | Full undefined-behavior accounting (pointer validity, `undef` distinct from poison) | ⚠️ partial | single poison bit; UB modeled for div/rem and flags, not pointer validity; `undef` unmodeled, so `freeze`-removal and undef-sensitive folds decline |
 
 ✅ = a real proof or refutation with a witness. ⚠️ = an explicit `unsupported` decline (a sound
@@ -40,20 +41,23 @@ non-answer), **never** a false `proved`.
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV:** **417 / 715 (58%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
-  functions proved sound end-to-end, **0 false refutations**; 287 decline on shapes above and ~11 hit
-  the per-function solver timeout (timing-dependent, a sound decline). Re-measured at the current
-  head: the scalar refinement path proves 351 (the previously documented figure) and the
-  memory/vector dispatch adds the other 66.
+- **Track B whole-function TV:** **428 / 715 (60%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
+  functions proved sound end-to-end, **0 false refutations**; the rest decline on shapes above, plus a
+  handful of timing-dependent per-function solver timeouts (a sound decline). Re-measured at the
+  current head: the scalar refinement path proves 359 and the memory/vector dispatch the other 69.
+  The previously documented 351/715 (49%) counted the scalar path alone.
+- **Assumption hygiene.** Where a proof would rest on an undeclared assumption, O2T declines instead:
+  a source that is UB/poison everywhere is flagged vacuous (below), and a transform whose soundness
+  needs an argument to be non-`undef` declines unless the argument is declared `noundef`.
 - **Non-vacuity: zero vacuous proofs.** A refinement proof is vacuously true wherever the source is UB
   or poison, so `udiv %x, 0` legitimately "refines" to anything — and an *over-approximated* UB model
   would quietly convert refutations into proofs of exactly that shape, invisibly to the execution and
   Alive2 oracles (which are consulted only on the proved set). Every proof on the refinement path
-  (~349 of the 417; the split with the value-equality validators shifts a little with timeouts) is
+  (~359 of the 428; the split with the value-equality validators shifts a little with timeouts) is
   probed for a defined source: **none is vacuous**, so the reach number is not inflated and the
   UB/poison model is not over-approximating anywhere on LLVM's own tests. The memory and vector
   validators carry no vacuity flag — they compare *values* and have no UB term to over-approximate.
-- **Solver independence: 417 / 417 confirmed by a second solver.** Every decided query is replayed
+- **Solver independence: 428 / 428 confirmed by a second solver.** Every decided query is replayed
   verbatim through an independently implemented SMT solver (`bitwuzla`, or `cvc5`/`cvc4` if present),
   including the QF_ABV memory encoding — **zero disagreements**. The other oracles check O2T's
   *encoding*; this is the only one that checks the *solver*.

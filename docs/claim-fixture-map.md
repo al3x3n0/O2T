@@ -87,6 +87,7 @@ equivalent to the input — with a minimized concrete counterexample on failure.
 | Track B proofs are non-vacuous — an injected over-approximated UB model makes a real miscompile prove, and the anti-vacuity probe catches it | `vacuity_tv_fixture` |
 | Track B verdicts replayed through an independent SMT solver (the only oracle that checks the *solver*, not the encoding; a lying stub is caught, an absent solver reports `skipped`) | `vacuity_tv_fixture` |
 | `freeze` (poison laundering) verified on introduction, declined on removal — the asymmetry forced by having no `undef` model, every verdict confirmed against Alive2 | `freeze_tv_fixture` |
+| The `noundef` assumption behind the single-constant parameter model is declared and enforced — the load-bearing shape declines, `noundef` makes it provable | `undef_param_fixture` |
 | Exhaustive poison-flag coverage (every `(op, flag)` refutes on introduce / proves on remove; completeness-enforced) | `flag_matrix_fixture` |
 | Common integer intrinsics modeled (`ctpop`/`abs`/`ctlz`/`cttz`/`fshl`/`fshr`/u,s`{add,sub}.sat`), each lli-validated | `intrinsics_ir_fixture` |
 | Unified Track B dispatcher — memory/vector functions prove via `mem_state`/`vec`/`svec` instead of declining | `track_b_dispatch_fixture` |

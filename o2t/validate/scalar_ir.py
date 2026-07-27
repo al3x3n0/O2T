@@ -59,17 +59,74 @@ def _function_body(ll_text, func):
     return ll_text[m.end():j - 1]
 
 
+# A parameter may carry attributes between its type and its name (`i32 noundef %x`,
+# `i32 range(i32 0, 8) %x`, `i8 signext %c`). They are skipped for typing purposes, but `noundef` is
+# read separately by `_noundef_params` because it is what JUSTIFIES modeling the parameter as a single
+# definite value (see the undef-risk guard in `validate_transform`).
+_PARAM_ATTRS = r"(?:[\w.]+(?:\([^)]*\))?\s+)*"
+
+
+def _sig_text(ll_text, func):
+    """The text between the parentheses of `define ... @func(...)`, scanning to the MATCHING close
+    paren. A `([^)]*)` capture stops at the first `)`, which an attribute may contain
+    (`i32 range(i32 0, 8) %y`), truncating the list and silently dropping every later parameter."""
+    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(", ll_text)
+    if not m:
+        return None
+    depth, j = 1, m.end()
+    while j < len(ll_text) and depth:
+        depth += {"(": 1, ")": -1}.get(ll_text[j], 0)
+        j += 1
+    return ll_text[m.end():j - 1]
+
+
+def _split_params(sig):
+    """Split a parameter list on commas at PAREN DEPTH ZERO. An attribute may itself contain a comma
+    (`i32 range(i32 0, 8) %y`), and a naive split severs the parameter from its name, which drops it
+    from the model and declines the whole function on an unresolvable operand."""
+    parts, depth, cur = [], 0, ""
+    for ch in sig:
+        if ch in "([<":
+            depth += 1
+        elif ch in ")]>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur); cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
 def _params(ll_text, func):
     """Parameter name -> width, from the signature (declared as bitvectors). Anchored on the `define`
     so a forward-reference CALL SITE `@func(args)` above the definition is not misread as the
-    signature (which would bind callee params to the caller's argument names)."""
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    signature (which would bind callee params to the caller's argument names). Parameter attributes
+    between the type and the name are skipped, so an attributed parameter is modeled rather than
+    making the whole function decline on an unresolvable operand."""
+    sig = _sig_text(ll_text, func)
     out = {}
-    if m:
-        for part in m.group(1).split(","):
-            pm = re.search(r"i(\d+)\s+(%[\w.]+)", part.strip())
+    if sig is not None:
+        for part in _split_params(sig):
+            pm = re.search(r"i(\d+)\s+" + _PARAM_ATTRS + r"(%[\w.]+)", part.strip())
             if pm:
                 out[pm.group(2)] = int(pm.group(1))
+    return out
+
+
+def _noundef_params(ll_text, func):
+    """The parameters declared `noundef`. Everything else may be `undef` at run time, and an `undef`
+    value is NOT one value: each USE of it may observe a different one. This model gives every
+    parameter a single SMT constant, i.e. it assumes `noundef` on every argument -- so this set is
+    exactly where that assumption is DECLARED rather than assumed (see the undef-risk guard)."""
+    sig = _sig_text(ll_text, func)
+    out = set()
+    if sig is not None:
+        for part in _split_params(sig):
+            pm = re.search(r"i\d+\s+" + _PARAM_ATTRS + r"(%[\w.]+)", part.strip())
+            if pm and re.search(r"\bnoundef\b", part):
+                out.add(pm.group(1))
     return out
 
 
@@ -582,6 +639,13 @@ def _query(z3_bin, smt, timeout):
     return (out.strip().splitlines()[0].strip() if out.strip() else "error"), out
 
 
+def _mentions(name, *terms):
+    """Does this parameter's SMT constant appear in any of these terms? Word-boundary matched so `%x`
+    does not match `%x1`."""
+    pat = re.compile(re.escape(name) + r"(?![\w.])")
+    return any(pat.search(t) for t in terms if t)
+
+
 def _smt(decls, goal, get_model=False):
     lines = ["(set-logic QF_BV)", *decls, f"(assert {goal})", "(check-sat)"]
     if get_model:
@@ -634,6 +698,32 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if p0 != p1 or w0 != w1:
         return {"status": "error", "function": func, "reason": "signature changed"}
+
+    # UNDEF-RISK GUARD. Every parameter is modeled as ONE definite SMT constant, which silently
+    # assumes `noundef` on every argument. LLVM does not: an argument may be `undef`, and an `undef`
+    # value is not one value -- each USE of it may observe a different one. The assumption becomes
+    # LOAD-BEARING exactly when the TARGET's result depends on such a parameter and the SOURCE's does
+    # not: the source is then determined where the target is not, so the target has behaviours the
+    # source lacks. `ret i32 0 -> xor %x, %x` is the canonical case -- it PROVED here (both sides are
+    # 0 under one constant) while reference Alive2 refutes it, and adding `noundef %x` makes Alive2
+    # prove it, which pins the mechanism. Neither the lli nor the Alive2 oracle catches this in the
+    # corpus sweeps, because real InstCombine never introduces a duplicated argument use; it is
+    # reachable through this API, which compose_tv/module_tv/argprom_tv and user passes all go through.
+    # Measured cost on LLVM 18 and/or/xor/add/select/freeze.ll: 0 of 447 proofs (the 10 functions
+    # where `opt` legitimately multiplies a parameter use all have a source that already depends on
+    # it, and Alive2 confirms all 10 sound).
+    # The test is on the returned VALUE and its poison, not on UB: UB is checked existentially over
+    # the parameter's whole range either way (`udiv %a, %b` is UB for some `%b` whether that `%b` is
+    # one constant or undef), so including it only over-declines -- it wrongly declined the
+    # introduce-a-dead-div-by-zero teeth, which must still refute.
+    risky = [n for n in sorted(p0) if n not in _noundef_params(src_text, func)
+             and _mentions(n, r1, tp) and not _mentions(n, r0, sp)]
+    if risky:
+        return {"status": "unsupported", "function": func,
+                "reason": f"target result depends on possibly-undef parameter(s) "
+                          f"{', '.join(risky)} the source result does not (add `noundef` to declare "
+                          f"them defined; an undef argument may read differently at each use)"}
+
     decls = [f"(declare-const {name} (_ BitVec {w}))" for name, w in sorted(p0.items())]
     decls += [f"(declare-const {name} (_ BitVec {w}))" for name, w in fresh]
     # Alive2 refinement refutation: an input where the source is defined (no UB, value not poison)

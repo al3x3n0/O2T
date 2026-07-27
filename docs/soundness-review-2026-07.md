@@ -154,9 +154,9 @@ they can never surface as an Alive2 disagreement. `cv-fuzz-differential` now rep
 alongside the totals (a small single-digit percentage on the scalar shape, higher on `cfg`), so
 "O2T proved N of M" is not misread as reach.
 
-**Measured over LLVM 18's `and/or/xor/add.ll` (715 functions):** 417 proved (58% — the scalar
-refinement path 349, the memory/vector dispatch 68, the split shifting slightly with timeouts),
-**zero vacuous** and **417/417 confirmed by bitwuzla, zero disagreements**. So the reach figure is not
+**Measured over LLVM 18's `and/or/xor/add.ll` (715 functions):** 428 proved (60% — the scalar
+refinement path 359, the memory/vector dispatch 69, the split shifting slightly with timeouts),
+**zero vacuous** and **428/428 confirmed by bitwuzla, zero disagreements**. So the reach figure is not
 inflated by information-free proofs, and no verdict rests on z3 alone. The vacuity count is a new
 standing audit of the UB model: it is zero today, and a nonzero value is a signal to inspect.
 
@@ -175,9 +175,40 @@ disagreements over 1,000 pairs across two seeds**, with all 12 refutations match
 nothing, since those tests put `freeze` in the *source*, where the decline is by design and is now the
 file's top decline reason — an honest signpost at the undef gap.
 
-Still open: a richer UB/`undef` model (single poison bit today; `undef` unmodeled, which is what bounds
-`freeze`), loops in Track B (a cyclic CFG is an outright decline), and the inherent low reach
-(decline-by-default means ~half of a real pass declines).
+**The undeclared `noundef` assumption — a third live false proof.** Following the `freeze` result to
+its source found the assumption underneath it, and the assumption was load-bearing. Track B models each
+parameter as ONE definite SMT constant; LLVM lets an argument be `undef` unless it is declared
+`noundef`, and an `undef` value is not one value — each USE of it may observe a different one. So
+
+```
+define i32 @f(i32 %x) { ret i32 0 }   ->   { %r = xor i32 %x, %x   ret i32 %r }
+```
+
+**proved** (both sides are 0 under a single constant) while reference Alive2 **refutes** it; the same
+holds for `sub %x,%x` and `icmp eq %x,%x`. Adding `noundef %x` makes Alive2 prove the very same
+transform, which pins the mechanism exactly: the verdict was correct under an assumption never
+declared. Note *how it was found* — hand-built adversarial probes, not the campaigns. The oracles run
+over corpus sweeps where real InstCombine produces the target, and InstCombine never *introduces* a
+duplicated argument use (it folds the other way), so 2,600+ fuzzed functions and the entire corpus proved set
+could not reach the class. It is reachable through the `validate_transform` API, which `compose_tv`,
+`module_tv`, `argprom_tv` and any user validating their own pass go through. **Lesson: an oracle that
+only ever sees inputs from one producer cannot audit the assumptions the producer happens to respect.**
+
+Fix: `noundef` is now parsed (so the assumption can be *declared*, and attributed parameters no longer
+decline on an unresolvable operand — a small reach win in itself), and a guard declines when the
+TARGET's returned value or its poison depends on a non-`noundef` parameter the SOURCE's does not —
+exactly the shape where the source is determined and the target is not. The test is on the result
+*term*, not textual occurrence, so a source that mentions the parameter only in dead code is still
+guarded (Alive2 confirms that case is genuinely unsound). It is deliberately not keyed on UB, which is
+checked existentially over the parameter's range either way — including it wrongly declined the
+introduce-a-dead-div-by-zero teeth. Measured cost: **0 of 447**; net reach *rose*, because attribute
+parsing recovers more functions than the guard declines. Pinned by `undef_param_fixture`, every verdict
+confirmed against Alive2.
+
+Still open: a full `undef` lattice (the guard declines the load-bearing cases rather than modeling
+per-use nondeterminism, which is also what bounds `freeze`-removal and ~45 source-side declines), loops
+in Track B (a cyclic CFG is an outright decline), and the inherent low reach (decline-by-default means
+~half of a real pass declines).
 
 ## Regression teeth
 
@@ -192,3 +223,4 @@ Still open: a richer UB/`undef` model (single poison bit today; `undef` unmodele
 | vacuous refinement | `vacuity_tv_fixture` — an injected over-approximated UB model makes a real miscompile prove; the probe catches it |
 | unchecked solver | `vacuity_tv_fixture` — bitwuzla reproduces proof and refutation; a lying stub is caught; absent ⇒ `skipped` |
 | freeze identity shortcut | `freeze_tv_fixture` — freeze-removal declines (Alive2 refutes it); introduction proves; new-poison freeze refutes |
+| undeclared `noundef` | `undef_param_fixture` — `ret 0 -> xor %x,%x` declines; `noundef` makes it prove; UB refutations unaffected |

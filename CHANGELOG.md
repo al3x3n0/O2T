@@ -30,11 +30,25 @@ All notable changes to O2T are documented here. Format follows
   pairs across two seeds; all 12 refutations matched Alive2). Measured lift: +3 functions on LLVM's
   `select.ll`.
 
+- **The undeclared `noundef` assumption, and the false proofs it produced.** Track B modeled each
+  parameter as one definite SMT constant — silently assuming `noundef` on every argument. LLVM lets an
+  argument be `undef`, where each *use* may observe a different value, so `ret i32 0 -> xor %x, %x`
+  (and `sub`, `icmp eq` of a parameter with itself) **proved** while reference Alive2 refutes them;
+  adding `noundef %x` makes Alive2 prove the same transform, pinning the mechanism. Found by hand-built
+  adversarial probes, not by the campaigns: the oracles only ever see targets produced by real
+  InstCombine, which never *introduces* a duplicated argument use, so the class is reachable through
+  the `validate_transform` API rather than through a corpus sweep. `noundef` is now parsed, and a guard
+  declines exactly where the assumption is load-bearing (the target's result or its poison depends on a
+  non-`noundef` parameter the source's does not), leaving UB refutations and sound transforms alone.
+  Parameter attributes are now understood generally — including ones containing commas and parentheses,
+  which previously truncated the signature and silently dropped every later parameter. Gated by
+  `undef_param_fixture` with every verdict confirmed against Alive2.
+
 ### Changed
-- Measured Track B reach re-stated at **417/715 (58%)** of LLVM 18's `and/or/xor/add.ll` — the scalar
-  refinement path 349–351 plus the memory/vector dispatch — with **zero vacuous proofs** and
-  **417/417 confirmed by a second solver, zero disagreements**. The previously documented 351/715
-  (49%) counted the scalar path alone.
+- Measured Track B reach re-stated at **428/715 (60%)** of LLVM 18's `and/or/xor/add.ll` — the scalar
+  refinement path 359 plus the memory/vector dispatch 69 — with **zero vacuous proofs** and
+  **428/428 confirmed by a second solver, zero disagreements**. The previously documented 351/715
+  (49%) counted the scalar path alone; parameter-attribute parsing accounts for the latest rise.
 
 ### Planned
 - Reproducible install + CI: a container pinning Z3 + LLVM 18, env-driven tool discovery replacing the
