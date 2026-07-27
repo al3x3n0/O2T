@@ -813,6 +813,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/concrete_tv_fixture.py; else echo 'concrete_tv_fixture: z3/opt/lli not found, skipped'; fi"
     )
+    # Track B's ANTI-VACUITY guard + SECOND-SOLVER cross-check -- the two checks Track A always had.
+    # A refinement proof over a source that is UB/poison EVERYWHERE is vacuous, and that is what an
+    # over-approximated UB model degrades into: the fixture injects one, watches a genuine miscompile
+    # FALSELY prove, and the probe catch it -- the false-proof class lli and Alive2 cannot see. The
+    # cross-check replays the identical SMT-LIB2 through an independent solver (bitwuzla/cvc5/cvc4).
+    add_test(
+        NAME vacuity_tv_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/vacuity_tv_fixture.py
+    )
     # Differential vs reference Alive2: the ground-truth POISON oracle -- it catches an injected
     # poison-encoding FALSE PROOF that z3's shared encoding and lli's value oracle both miss.
     add_test(

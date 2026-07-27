@@ -224,9 +224,16 @@ def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
     return ret_term, ret_width, mem, derefs
 
 
-def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
+def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
+                 cross_check: bool = False, extra_solvers=()) -> dict:
     """TV a pointer-side-effect function over its memory state. Proved iff the return value AND the
-    final memory state agree for all initial memories and arguments; refuted on a witness."""
+    final memory state agree for all initial memories and arguments; refuted on a witness.
+
+    `cross_check` replays the decided query through a second, independently implemented SMT solver
+    (see scalar_ir.cross_check_smt). It matters most HERE: this is the only QF_ABV encoding in Track B,
+    and the array theory is the least-exercised corner of the solver stack. No vacuity probe: this
+    model compares VALUES and has no UB/poison term to over-approximate (the poison-risk gate on the
+    refutation side is the corresponding guard)."""
     if _signature(before_ll, func) != _signature(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
     try:
@@ -269,8 +276,10 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
+    xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
+          if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func}     # value-equal everywhere => a sound refinement
+        return {"status": "proved", "function": func, **xc}   # value-equal everywhere => sound refinement
     if head == "sat":
         # This model compares VALUES, not poison-refinement. So a value mismatch is a genuine miscompile
         # ONLY when the source is poison-free; otherwise the mismatch may be a SOUND poison exploitation
@@ -279,5 +288,5 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         if si.poison_risk(before_ll, func):
             return {"status": "unsupported", "function": func,
                     "reason": "value mismatch under possible poison (memory model lacks poison refinement)"}
-        return {"status": "refuted", "function": func, "witness": out}
+        return {"status": "refuted", "function": func, "witness": out, **xc}
     return {"status": "error", "function": func, "reason": head}

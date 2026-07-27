@@ -185,14 +185,20 @@ def main(argv=None) -> int:
            "vector": lambda: _gen_vector(rng, args.insns),
            "cfg": lambda: _gen_cfg(rng, args.insns)}[args.shape]
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
+    vacuous = 0
     for i in range(args.count):
         before = gen()
         after = si.run_passes(before, passes, opt)
         if after is None:
             opt_fail += 1
             continue
-        o2t = validate_transform_ex(z3, before, after, "f")["status"]
+        verdict = validate_transform_ex(z3, before, after, "f")
+        o2t = verdict["status"]
         pair[o2t] += 1
+        # A random generator readily emits functions that are UB on every input, and refinement holds
+        # vacuously there -- a valid but information-free `proved` that Alive2 also accepts, so it can
+        # never show up as a disagreement. Count them so the proved total is not read as reach.
+        vacuous += 1 if verdict.get("vacuous") is True else 0
         if o2t not in ("proved", "refuted"):
             continue                                     # only the decisive verdicts can disagree
         av = alive_refines(before, after, alive)["status"]
@@ -204,7 +210,8 @@ def main(argv=None) -> int:
 
     tag = args.shape + ("+intrinsics" if args.intrinsics else "")
     print(f"[{tag} / {passes}] generated {args.count} (opt-failed {opt_fail}); "
-          f"O2T {dict(pair)}; Alive2 {dict(alive_v)}")
+          f"O2T {dict(pair)} (of the proved, {vacuous} vacuous -- source UB/poison everywhere); "
+          f"Alive2 {dict(alive_v)}")
     print(f"DISAGREEMENTS: {len(disagreements)}")
     for kind, i, b, a in disagreements[:10]:
         print(f"\n!! {kind} at #{i}\n-- before --\n{b}-- after --\n{a}")

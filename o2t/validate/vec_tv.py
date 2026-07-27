@@ -245,9 +245,11 @@ def _signature_scal(ll_text, func):
     return out
 
 
-def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
+def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
+            cross_check: bool = False, extra_solvers=()) -> dict:
     """TV an element-wise scalable-vector function at one SYMBOLIC lane. Because element-wise ops do not
-    cross lanes, proving the lanes equal for an unconstrained lane index proves it for ALL lanes."""
+    cross lanes, proving the lanes equal for an unconstrained lane index proves it for ALL lanes.
+    `cross_check` replays the decided query through a second, independent solver."""
     if _signature_scal(before_ll, func) != _signature_scal(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
     try:
@@ -266,8 +268,10 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
+    xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
+          if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func}
+        return {"status": "proved", "function": func, **xc}
     if head == "sat":
         # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
         # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
@@ -275,12 +279,14 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
         if si.poison_risk(before_ll, func):
             return {"status": "unsupported", "function": func,
                     "reason": "value mismatch under possible poison (lane model lacks poison refinement)"}
-        return {"status": "refuted", "function": func, "witness": out}
+        return {"status": "refuted", "function": func, "witness": out, **xc}
     return {"status": "error", "function": func, "reason": head}
 
 
-def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15) -> dict:
-    """TV a vector function lane-by-lane. Proved iff every result lane agrees for all inputs."""
+def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
+           cross_check: bool = False, extra_solvers=()) -> dict:
+    """TV a vector function lane-by-lane. Proved iff every result lane agrees for all inputs.
+    `cross_check` replays the decided query through a second, independent solver."""
     if _signature(before_ll, func) != _signature(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
     try:
@@ -299,8 +305,10 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
+    xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
+          if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func}
+        return {"status": "proved", "function": func, **xc}
     if head == "sat":
         # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
         # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
@@ -308,5 +316,5 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
         if si.poison_risk(before_ll, func):
             return {"status": "unsupported", "function": func,
                     "reason": "value mismatch under possible poison (lane model lacks poison refinement)"}
-        return {"status": "refuted", "function": func, "witness": out}
+        return {"status": "refuted", "function": func, "witness": out, **xc}
     return {"status": "error", "function": func, "reason": head}

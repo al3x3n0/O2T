@@ -26,24 +26,30 @@ def _cross_check(args, z3, opt) -> int:
     """--cross-check: independently confirm every PROVED transform against lli + Alive2 (whichever are
     present) -- oracles that do NOT share O2T's SMT encoding. Any disagreement is a possible false proof
     and exits non-zero."""
+    from o2t.meta.cross_check import detect_solvers
     lli = toolchain.resolve_lli(args.lli_bin)
     alive = shutil.which(args.alive_tv)
-    if not lli and not alive:
-        print("cv-tv-corpus --cross-check: needs lli and/or alive-tv on PATH", file=sys.stderr)
+    second = [n for n, _ in detect_solvers(z3) if n != "z3"]
+    if not lli and not alive and not second:
+        print("cv-tv-corpus --cross-check: needs lli, alive-tv, or a second SMT solver on PATH",
+              file=sys.stderr)
         return 2
-    total, disagreements = Counter(), []
+    total, disagreements, vacuous = Counter(), [], 0
     for path in args.ll:
         r = cross_check_file(z3, path.read_text(), opt, lli_bin=lli, alive_bin=alive, timeout=args.timeout)
         total.update(r["base"])
+        vacuous += r.get("vacuous", 0)
         disagreements += [{**d, "file": path.name} for d in r["disagreements"]]
-        print(f"{path.name}: proved {r['base'].get('proved', 0)}, "
+        print(f"{path.name}: proved {r['base'].get('proved', 0)} (vacuous {r.get('vacuous', 0)}), "
               f"cross-checked {r['cross_checked']}, disagreements {len(r['disagreements'])}")
-    oracles = ", ".join(name for name, present in (("lli", lli), ("alive2", alive)) if present)
+    oracles = ", ".join([name for name, present in (("lli", lli), ("alive2", alive)) if present]
+                        + second)
     print(f"CROSS-CHECK [{oracles}]: {sum(total.values())} functions, "
-          f"{total.get('proved', 0)} proved, {len(disagreements)} disagreement(s)")
+          f"{total.get('proved', 0)} proved ({vacuous} vacuous), {len(disagreements)} disagreement(s)")
     if args.report:
         args.report.write_text(json.dumps(
-            {"counts": dict(total), "oracles": oracles, "disagreements": disagreements}, indent=2) + "\n")
+            {"counts": dict(total), "oracles": oracles, "vacuous": vacuous,
+             "disagreements": disagreements}, indent=2) + "\n")
     if disagreements:
         print("!! INDEPENDENT ORACLE DISAGREEMENTS -- an O2T `proved` a non-encoding oracle contradicts "
               "(a possible FALSE PROOF):", file=sys.stderr)
@@ -77,20 +83,24 @@ def main(argv=None) -> int:
     if args.cross_check:
         return _cross_check(args, z3, opt)
     total = Counter()
-    files = []
+    files, vacuous = [], 0
     for path in args.ll:
         r = validate_file(z3, path.read_text(), opt, timeout=args.timeout)
         total.update(r["counts"])
-        files.append({"file": str(path), "counts": r["counts"],
+        vacuous += r.get("vacuous", 0)
+        files.append({"file": str(path), "counts": r["counts"], "vacuous": r.get("vacuous", 0),
                       "functions": r["functions"] if args.show else None})
         listed = [f["function"] for f in r["functions"]
                   if args.show and (args.show == "all" or f["status"] == args.show)]
-        print(f"{path.name}: {dict(r['counts'])}" + (f"  {listed}" if listed else ""))
+        print(f"{path.name}: {dict(r['counts'])}"
+              + (f" vacuous={r['vacuous']}" if r.get("vacuous") else "")
+              + (f"  {listed}" if listed else ""))
     n = sum(total.values())
     proved = total.get("proved", 0)
-    summary = {"functions": n, "counts": dict(total),
+    summary = {"functions": n, "counts": dict(total), "vacuous": vacuous,
                "proved_pct": (100 * proved // n) if n else 0, "refuted": total.get("refuted", 0)}
-    print(f"AGGREGATE: proved {proved}/{n} ({summary['proved_pct']}%), refuted {summary['refuted']}")
+    print(f"AGGREGATE: proved {proved}/{n} ({summary['proved_pct']}%), refuted {summary['refuted']}, "
+          f"vacuous {vacuous} (proved only because the source is UB/poison everywhere)")
     if args.report:
         args.report.write_text(json.dumps({"summary": summary, "files": files}, indent=2) + "\n")
     return 0

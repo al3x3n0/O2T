@@ -534,13 +534,58 @@ def run_instcombine(src_text, opt_bin="opt"):
     return run_passes(src_text, "instcombine", opt_bin)
 
 
-def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops=None):
+def _query(z3_bin, smt, timeout):
+    """Run one SMT-LIB2 query through z3; return (first-result-line, full stdout). A timeout raises
+    subprocess.TimeoutExpired so the caller can decline rather than guess."""
+    out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
+                         timeout=timeout).stdout
+    return (out.strip().splitlines()[0].strip() if out.strip() else "error"), out
+
+
+def _smt(decls, goal, get_model=False):
+    lines = ["(set-logic QF_BV)", *decls, f"(assert {goal})", "(check-sat)"]
+    if get_model:
+        lines.append("(get-model)")
+    return "\n".join(lines) + "\n"
+
+
+def cross_check_smt(smt, expect, z3_bin=None, extra_solvers=()):
+    """Replay one query through every OTHER SMT-LIB2 solver on PATH (bitwuzla/cvc5/cvc4) and report
+    whether they all reproduce `expect` (sat|unsat). Track B's verdict is a single z3 call over a
+    hand-built encoding: the encoding is cross-checked by lli/Alive2, but the SOLVER is not. Replaying
+    the IDENTICAL script through an independently implemented solver closes that hole -- a
+    disagreement is a solver (or SMT-LIB) bug, not an encoding bug, and no other oracle can see it.
+    Reported `skipped` (honest) when no second solver is installed, never silently passed."""
+    from o2t.meta.cross_check import detect_solvers, run_solver     # lazy: avoids an import cycle
+    solvers = [(n, b) for n, b in detect_solvers(z3_bin or "z3", extra_solvers) if n != "z3"]
+    if not solvers:
+        return {"status": "skipped", "reason": "no second solver on PATH", "solvers": {}}
+    results = {name: run_solver(name, binary, smt) for name, binary in solvers}
+    agree = all(r == expect for r in results.values())
+    return {"status": "agree" if agree else "disagree", "expect": expect, "solvers": results}
+
+
+def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops=None,
+                       check_vacuity=True, cross_check=False, extra_solvers=()):
     """Translate before/after and prove the returned value equal for all inputs -- a closed-loop
     translation validation for ANY value-preserving scalar pass (instcombine, reassociate,
     early-cse, gvn, ...). Returns a verdict dict (status proved|refuted|unsupported|error|timeout).
     `timeout` (seconds) bounds the z3 call so one pathological function cannot hang a corpus sweep --
     a timeout is a sound DECLINE (no verdict), never a proof. `extra_ops` are validated enrichment
-    handlers (o2t/validate/enrich.py) that widen the modeled instruction set."""
+    handlers (o2t/validate/enrich.py) that widen the modeled instruction set.
+
+    `check_vacuity` (default on) probes whether the SOURCE is defined anywhere. Refinement is
+    vacuously true when the source is UB or poison on EVERY input -- `udiv %x, 0` legitimately
+    refines to `ret 12345` -- so such a `proved` is valid but carries no information about the
+    transform. It is also the exact signature of an OVER-APPROXIMATED UB/poison model: claiming UB
+    where LLVM has none turns a would-be refutation into a proof -- the same failure SHAPE as the two
+    false proofs the 2026-07 review found by hand (a model corner that silently converts a refutation
+    into a proof), and the one shape the encoding oracles cannot see, since lli and Alive2 are
+    consulted only on the proved set and agree that a UB source refines to anything. The verdict
+    carries `vacuous: True|False|None` (None = the probe was inconclusive); Track A has had this guard
+    since mini_alive's premise-satisfiability check, Track B had none.
+
+    `cross_check` replays the decided query through a second, independently implemented solver."""
     try:
         p0, r0, w0, sp, su = translate(src_text, func, extra_ops)   # src: value, poison, ub
         p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops)   # tgt: value, poison, ub
@@ -555,19 +600,29 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     refute = smt_and([f"(not {su})",
                       smt_or([tu, smt_and([f"(not {sp})",
                                            smt_or([tp, f"(not (= {r0} {r1}))"])])])])
-    smt = "\n".join(["(set-logic QF_BV)", *decls,
-                     f"(assert {refute})", "(check-sat)", "(get-model)", ""])
+    smt = _smt(decls, refute, get_model=True)
     try:
-        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
-                             timeout=timeout).stdout
+        head, out = _query(z3_bin, smt, timeout)
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
-    head = out.strip().splitlines()[0].strip() if out.strip() else "error"
     if head == "unsat":
-        return {"status": "proved", "function": func}
-    if head == "sat":
-        return {"status": "refuted", "function": func, "witness": out}
-    return {"status": "error", "function": func, "reason": head}
+        verdict = {"status": "proved", "function": func}
+    elif head == "sat":
+        verdict = {"status": "refuted", "function": func, "witness": out}
+    else:
+        return {"status": "error", "function": func, "reason": head}
+
+    if check_vacuity and head == "unsat":
+        # Is the source defined on ANY input? sat => the proof is about real behaviour.
+        defined = smt_and([f"(not {su})", f"(not {sp})"])
+        try:
+            dhead, _ = _query(z3_bin, _smt(decls, defined), timeout)
+        except subprocess.TimeoutExpired:
+            dhead = "timeout"
+        verdict["vacuous"] = {"sat": False, "unsat": True}.get(dhead)   # None: inconclusive probe
+    if cross_check:
+        verdict["cross_check"] = cross_check_smt(smt, head, z3_bin, extra_solvers)
+    return verdict
 
 
 def validate_instcombine(z3_bin, src_text, opt_text, func):
