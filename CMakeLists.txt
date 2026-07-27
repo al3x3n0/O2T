@@ -813,6 +813,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/concrete_tv_fixture.py; else echo 'concrete_tv_fixture: z3/opt/lli not found, skipped'; fi"
     )
+    # `freeze` in Track B -- the poison-laundering instruction InstCombine introduces. Its
+    # nondeterministic choice is EXISTENTIAL on the target (so freezing newly introduced poison over a
+    # definite source refutes) and UNIVERSAL on the source (so freeze-REMOVAL declines: without an
+    # `undef` model the identity shortcut is a false proof Alive2 refutes). Every decisive verdict is
+    # confirmed against reference Alive2 when it is installed.
+    add_test(
+        NAME freeze_tv_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/freeze_tv_fixture.py
+    )
     # Track B's ANTI-VACUITY guard + SECOND-SOLVER cross-check -- the two checks Track A always had.
     # A refinement proof over a source that is UB/poison EVERYWHERE is vacuous, and that is what an
     # over-approximated UB model degrades into: the fixture injects one, watches a genuine miscompile

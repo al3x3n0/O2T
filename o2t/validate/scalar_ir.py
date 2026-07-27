@@ -10,7 +10,8 @@ emitted -- a corrupted fold (e.g. `add`->`sub`) is refuted with a concrete input
 
 Supported (else the function is soundly declined as `unsupported`, never falsely proved): integer
 add/sub/mul/and/or/xor, shl/lshr/ashr, udiv/sdiv/urem/srem, icmp (-> i1), select, zext/sext/trunc,
-constants, and a single `ret`. Every value is modeled as a bitvector of its own width.
+`freeze` (target-side only -- see the `freeze` case in `_instruction`), constants, and a single `ret`.
+Every value is modeled as a bitvector of its own width.
 
 The obligation is Alive2-style REFINEMENT, not raw value-equality: alongside each value we
 carry a `poison` term (true when the value is poison) and a `ub` term (true when computing it is
@@ -90,7 +91,8 @@ def _operand(tok, width, env):
 _MAX_CALL_DEPTH = 6
 
 
-def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0):
+def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
+              side="source", fresh=None):
     """Translate a single-BB integer function to (params, ret_term, ret_width, ret_poison, ret_ub).
     Raises Unsupported on any unmodeled instruction/shape (so it is declined, not mis-proved).
     `extra_ops` is an optional list of handlers `(rhs, env) -> (smt, w, poison, ub) | None` for
@@ -98,7 +100,11 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
     (o2t/validate/enrich.py) before they are installed here, so the core is grown, never guessed.
     `bindings`/`_module`/`_depth` support INTERPROCEDURAL resolution: a `call @g(args)` is modeled by
     translating `g` (from `_module`) with its params bound to the argument terms -- so a caller is
-    translatable and inlining is verifiable. Recursion is bounded by `_MAX_CALL_DEPTH` (else declined)."""
+    translatable and inlining is verifiable. Recursion is bounded by `_MAX_CALL_DEPTH` (else declined).
+    `side` ("source"|"target") and `fresh` (a list the caller appends `(name, width)` declarations to)
+    support instructions whose semantics are NONDETERMINISTIC -- today just `freeze`, whose choice is
+    existential on the target and universal on the source (see the `freeze` case in `_instruction`).
+    The default is the conservative one: without a `fresh` list a source-side freeze simply declines."""
     body = _function_body(ll_text, func)
     if body is None:
         raise Unsupported(f"function {func} not found")
@@ -110,7 +116,7 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
     else:
         env = {name: (name, w, "false", "false") for name, w in params.items()}
     call_ctx = {"module": _module if _module is not None else ll_text,
-                "depth": _depth, "extra_ops": extra_ops}
+                "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh}
     if re.search(r"^\s*br\b", body, re.M):             # any branch -> a multi-block (CFG) function
         return _translate_multiblock(body, params, env, extra_ops, call_ctx)
     # LOCAL scalar memory (single-BB only): symbolic mem2reg over non-escaping allocas. An escaping
@@ -480,6 +486,40 @@ def _instruction(line, env, extra_ops=None, call_ctx=None):
         env[dst] = _INTRINSICS[im2.group(2)](ops, w)
         return
 
+    # `freeze` -- the instruction InstCombine INTRODUCES to launder poison (select->or, and the whole
+    # isGuaranteedNotToBePoison family), so declining it blinds Track B on exactly the poison-critical
+    # folds. Semantics: if the operand is not poison, freeze is the identity; if it is, freeze yields
+    # ONE arbitrary value, fixed for the execution (hence a single fresh constant per `freeze`, reused
+    # at every use of `dst`), and the result is never poison.
+    #
+    # That choice is NONDETERMINISM, and its quantifier depends on which side we are translating.
+    # Refinement is `every TARGET behaviour is one the SOURCE could have produced`, so in the
+    # refutation query the target's pick is EXISTENTIAL (a free constant the solver may choose to
+    # expose a difference -- correct: a target that freezes poison where the source returns a definite
+    # value really is unsound) while the source's pick is UNIVERSAL. A free constant for the source
+    # would let the solver pick the one value that differs and report a FALSE REFUTATION, and QF_BV
+    # cannot carry the quantifier -- so a SOURCE-side freeze always DECLINES.
+    #
+    # It declines even when the operand's poison term is "false", which looks like a needless refusal
+    # (freeze of a definite value is the identity) but is not: this model has no `undef`, and it treats
+    # PARAMETERS as definite. LLVM does not -- an argument may be `undef` unless `noundef`, and
+    # `freeze` is precisely the instruction that observes the difference. Taking the identity shortcut
+    # makes `freeze %x -> %x` prove, which reference Alive2 REFUTES (target `%x` may be undef, source
+    # `%z` is one fixed value). Removing a freeze is therefore outside the fragment until undef is
+    # modeled; introducing one -- what InstCombine actually does -- is inside it.
+    fz = re.fullmatch(r"freeze\s+i(\d+)\s+(\S+)", rhs)
+    if fz:
+        w = int(fz.group(1))
+        v, _, vp, vu = _operand(fz.group(2), w, env)
+        if call_ctx is None or call_ctx.get("side") != "target" or call_ctx.get("fresh") is None:
+            raise Unsupported("freeze in the source (its nondeterministic choice is universal, and "
+                              "this model has no undef -- so the identity shortcut is unsound)")
+        fresh = call_ctx["fresh"]
+        name = f"frz{len(fresh)}_{call_ctx['side']}"
+        fresh.append((name, w))
+        env[dst] = (f"(ite {vp} {name} {v})", w, "false", vu)
+        return
+
     cm = re.fullmatch(r"(zext|sext|trunc)\s+i(\d+)\s+(\S+)\s+to\s+i(\d+)", rhs)
     if cm:
         src_w, dst_w = int(cm.group(2)), int(cm.group(4))
@@ -586,14 +626,16 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     since mini_alive's premise-satisfiability check, Track B had none.
 
     `cross_check` replays the decided query through a second, independently implemented solver."""
+    fresh: list = []                                   # nondeterministic choices (freeze), declared below
     try:
-        p0, r0, w0, sp, su = translate(src_text, func, extra_ops)   # src: value, poison, ub
-        p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops)   # tgt: value, poison, ub
+        p0, r0, w0, sp, su = translate(src_text, func, extra_ops, side="source", fresh=fresh)
+        p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops, side="target", fresh=fresh)
     except Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if p0 != p1 or w0 != w1:
         return {"status": "error", "function": func, "reason": "signature changed"}
     decls = [f"(declare-const {name} (_ BitVec {w}))" for name, w in sorted(p0.items())]
+    decls += [f"(declare-const {name} (_ BitVec {w}))" for name, w in fresh]
     # Alive2 refinement refutation: an input where the source is defined (no UB, value not poison)
     # but the target misbehaves -- it is UB, becomes poison, or returns a different value. (A pass
     # that only DROPS a flag / removes UB cannot satisfy this, so it still proves.)

@@ -29,11 +29,14 @@ def main() -> int:
         return 0
 
     # A small batch of EACH Track B shape -- scalar (poison flags), the modeled intrinsics, the
-    # theory-of-arrays memory model, and the vector lane model. Each cross-checked against Alive2.
+    # theory-of-arrays memory model, the vector lane model, the multi-block CFG path, and the freeze
+    # encoding (whose target is synthesized, since InstCombine essentially never emits `freeze` on
+    # random IR -- so this is the only way that model gets fuzzed). Each cross-checked against Alive2.
     for extra, label in ((["--intrinsics"], "scalar+intrinsics"),
                          (["--shape", "memory"], "memory"),
                          (["--shape", "vector"], "vector"),
-                         (["--shape", "cfg"], "cfg")):
+                         (["--shape", "cfg"], "cfg"),
+                         (["--shape", "freeze"], "freeze")):
         proc = subprocess.run([sys.executable, str(TOOL), "--count", "8", "--seed", "20704",
                                "--insns", "8", *extra], capture_output=True, text=True, timeout=300)
         out = proc.stdout + proc.stderr
@@ -41,10 +44,11 @@ def main() -> int:
         assert "DISAGREEMENTS: 0" in out and "generated 8" in out, (label, out)
 
     print("fuzz_differential_fixture OK: small differential-fuzz batches across all Track B shapes -- "
-          "scalar+intrinsics, pointer-memory (theory of arrays), and fixed vectors (lane model) -- each "
-          "random IR -> real opt -> O2T vs reference Alive2, found ZERO disagreements. A standing "
-          "regression net for false proofs over the whole fragment (full campaign: cv-fuzz-differential "
-          "--shape {scalar,memory,vector} [--intrinsics] --count N)")
+          "scalar+intrinsics, pointer-memory (theory of arrays), fixed vectors (lane model), the "
+          "multi-block CFG path, and the freeze encoding -- each O2T vs reference Alive2, found ZERO "
+          "disagreements. A standing regression net for false proofs over the whole fragment (full "
+          "campaign: cv-fuzz-differential --shape {scalar,memory,vector,cfg,freeze} [--intrinsics] "
+          "--count N)")
     return 0
 
 

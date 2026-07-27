@@ -157,6 +157,54 @@ def _gen_cfg(rng, n_insns=3, w=32) -> str:
                        + ["m:"] + mv + ["}"]) + "\n")
 
 
+def _gen_freeze(rng, n_insns=6, w=32):
+    """A (before, after) pair for the FREEZE encoding -- the one shape `opt` cannot be used to reach.
+
+    Every other shape derives `after` by running real `opt`, but InstCombine 18 essentially never
+    emits `freeze` on random straight-line IR (measured: 0 of 400 generated functions), so the freeze
+    model would go unfuzzed. Here the target is SYNTHESIZED instead: take a random function and insert
+    `freeze` at a random SSA value on the target side only -- exactly the transform shape a pass
+    performs when it launders poison. That is still a real differential, because the verdict is decided
+    against reference Alive2, not against a claim of what `opt` would do: a synthesized target may be
+    sound (freezing a value whose poison the source never returns) or unsound (freezing NEWLY poisoned
+    or otherwise altered values), and O2T must agree with Alive2 either way.
+    """
+    vals = [f"%p{i}" for i in range(2)]
+    lines, idx = [], 0
+
+    def opnd():
+        return str(rng.choice([0, 1, -1, rng.randint(0, w - 1)])) if rng.random() < 0.3 else rng.choice(vals)
+
+    for _ in range(n_insns):
+        op = rng.choice(_BINOPS)
+        fl = " " + rng.choice(_FLAGS[op]) if op in _FLAGS and rng.random() < 0.6 else ""
+        v = f"%v{idx}"; idx += 1
+        lines.append(f"  {v} = {op}{fl} i{w} {opnd()}, {opnd()}")
+        vals.append(v)
+    ret = rng.choice(vals)
+    sig = ", ".join(f"i{w} %p{i}" for i in range(2))
+    before = f"define i{w} @f({sig}) {{\n" + "\n".join(lines) + f"\n  ret i{w} {ret}\n}}\n"
+
+    # The target freezes one value. Half the time it also perturbs a flag, so the batch contains both
+    # sound and unsound targets -- a fuzzer that only generates sound pairs cannot detect over-permissive
+    # proving.
+    tgt = list(lines)
+    if rng.random() < 0.5 and tgt:
+        i = rng.randrange(len(tgt))
+        for f in ("nsw", "nuw", "exact", "disjoint"):
+            if f" {f} " in tgt[i]:
+                tgt[i] = tgt[i].replace(f" {f} ", " ", 1)
+                break
+        else:
+            op = tgt[i].split("=")[1].split()[0]
+            if op in _FLAGS:
+                tgt[i] = tgt[i].replace(f"= {op} ", f"= {op} {rng.choice(_FLAGS[op])} ", 1)
+    fz = rng.choice(vals)
+    after = (f"define i{w} @f({sig}) {{\n" + "\n".join(tgt)
+             + f"\n  %fz = freeze i{w} {fz}\n  ret i{w} " + (f"%fz\n}}\n" if fz == ret else f"{ret}\n}}\n"))
+    return before, after
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--count", type=int, default=200)
@@ -165,8 +213,9 @@ def main(argv=None) -> int:
     ap.add_argument("--params", type=int, default=3)
     ap.add_argument("--intrinsics", action="store_true",
                     help="also generate the modeled intrinsic calls (fuzz their encodings vs Alive2)")
-    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg"], default="scalar",
-                    help="scalar (default), pointer memory, fixed vectors, or a branch/phi diamond (cfg)")
+    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg", "freeze"], default="scalar",
+                    help="scalar (default), pointer memory, fixed vectors, a branch/phi diamond (cfg), "
+                         "or freeze (target SYNTHESIZED, not opt output -- see _gen_freeze)")
     ap.add_argument("--passes", help="opt pipeline (default per shape)")
     args = ap.parse_args(argv)
 
@@ -183,15 +232,19 @@ def main(argv=None) -> int:
     gen = {"scalar": lambda: _gen(rng, args.params, args.insns, intrinsics=args.intrinsics),
            "memory": lambda: _gen_memory(rng, args.insns),
            "vector": lambda: _gen_vector(rng, args.insns),
-           "cfg": lambda: _gen_cfg(rng, args.insns)}[args.shape]
+           "cfg": lambda: _gen_cfg(rng, args.insns),
+           "freeze": lambda: _gen_freeze(rng, args.insns)}[args.shape]
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
     vacuous = 0
     for i in range(args.count):
-        before = gen()
-        after = si.run_passes(before, passes, opt)
-        if after is None:
-            opt_fail += 1
-            continue
+        if args.shape == "freeze":              # target synthesized, not opt output (see _gen_freeze)
+            before, after = gen()
+        else:
+            before = gen()
+            after = si.run_passes(before, passes, opt)
+            if after is None:
+                opt_fail += 1
+                continue
         verdict = validate_transform_ex(z3, before, after, "f")
         o2t = verdict["status"]
         pair[o2t] += 1
