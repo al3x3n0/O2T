@@ -97,6 +97,20 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  ✗ {name:<9} MISSING ({tag}) -- {enables}")
             if required:
                 missing_required = True
+    # cv-ir-dump is not on $PATH like the others: it is a build product of this repo, and Track B
+    # REQUIRES it -- IR is parsed by LLVM 18's own parser and there is deliberately no text fallback,
+    # so a missing dumper must be reported here rather than surfacing as a failure mid-verification.
+    try:
+        from o2t.validate import ir_model
+        try:
+            print(f"  ✓ {'ir-dump':<9} {ir_model.dump_binary()}\n      LLVM 18 IR front-end (Track B)")
+        except ir_model.IrDumpUnavailable:
+            print(f"  ✗ {'ir-dump':<9} NOT BUILT (REQUIRED for Track B) -- parses IR with LLVM 18's own\n"
+                  "      parser; build with `cmake -S . -B build -DLLVM_DIR=<llvm18>/lib/cmake/llvm &&\n"
+                  "      cmake --build build --target cv-ir-dump`, or set $O2T_IR_DUMP")
+    except Exception as exc:                       # never let the doctor itself fail
+        print(f"  ? {'ir-dump':<9} could not be checked ({exc})")
+
     print()
     if missing_required:
         print("  Result: NOT READY -- install z3 first (e.g. `brew install z3`, `apt install z3`,\n"

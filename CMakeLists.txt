@@ -82,6 +82,33 @@ add_executable(cv-probe-oracle tools/cv-probe-oracle.cpp)
 target_link_libraries(cv-probe-oracle PRIVATE o2t_core)
 target_compile_options(cv-probe-oracle PRIVATE -Wall -Wextra -Wpedantic)
 
+# cv-ir-dump: the LLVM-18 IR front-end for Track B. Track B parses IR with LLVM's OWN parser and has
+# NO text fallback -- a silent second parser is precisely the dual-path drift this replaces -- so the
+# validators raise `IrDumpUnavailable` when it is missing rather than degrading quietly. It needs only
+# support/core/asmparser, so it is configured independently of the heavier O2T_WITH_LLVM backend.
+option(O2T_BUILD_IR_DUMP "Build cv-ir-dump, the LLVM IR front-end required by Track B" ON)
+if(O2T_BUILD_IR_DUMP)
+    find_package(LLVM REQUIRED CONFIG)
+    # Version-checked explicitly rather than via find_package's compatibility rules, so the failure
+    # names the real constraint: the dump must come from the SAME LLVM the pipeline runs, or the
+    # front-end could accept IR `opt` would reject (or vice versa).
+    if(NOT LLVM_VERSION_MAJOR EQUAL 18)
+        message(FATAL_ERROR "cv-ir-dump requires LLVM 18 (found ${LLVM_PACKAGE_VERSION}). "
+                            "Point -DLLVM_DIR at an LLVM 18 lib/cmake/llvm, or set "
+                            "-DO2T_BUILD_IR_DUMP=OFF to build without Track B.")
+    endif()
+    message(STATUS "cv-ir-dump: using LLVM ${LLVM_PACKAGE_VERSION}")
+    add_executable(cv-ir-dump tools/cv-ir-dump.cpp)
+    # LLVM 18's headers require C++17; set it per-target so the rest of the project keeps its own
+    # standard rather than being dragged forward by the front-end.
+    set_target_properties(cv-ir-dump PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    target_include_directories(cv-ir-dump SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    separate_arguments(O2T_IR_DUMP_DEFS NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+    target_compile_options(cv-ir-dump PRIVATE ${O2T_IR_DUMP_DEFS} -Wall -Wextra)
+    llvm_map_components_to_libnames(O2T_IR_DUMP_LIBS support core asmparser)
+    target_link_libraries(cv-ir-dump PRIVATE ${O2T_IR_DUMP_LIBS})
+endif()
+
 if(O2T_WITH_LLVM)
     add_executable(cv-llvm-probe tools/cv-llvm-probe.cpp)
     target_link_libraries(cv-llvm-probe PRIVATE o2t_core)
@@ -812,6 +839,16 @@ if(O2T_BUILD_TESTS)
         COMMAND
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/concrete_tv_fixture.py; else echo 'concrete_tv_fixture: z3/opt/lli not found, skipped'; fi"
+    )
+    # The IR front-end: LLVM 18's own parser replaces O2T's regexes in Track B's trusted base. Pins
+    # the four historical text-parsing failures as impossible by construction (forward-reference call
+    # site read as a signature, `foo` resolving to `foobar`, an attribute containing a comma
+    # truncating the parameter list, an attributed parameter dropped), plus the data the validators
+    # depend on: poison flags from LLVM's accessors, structured types, shuffle masks, i128 constants.
+    # Self-skips when cv-ir-dump is not built.
+    add_test(
+        NAME ir_model_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ir_model_fixture.py
     )
     # The undeclared `noundef` assumption: modeling each parameter as ONE definite constant made
     # `ret 0 -> xor %x,%x` PROVE while Alive2 refutes it (an undef argument may read differently at

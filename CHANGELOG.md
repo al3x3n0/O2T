@@ -44,6 +44,20 @@ All notable changes to O2T are documented here. Format follows
   which previously truncated the signature and silently dropped every later parameter. Gated by
   `undef_param_fixture` with every verdict confirmed against Alive2.
 
+- **The IR front-end is now LLVM 18's own parser** (`tools/cv-ir-dump.cpp` + `o2t/validate/ir_model.py`).
+  Track B read LLVM IR with per-module regexes, which produced a recurring bug *class* — a
+  forward-reference call site read as a function's signature (five modules at once), a same-name
+  overload guessed at, a signature capture that stopped at the first `)` so every parameter after
+  `ptr byval({ i32, i64 }) %s` was silently dropped, an attributed parameter that failed to match at
+  all. `cv-ir-dump` emits the module through `llvm::parseAssembly` as JSON and `ir_model` is the typed
+  view: the same parser `opt` used to produce the IR being validated, so the two cannot disagree about
+  what the text means. Poison flags come from LLVM's accessors, types are structured, shuffle masks
+  carry `-1` for undef lanes, and arbitrary-width constants survive. Gated by `ir_model_fixture`.
+- **Build requirement:** Track B now requires LLVM 18 development libraries. `cmake` configures
+  `cv-ir-dump` by default (`-DO2T_BUILD_IR_DUMP=OFF` opts out and disables Track B); a missing dumper
+  raises `IrDumpUnavailable` rather than falling back to a text reader, because a silent second parser
+  is the dual-path drift this replaces. `o2t doctor` reports it.
+
 ### Changed
 - Measured Track B reach re-stated at **428/715 (60%)** of LLVM 18's `and/or/xor/add.ll` — the scalar
   refinement path 359 plus the memory/vector dispatch 69 — with **zero vacuous proofs** and
