@@ -157,6 +157,10 @@ tools/cv-cross-check.py --solver cvc5=/path/to/cvc5   # + second-solver agreemen
   (a surviving mutant = teeth gap).
 - `cv-cross-check`: substitutes each refutation witness back independently, and replays proofs
   through any available second SMT solver (cvc5/cvc4 auto-detected; skipped honestly if absent).
+- The same two guards cover **Track B**: `cv-tv-corpus` reports how many proofs are **vacuous** (true
+  only because the source is UB/poison everywhere — the tell-tale of an over-approximated UB model),
+  and `cv-tv-corpus --cross-check` replays every decided query through a second solver alongside the
+  `lli` and Alive2 oracles.
 
 ---
 

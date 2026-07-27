@@ -32,12 +32,14 @@ refutations** across six measured runs. A second, complementary track validates 
 on *real code*: it runs the actual `opt` and proves its whole-function output a sound refinement of
 the input over a complete bounded-code fragment — acyclic branch/phi control flow, byte-addressable
 memory under the theory of arrays (aliasing exact, no alias analysis), fixed and scalable vectors, and
-interprocedural value flow — proving **351 of 715 of LLVM's own InstCombine test functions end-to-end
-with zero false refutations**, composing those proofs up to pipelines, module deletion, and signature
+interprocedural value flow — proving **417 of 715 of LLVM's own InstCombine test functions end-to-end
+with zero false refutations and none of them vacuous**, composing those proofs up to pipelines, module deletion, and signature
 changes, and meeting the recovery track at **attribution**, where a proved transform is credited to
 the recovered fold that provably matches it. Because this track rests on a hand-written encoding, its
-verdicts are **independently cross-checked** by oracles that do not share it — `lli` execution and
-reference Alive2 — which confirm every proved corpus transform with zero disagreements. Where a
+verdicts are **independently cross-checked** by oracles that do not share it — `lli` execution,
+reference Alive2, and a second SMT solver replaying every query — which confirm every proved corpus
+transform with zero disagreements, while an anti-vacuity probe certifies that no proof holds merely
+because its source is undefined. Where a
 function falls outside the fragment, an enrichment loop lets an LLM propose the missing instruction
 semantics — ratified by `lli` execution before use — so the verifier grows its own vocabulary without
 ever trusting the proposer to decide soundness. For loop passes, whose effect spans unboundedly many
@@ -104,7 +106,7 @@ source**. Doing so requires solving four problems that per-pair tools never face
 - **A second verification track: closed-loop translation validation of the real transform** (§6).
   The actual `opt` output is proved a sound refinement of the input over a complete bounded-code
   fragment — branch/phi control flow, byte-addressable memory (theory of arrays, exact aliasing),
-  fixed and scalable vectors, interprocedural value flow — reaching 351/715 of LLVM's own InstCombine
+  fixed and scalable vectors, interprocedural value flow — reaching 417/715 of LLVM's own InstCombine
   tests with zero false refutations; refinement composes up to pipelines, module deletion, and
   signature changes; the recovery track and this one **meet at attribution**, crediting a proved
   transform to the recovered fold that provably matches it; and a self-enrichment loop grows the
@@ -301,9 +303,13 @@ where a proved whole-function transform is explained by the recovered fold that 
 
 **Whole-function refinement of real `opt`.** For a corpus of real IR functions, `opt` is run and the
 whole-function output is proved a refinement of the input. Over LLVM's own InstCombine tests
-(`and/or/xor/add.ll`, 715 functions) **351 (49%) are proved sound end-to-end with zero false
-refutations**; the rest decline on shapes the translator does not model, plus a few solver timeouts —
-never a false proof. The translator's fragment is deliberately bounded and every boundary declines
+(`and/or/xor/add.ll`, 715 functions) **417 (58%) are proved sound end-to-end with zero false
+refutations, and none of the 417 is vacuous**; the rest decline on shapes the translator does not
+model, plus a few solver timeouts — never a false proof. *Non-vacuity* is a check in its own right:
+refinement holds trivially wherever the source is UB or poison, so an over-approximated UB model would
+turn refutations into proofs of exactly that shape, invisibly to the execution and Alive2 oracles
+(which are consulted only on the proved set). Probing every proof for a defined source is the guard
+Track A has always had via `mini_alive`'s premise-satisfiability check, now on Track B as well. The translator's fragment is deliberately bounded and every boundary declines
 rather than approximates:
 
 - **Control flow.** Acyclic **branch/phi** functions are symbolically executed — each block carries a
@@ -327,6 +333,17 @@ rather than approximates:
   *symbolic lane*: since element-wise ops do not cross lanes, a proof for an unconstrained lane index
   covers all lanes, so scalable folds prove while any cross-lane op declines — keeping the per-lane
   model sound.
+- **Poison laundering (`freeze`).** `freeze` returns its operand unless the operand is poison, in
+  which case it returns one arbitrary value fixed for the execution — nondeterminism whose quantifier
+  differs by side. Refinement is "every target behavior is one the source could have produced", so the
+  target's choice is *existential* (a free constant) and the source's is *universal*. The target side
+  is therefore modeled directly, which verifies the direction passes actually take: InstCombine
+  introduces `freeze` to discharge its `isGuaranteedNotToBePoison` obligations, and a target that
+  freezes *newly* introduced poison over a definite source is refuted with a witness. The source side
+  declines, and deliberately so even when the operand looks poison-free: with no `undef` in the model
+  and parameters treated as definite, the identity shortcut would prove `freeze %x → %x`, which
+  reference Alive2 refutes because an LLVM argument may be `undef` unless `noundef`. The asymmetry is
+  a precise statement of where the single-poison-bit model ends.
 - **Interprocedural value flow.** A direct `call @g(args)` is modeled by translating the callee with
   its parameters bound to the argument terms — inlining `g`'s semantics into the caller's obligation —
   so **inlining and IPSCCP-style transforms are verified across the call boundary** (`opt`'s inlined

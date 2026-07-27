@@ -6,6 +6,36 @@ All notable changes to O2T are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Anti-vacuity guard for Track B.** Refinement holds vacuously wherever the source is UB or poison,
+  so a `proved` can be valid and information-free — and that is exactly what an over-approximated UB
+  model degrades into, invisibly to the `lli` and Alive2 oracles (which only see the proved set).
+  `validate_transform` now probes whether the source is defined anywhere and reports
+  `vacuous: True|False|None`; `validate_file` / `cv-tv-corpus` / `cv-fuzz-differential` report the
+  count. Track A has had this guard since `mini_alive`. Gated by `vacuity_tv_fixture`, whose headline
+  injects an over-approximated UB model, watches a genuine miscompile falsely prove, and catches it.
+- **Second-solver cross-check for Track B.** Every decided query is replayed verbatim through an
+  independently implemented SMT solver (`bitwuzla`/`cvc5`/`cvc4`, auto-detected; `skipped` — never a
+  silent pass — when absent), including `mem_state`'s QF_ABV encoding. The other oracles check the
+  *encoding*; this is the only one that checks the *solver*.
+
+- **`freeze` in Track B.** The poison-laundering instruction InstCombine introduces was an outright
+  decline, blinding whole-function TV on the poison-critical folds. Its nondeterministic choice is
+  modeled asymmetrically: EXISTENTIAL on the target (introducing `freeze` verifies; freezing *newly*
+  introduced poison over a definite source refutes with a witness) and UNIVERSAL on the source, which
+  declines — `freeze`-removal stays outside the fragment until `undef` is modeled, because the
+  tempting "freeze of a definite value is the identity" shortcut proves `freeze %x -> %x`, which
+  reference Alive2 refutes (an argument may be `undef`). Gated by `freeze_tv_fixture` with every
+  verdict confirmed against Alive2, plus a `--shape freeze` fuzzer mode (0 disagreements over 1,000
+  pairs across two seeds; all 12 refutations matched Alive2). Measured lift: +3 functions on LLVM's
+  `select.ll`.
+
+### Changed
+- Measured Track B reach re-stated at **417/715 (58%)** of LLVM 18's `and/or/xor/add.ll` — the scalar
+  refinement path 349–351 plus the memory/vector dispatch — with **zero vacuous proofs** and
+  **417/417 confirmed by a second solver, zero disagreements**. The previously documented 351/715
+  (49%) counted the scalar path alone.
+
 ### Planned
 - Reproducible install + CI: a container pinning Z3 + LLVM 18, env-driven tool discovery replacing the
   macOS-hardcoded paths, and a GitHub Actions workflow running the fixture gate on clean Linux.

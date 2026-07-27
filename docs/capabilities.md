@@ -32,15 +32,31 @@ recovered fold that provably matches it.
 | Floating point (beyond `nnan`/`ninf`) | ⚠️ declines | `nsz`/`reassoc`/`contract` involve value-nondeterminism — out of scope |
 | Width-changing loop recurrences; loop-nest transforms; loop vectorization | ⚠️ declines | stated loop-track boundary |
 | In-place-mutation folds; dynamic-opcode folds; worklist fixpoints | ⚠️ declines | recovery-fragment boundary |
-| Full undefined-behavior accounting (pointer validity, `undef` distinct from poison) | ⚠️ partial | single poison bit; UB modeled for div/rem and flags, not pointer validity |
+| `freeze` (poison laundering) | ✅ verifies introduction (Track B) | a pass INTRODUCING `freeze` is verified (its choice is existential); REMOVING one declines — without an `undef` model the identity shortcut is a false proof reference Alive2 refutes |
+| Full undefined-behavior accounting (pointer validity, `undef` distinct from poison) | ⚠️ partial | single poison bit; UB modeled for div/rem and flags, not pointer validity; `undef` unmodeled, so `freeze`-removal and undef-sensitive folds decline |
 
 ✅ = a real proof or refutation with a witness. ⚠️ = an explicit `unsupported` decline (a sound
 non-answer), **never** a false `proved`.
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV:** **351 / 715 (49%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
-  functions proved sound end-to-end, **0 false refutations**; the rest decline on shapes above.
+- **Track B whole-function TV:** **417 / 715 (58%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
+  functions proved sound end-to-end, **0 false refutations**; 287 decline on shapes above and ~11 hit
+  the per-function solver timeout (timing-dependent, a sound decline). Re-measured at the current
+  head: the scalar refinement path proves 351 (the previously documented figure) and the
+  memory/vector dispatch adds the other 66.
+- **Non-vacuity: zero vacuous proofs.** A refinement proof is vacuously true wherever the source is UB
+  or poison, so `udiv %x, 0` legitimately "refines" to anything — and an *over-approximated* UB model
+  would quietly convert refutations into proofs of exactly that shape, invisibly to the execution and
+  Alive2 oracles (which are consulted only on the proved set). Every proof on the refinement path
+  (~349 of the 417; the split with the value-equality validators shifts a little with timeouts) is
+  probed for a defined source: **none is vacuous**, so the reach number is not inflated and the
+  UB/poison model is not over-approximating anywhere on LLVM's own tests. The memory and vector
+  validators carry no vacuity flag — they compare *values* and have no UB term to over-approximate.
+- **Solver independence: 417 / 417 confirmed by a second solver.** Every decided query is replayed
+  verbatim through an independently implemented SMT solver (`bitwuzla`, or `cvc5`/`cvc4` if present),
+  including the QF_ABV memory encoding — **zero disagreements**. The other oracles check O2T's
+  *encoding*; this is the only one that checks the *solver*.
 - **Track A verbatim recovery:** ~a dozen upstream fold arms proved directly from unmodified
   InstCombine source (e.g. both arms of `foldIsPowerOf2OrZero`), **0 false proofs, 0 false refutations**
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
@@ -54,8 +70,11 @@ non-answer), **never** a false `proved`.
 - A `refuted` verdict comes with a concrete counterexample you can replay against real `opt`.
 - You can **independently cross-check** every `proved` whole-function transform against oracles that do
   not share O2T's SMT encoding — `o2t run tv-corpus <your.ll> --cross-check` runs `lli` (real execution)
-  and reference Alive2 (`alive-tv`, poison/UB) over the proved set and flags any disagreement (a
-  possible false proof), so you needn't take O2T's encoder on trust.
+  and reference Alive2 (`alive-tv`, poison/UB) over the proved set, replays every query through a
+  second SMT solver, and flags any disagreement (a possible false proof) — so you needn't take O2T's
+  encoder *or* its solver on trust. The same run reports how many proofs were **vacuous** (true only
+  because the source is UB/poison everywhere); a nonzero count on your own pass means the reach figure
+  is inflated and the UB model deserves a look.
 - Coverage is a moving frontier; the self-enrichment loop (`o2t agent`) can grow the modeled vocabulary
   behind an execution oracle, so a decline today can become a proof tomorrow — but only once an oracle
   the proposer didn't author has ratified the new semantics.

@@ -123,7 +123,60 @@ poison refinement, saw a value mismatch and refuted. The fix gates the refutatio
 value of the automated hunt — a bug in the least-reviewed encoding that 476 hand-written fixtures
 missed. `fuzz_differential_fixture` runs a small batch of every shape on each build as a standing net.
 
-Still open: a richer UB/`undef` model (single poison bit today), and the inherent low reach
+## Closing the two remaining asymmetries with Track A
+
+A follow-up pass asked a narrower question: which guards does **Track A** have that **Track B** — the
+higher-reach engine, and the one both false proofs lived in — does not? Two, and both were closed.
+
+**1. Anti-vacuity.** Refinement is vacuously true wherever the *source* is UB or poison, so a source
+that is UB on every input refines to anything: `udiv %x, 0; add` "proves" against `ret i32 12345`.
+That verdict is valid and information-free — and it is precisely what an **over-approximated UB or
+poison model degrades into**. Claim UB where LLVM has none and a would-be refutation silently becomes
+a proof, of exactly the shape none of the three existing oracles can see: `lli` and Alive2 are
+consulted only on the proved set, and they agree that a UB source refines to anything. Track A has
+had this guard since `mini_alive` (premises must be jointly SAT before an `unsat` is trusted); Track B
+had nothing. **Fix:** after every `unsat`, `scalar_ir.validate_transform` probes whether the source is
+defined on *any* input and reports `vacuous: True|False|None`. `vacuity_tv_fixture`'s headline injects
+an over-approximated UB model (`add` always UB), watches a genuine miscompile (`add x,y → add x,x`)
+*falsely prove*, and the probe catch it. The flag rides only on proofs; the value-equality validators
+(memory, vectors) carry none, since they have no UB term to over-approximate — their corresponding
+guard is the `poison_risk` gate on refutation.
+
+**2. Solver independence.** The three oracles all check the *encoding*; none checks z3. Since Track B
+already emits SMT-LIB2 to the z3 binary, **the identical script replays through an independently
+implemented solver** (`bitwuzla`, `cvc5`, `cvc4` — auto-detected, reported `skipped` rather than
+passed when absent). This now covers the fallback validators too, which matters most for `mem_state`:
+its QF_ABV theory-of-arrays encoding is the least-exercised corner of the solver stack.
+
+The probe also corrects a reading of the fuzzing numbers. A random generator readily emits functions
+that are UB on every input, so some of the campaign's `proved` verdicts are vacuous — and being valid,
+they can never surface as an Alive2 disagreement. `cv-fuzz-differential` now reports the count
+alongside the totals (a small single-digit percentage on the scalar shape, higher on `cfg`), so
+"O2T proved N of M" is not misread as reach.
+
+**Measured over LLVM 18's `and/or/xor/add.ll` (715 functions):** 417 proved (58% — the scalar
+refinement path 349, the memory/vector dispatch 68, the split shifting slightly with timeouts),
+**zero vacuous** and **417/417 confirmed by bitwuzla, zero disagreements**. So the reach figure is not
+inflated by information-free proofs, and no verdict rests on z3 alone. The vacuity count is a new
+standing audit of the UB model: it is zero today, and a nonzero value is a signal to inspect.
+
+**`freeze`, and what it exposed.** Modeling `freeze` — the instruction InstCombine introduces to
+launder poison, and previously an outright decline — turned up a false proof *in the act of writing
+it*. The obvious rule "freeze of a syntactically poison-free value is the identity" makes
+`freeze %x -> %x` prove; reference Alive2 refutes it, because this model treats parameters as definite
+while LLVM allows an argument to be `undef` unless `noundef`, and `freeze` is exactly the instruction
+that observes the difference. The sound rule is asymmetric: the nondeterministic choice is
+EXISTENTIAL on the target (so introducing `freeze` is verified, and freezing *newly* introduced poison
+over a definite source is refuted with a witness) and UNIVERSAL on the source, which therefore
+declines — freeze-REMOVAL is outside the fragment until `undef` is modeled. Every verdict in
+`freeze_tv_fixture` is confirmed against Alive2, and a `freeze` fuzzer shape (target synthesized,
+since InstCombine emits `freeze` on essentially no random IR — 0 of 400 measured) found **0
+disagreements over 1,000 pairs across two seeds**, with all 12 refutations matching Alive2 exactly. Measured lift: +3 functions on LLVM's `select.ll`; on `freeze.ll`
+nothing, since those tests put `freeze` in the *source*, where the decline is by design and is now the
+file's top decline reason — an honest signpost at the undef gap.
+
+Still open: a richer UB/`undef` model (single poison bit today; `undef` unmodeled, which is what bounds
+`freeze`), loops in Track B (a cyclic CFG is an outright decline), and the inherent low reach
 (decline-by-default means ~half of a real pass declines).
 
 ## Regression teeth
@@ -136,3 +189,6 @@ Still open: a richer UB/`undef` model (single poison bit today), and the inheren
 | overload ambiguity | `clang_tree_source_fixture` case 13 — overloads decline, `foobar` ≠ `foo` |
 | new dereference | `mem_state_tv_fixture` — introduced load declines, re-read proves |
 | masked miscompile | `compose_tv_fixture` — masked `nsw` proves net, localizes the pass |
+| vacuous refinement | `vacuity_tv_fixture` — an injected over-approximated UB model makes a real miscompile prove; the probe catches it |
+| unchecked solver | `vacuity_tv_fixture` — bitwuzla reproduces proof and refutation; a lying stub is caught; absent ⇒ `skipped` |
+| freeze identity shortcut | `freeze_tv_fixture` — freeze-removal declines (Alive2 refutes it); introduction proves; new-poison freeze refutes |
