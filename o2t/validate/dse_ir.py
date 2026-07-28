@@ -29,69 +29,67 @@ from __future__ import annotations
 import re
 import subprocess
 
+from o2t.validate import ir_model as ir
 from o2t.validate import memory_model as mm
 
-_PTR = r"(%[\w.]+|@[\w.]+)"
-# strict scalar store/load: a plain (non-volatile, non-atomic) `iN`/`ptr` access only.
-_STORE_RE = re.compile(r"\bstore\s+(i\d+|ptr)\s+([^,]+),\s+ptr\s+" + _PTR + r"\b")
-_LOAD_RE = re.compile(r"(%[\w.]+)\s*=\s*load\s+(i\d+|ptr),\s+ptr\s+" + _PTR + r"\b")
-# memory ops the word model does not soundly capture -> decline rather than silently skip.
-_UNMODELED = re.compile(r"\b(?:atomicrmw|cmpxchg|fence|va_arg|volatile|atomic)\b"
-                        r"|@llvm\.mem(?:cpy|set|move)|\bcall\b")
+# Memory ops the word model does not soundly capture -> decline rather than silently skip. Checked
+# against LLVM's own opcodes and flags now, not by scanning the instruction text: the regex could not
+# tell a `volatile` store from the word "volatile" appearing anywhere on the line, and it matched
+# `call` before ever inspecting what was called.
+_UNMODELED_OPS = {"atomicrmw", "cmpxchg", "fence", "va_arg"}
+_UNMODELED_INTRINSICS = ("llvm.memcpy", "llvm.memset", "llvm.memmove")
 
 
 class Unsupported(Exception):
     pass
 
 
-def _sym(tok):
-    """An SSA/global operand or integer literal -> a stable memory-model symbol name."""
-    tok = tok.strip()
-    if re.fullmatch(r"-?\d+", tok):
-        return "lit_" + tok.lstrip("-")
-    return re.sub(r"\W", "_", tok.lstrip("%@"))
-
-
-def _function_body(ll_text, func):
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\([^)]*\)[^{]*\{", ll_text)
-    if not m:
-        return None
-    depth, j = 1, m.end()
-    while j < len(ll_text) and depth:
-        depth += {"{": 1, "}": -1}.get(ll_text[j], 0)
-        j += 1
-    return ll_text[m.end():j - 1]
+def _sym(value):
+    """An operand -> a stable memory-model symbol name."""
+    if getattr(value, "kind", None) == "int":
+        v = value.int_value
+        return "lit_" + str(v).lstrip("-")
+    name = value.name if getattr(value, "is_reg", False) else (value.raw.get("name") or "")
+    return re.sub(r"\W", "_", str(name).lstrip("%@"))
 
 
 def parse_mem_ops(ll_text, func):
-    """Parse a straight-line function body into the memory-model op list, in program order. Raises
+    """Parse a straight-line function into the memory-model op list, in program order. Raises
     `Unsupported` on any memory op the word model cannot soundly represent (so the case is declined,
     never mis-modeled), and returns None only when the function is absent."""
-    body = _function_body(ll_text, func)
-    if body is None:
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
         return None
-    ops, widths = [], {}                       # widths: address symbol -> {access type tokens}
-    for line in body.splitlines():
-        line = line.strip()
-        if not line or line.startswith(";") or re.fullmatch(r"[\w.]+:", line):
+    ops, widths = [], {}                       # widths: address symbol -> {access type strings}
+    for inst in fn.instructions():
+        op = inst.op
+        if op in _UNMODELED_OPS:
+            raise Unsupported(f"unmodeled memory op: {op}")
+        if op == "call":
+            callee = inst.callee or "<indirect>"
+            if any(callee.lstrip("@").startswith(i) for i in _UNMODELED_INTRINSICS):
+                raise Unsupported(f"unmodeled memory op: {callee}")
+            raise Unsupported(f"call in a DSE candidate: {callee}")
+        if op == "store":
+            if inst.raw.get("volatile"):
+                raise Unsupported("volatile store")
+            val, ptr = inst.operands[0], inst.operands[1]
+            if not (val.type.is_int() or val.type.kind == "ptr"):
+                raise Unsupported(f"unmodeled store type {val.type}")
+            addr = _sym(ptr)
+            widths.setdefault(addr, set()).add(str(val.type))
+            ops.append(mm._store(addr, _sym(val)))
             continue
-        if _UNMODELED.search(line):
-            raise Unsupported(f"unmodeled memory op: {line}")
-        sm = _STORE_RE.search(line)
-        if sm:
-            addr = _sym(sm.group(3))
-            widths.setdefault(addr, set()).add(sm.group(1))
-            ops.append(mm._store(addr, _sym(sm.group(2).strip())))
+        if op == "load":
+            if inst.raw.get("volatile"):
+                raise Unsupported("volatile load")
+            if not (inst.type.is_int() or inst.type.kind == "ptr"):
+                raise Unsupported(f"unmodeled load type {inst.type}")
+            addr = _sym(inst.operands[0])
+            widths.setdefault(addr, set()).add(str(inst.type))
+            ops.append(mm._load(re.sub(r"\W", "_", str(inst.result).lstrip("%")), addr))
             continue
-        lm = _LOAD_RE.search(line)
-        if lm:
-            addr = _sym(lm.group(3))
-            widths.setdefault(addr, set()).add(lm.group(2))
-            ops.append(mm._load(_sym(lm.group(1)), addr))
-            continue
-        if re.search(r"\b(?:store|load)\b", line):     # a store/load shape we did not match strictly
-            raise Unsupported(f"unmodeled store/load shape: {line}")
-        # otherwise a non-memory line (arithmetic, br, ret, getelementptr, phi, ...) -> ignore.
+        # otherwise a non-memory instruction (arithmetic, br, ret, gep, phi, ...) -> ignore.
     mixed = sorted(a for a, ws in widths.items() if len(ws) > 1)
     if mixed:
         raise Unsupported(f"mixed-width access at address {mixed[0]} (partial overwrite, needs byte model)")
@@ -120,8 +118,8 @@ def validate_dse(z3_bin, src_text, opt_text, func):
     # globals), where DSE removes a store only if a later store overwrites it. A local `alloca`
     # can be dead at function exit, so DSE may legally drop a store the final-memory observable
     # would treat as live -- that needs escape analysis, so we decline rather than over-refute.
-    body = _function_body(src_text, func) or ""
-    if re.search(r"\balloca\b", body):
+    fn = ir.parse(src_text).function(func)
+    if fn is not None and any(i.op == "alloca" for i in fn.instructions()):
         return {"status": "unsupported", "reason": "local alloca (non-escaping) needs escape analysis"}
     out = {"status": "proved", "function": func,
            "before_ops": len(before), "after_ops": len(after)}
@@ -142,4 +140,4 @@ def validate_dse(z3_bin, src_text, opt_text, func):
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names

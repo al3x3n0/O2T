@@ -60,21 +60,6 @@ def _const(value, width):
     return f"(_ bv{value % (1 << width)} {width})"
 
 
-def _function_body(ll_text, func):
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\([^)]*\)[^{]*\{", ll_text)
-    if not m:
-        return None
-    depth, j = 1, m.end()
-    while j < len(ll_text) and depth:
-        depth += {"{": 1, "}": -1}.get(ll_text[j], 0)
-        j += 1
-    return ll_text[m.end():j - 1]
-
-
-# A parameter may carry attributes between its type and its name (`i32 noundef %x`,
-# `i32 range(i32 0, 8) %x`, `i8 signext %c`). They are skipped for typing purposes, but `noundef` is
-# read separately by `_noundef_params` because it is what JUSTIFIES modeling the parameter as a single
-# definite value (see the undef-risk guard in `validate_transform`).
 def _params(ll_text, func):
     """Integer parameter name -> width, from the parse. Non-integer parameters are skipped, so a use
     of one declines naturally downstream."""

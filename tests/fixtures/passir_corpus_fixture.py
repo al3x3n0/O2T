@@ -151,7 +151,12 @@ def main() -> int:
             "foldUnknownGuard", "foldAddCascade", "foldWithMutation"], [f["name"] for f in fns]
 
         # 2) The taxonomy lands every function in its designed outcome (fold-arm granularity).
-        report = corpus.run_corpus([src], z3)
+        # FRAGMENT MODE, asked for by name. This corpus is deliberately not a translation unit --
+        # no headers, undeclared types -- because the point is to exercise RECOVERY SHAPES, not to
+        # compile LLVM. The AST front-end recovers 0 of 11 here for exactly that reason, while the
+        # text front-end recovers 6; real pass source goes through the AST path, which requires a
+        # compile context and refuses to run without one.
+        report = corpus.run_corpus([src], z3, fragments=True)
         by_name = {r["function"]: r for r in report["results"]}
 
         def arm(name, idx=0):
@@ -207,7 +212,7 @@ def main() -> int:
         assert arm("simplifyPHI")["reconcile"] == "skipped"
 
         # 4) Oversize bodies are skipped-and-counted, never silently dropped.
-        capped = corpus.run_corpus([src], z3, max_lines=3)
+        capped = corpus.run_corpus([src], z3, max_lines=3, fragments=True)
         assert capped["outcomes"].get("skipped-oversize", 0) == len(fns), capped["outcomes"]
 
         # 5) The rendered table carries the headline counts and the invariant statement.

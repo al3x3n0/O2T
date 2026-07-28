@@ -24,15 +24,15 @@ from __future__ import annotations
 import re
 
 from o2t.validate.loop_induction import _eval, _resolve
-from o2t.validate.mem2reg_ir import _blocks, _params, _function_body, Unsupported
+from o2t.validate import ir_model as ir
+from o2t.validate.mem2reg_ir import blocks_of, _params, Unsupported
 
 
 def _phi(line):
-    pm = re.fullmatch(r"(%[\w.]+)\s*=\s*phi\s+i(\d+)\s+(.+)", line)
-    if not pm:
+    if line.op != "phi" or not line.result or not line.type.is_int():
         return None
-    arms = re.findall(r"\[\s*([^][,]+?)\s*,\s*%([\w.]+)\s*\]", pm.group(3))
-    return pm.group(1), int(pm.group(2)), arms
+    arms = [((v.name if v.is_reg else str(v)), lbl) for v, lbl in line.incoming]
+    return line.result, line.type.bits, arms
 
 
 def _bool(t):
@@ -41,12 +41,10 @@ def _bool(t):
 
 def extract_multiexit(ll_text, func, prefix="s"):
     """Walk the loop region and recover (state, init, exits=[(fire,result)], step)."""
-    body = _function_body(ll_text, func)
-    if body is None:
-        raise Unsupported(f"function {func} not found")
-    blocks = _blocks(body)
+
+    blocks = blocks_of(ll_text, func)
     bmap = {lab: (lines, term) for lab, lines, term in blocks}
-    is_ret = {lab: bool(re.fullmatch(r"ret\s+.*", term)) for lab, _l, term in blocks}
+    is_ret = {lab: term.op == "ret" for lab, _l, term in blocks}
 
     header = next((lab for lab, lines, _t in blocks
                    if any(_phi(ln) for ln in lines)), None)
@@ -97,15 +95,13 @@ def extract_multiexit(ll_text, func, prefix="s"):
             step = [_resolve(env, t, widths[i])[0] for i, t in enumerate(latch_tok)]
             stay = pc
             break
-        bm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)
-        um = re.fullmatch(r"br\s+label\s+%([\w.]+)", term)
-        if um:
-            cur = um.group(1)
+        if term.op == "br" and not term.conditional:
+            cur = term.successors[0]
             continue
-        if not bm:
-            raise Unsupported(f"unsupported terminator {term!r}")
-        cond = _bool(_resolve(env, bm.group(1).rstrip(","), 1))
-        t_lab, e_lab = bm.group(2), bm.group(3)
+        if not (term.op == "br" and term.conditional):
+            raise Unsupported(f"unsupported terminator {term.op!r}")
+        cond = _bool(_resolve(env, term.operands[0], 1))
+        t_lab, e_lab = term.successors[0], term.successors[1]
         t_exit, e_exit = is_ret.get(t_lab, False), is_ret.get(e_lab, False)
         if t_exit == e_exit:
             raise Unsupported("branch is not a single loop exit edge")
@@ -126,10 +122,9 @@ def _exit_result(bmap, lab, env, senv):
     for ln in elines:
         if not _phi(ln):
             _eval(eenv, ln)
-    rm = re.fullmatch(r"ret\s+i(\d+)\s+(\S+)", eterm)
-    if not rm:
+    if not (eterm.op == "ret" and eterm.operands and eterm.operands[0].type.is_int()):
         raise Unsupported("exit does not return a scalar")
-    return _resolve(eenv, rm.group(2), int(rm.group(1)))[0]
+    return _resolve(eenv, eterm.operands[0], eterm.operands[0].type.bits)[0]
 
 
 def _reaches(bmap, is_ret, src, target):
@@ -141,7 +136,7 @@ def _reaches(bmap, is_ret, src, target):
         if b in seen or is_ret.get(b, False) or b not in bmap:
             continue
         seen.add(b)
-        for t in re.findall(r"label\s+%([\w.]+)", bmap[b][1]):
+        for t in bmap[b][1].successors:
             stack.append(t)
     return False
 
@@ -219,4 +214,4 @@ def validate_multiexit(z3_bin, ll_before, func_before, ll_after, func_after):
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names

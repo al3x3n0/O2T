@@ -47,9 +47,13 @@ def signature_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         return {"status": "unsupported", "function": func, "reason": "added/promoted parameters"}
     if not removed:
         return si.validate_transform(z3_bin, before_ll, after_ll, func, timeout=timeout)
-    body = si._function_body(before_ll, func) or ""
+    fn_before = ir.parse(before_ll).function(func)
+    used = {o.name for i in (fn_before.instructions() if fn_before else []) for o in i.operands
+            if o.is_reg}
+    used |= {v.name for i in (fn_before.instructions() if fn_before else []) if i.op == "phi"
+             for v, _lbl in i.incoming if v.is_reg}
     for n in removed:                                  # a removed arg USED in the body is still live
-        if re.search(re.escape(n) + r"(?![\w.])", body):
+        if n in used:
             return {"status": "refuted", "function": func, "reason": f"removed a live argument {n}"}
     try:
         _, r0, w0, sp, su = si.translate(before_ll, func)   # ret is over surviving params (dead unused)

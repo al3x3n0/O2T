@@ -86,6 +86,14 @@ std::string valueName(const Value *V) {
   return os.str();
 }
 
+// A basic block's LABEL, as the IR text writes it (`entry:`), not as an operand (`%entry`). Blocks
+// are referenced both ways in LLVM's own printing; consumers match labels against branch successors
+// and phi incoming blocks, so all three are reported in the same, prefix-free form.
+std::string blockLabel(const BasicBlock *BB) {
+  std::string s = valueName(BB);
+  return s.empty() || s[0] != '%' ? s : s.substr(1);
+}
+
 std::string typeJson(Type *T) {
   if (T->isVoidTy())
     return "{\"kind\":\"void\"}";
@@ -243,7 +251,7 @@ std::string instJson(const Instruction &I) {
     for (unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
       if (i) s += ",";
       s += "{\"value\":" + valueJson(PN->getIncomingValue(i)) +
-           ",\"block\":" + quote(valueName(PN->getIncomingBlock(i))) + "}";
+           ",\"block\":" + quote(blockLabel(PN->getIncomingBlock(i))) + "}";
     }
     s += "]";
   }
@@ -295,7 +303,7 @@ std::string instJson(const Instruction &I) {
     s += ",\"successors\":[";
     for (unsigned i = 0; i < BI->getNumSuccessors(); ++i) {
       if (i) s += ",";
-      s += quote(valueName(BI->getSuccessor(i)));
+      s += quote(blockLabel(BI->getSuccessor(i)));
     }
     s += "]";
   }
@@ -352,7 +360,7 @@ std::string functionJson(const Function &F) {
   for (const BasicBlock &BB : F) {
     if (!firstBB) s += ",";
     firstBB = false;
-    s += "{\"name\":" + quote(valueName(&BB)) + ",\"instrs\":[";
+    s += "{\"name\":" + quote(blockLabel(&BB)) + ",\"instrs\":[";
     bool firstI = true;
     for (const Instruction &I : BB) {
       if (!firstI) s += ",";

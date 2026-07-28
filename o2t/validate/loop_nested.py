@@ -21,7 +21,8 @@ from __future__ import annotations
 import re
 
 from o2t.validate.loop_induction import _eval, _resolve
-from o2t.validate.mem2reg_ir import _blocks, _params, _function_body, Unsupported
+from o2t.validate import ir_model as ir
+from o2t.validate.mem2reg_ir import blocks_of, _params, Unsupported
 import subprocess
 
 from o2t.validate.loop_simulation import _check
@@ -37,10 +38,10 @@ def _check_uf(z3_bin, decls, goal):
 
 
 def _phi(line):
-    pm = re.fullmatch(r"(%[\w.]+)\s*=\s*phi\s+i(\d+)\s+(.+)", line)
-    if not pm:
+    if line.op != "phi" or not line.result or not line.type.is_int():
         return None
-    return pm.group(1), int(pm.group(2)), re.findall(r"\[\s*([^][,]+?)\s*,\s*%([\w.]+)\s*\]", pm.group(3))
+    return line.result, line.type.bits, [((v.name if v.is_reg else str(v)), lbl)
+                                        for v, lbl in line.incoming]
 
 
 def _bool(t):
@@ -48,7 +49,7 @@ def _bool(t):
 
 
 def _succs(term):
-    return re.findall(r"label\s+%([\w.]+)", term)
+    return list(term.successors)
 
 
 def _dominators(blocks, bmap):
@@ -95,8 +96,7 @@ def _single_body_loop(bmap, dom, header, free_names):
     latch incoming is the one whose block the header DOMINATES (a back-edge); the other is the
     preheader (init)."""
     hlines, hterm = bmap[header]
-    gm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", hterm)
-    if not gm:
+    if not (hterm.op == "br" and hterm.conditional):
         raise Unsupported("loop header not a conditional branch")
     latch = None
     phis, widths, init_tok, next_tok = [], [], [], []
@@ -111,12 +111,11 @@ def _single_body_loop(bmap, dom, header, free_names):
             raise Unsupported("nested loop phi without preheader+latch")
         phis.append(name); widths.append(w); init_tok.append(pi[0][0]); next_tok.append(li[0][0])
         latch = li[0][1]
-    return phis, widths, init_tok, next_tok, latch, gm.group(1).rstrip(",")
+    return phis, widths, init_tok, next_tok, latch, hterm.operands[0]
 
 
 def _inner_model(ll_text, func, inner_hdr, outer_phis, outer_widths, prefix):
-    body = _function_body(ll_text, func)
-    blocks = _blocks(body)
+    blocks = blocks_of(ll_text, func)
     bmap = {lab: (lines, term) for lab, lines, term in blocks}
     dom = _dominators(blocks, bmap)
     params = dict(_params(ll_text, func))
@@ -151,14 +150,14 @@ def _inner_model(ll_text, func, inner_hdr, outer_phis, outer_widths, prefix):
 def validate_nested(z3_bin, ll_before, ll_after, func):
     """Compositional nested-loop equivalence: prove inner transitions equal, then outer-with-UF."""
     try:
-        bb = {lab: (l, t) for lab, l, t in _blocks(_function_body(ll_before, func))}
-        ba = {lab: (l, t) for lab, l, t in _blocks(_function_body(ll_after, func))}
-        hb = _loop_headers(_blocks(_function_body(ll_before, func)), bb)
-        ha = _loop_headers(_blocks(_function_body(ll_after, func)), ba)
+        bb = {lab: (l, t) for lab, l, t in blocks_of(ll_before, func)}
+        ba = {lab: (l, t) for lab, l, t in blocks_of(ll_after, func)}
+        hb = _loop_headers(blocks_of(ll_before, func), bb)
+        ha = _loop_headers(blocks_of(ll_after, func), ba)
         if len(hb) != 2 or len(ha) != 2 or hb != ha:
             return {"status": "unsupported", "reason": "not a matching doubly-nested loop"}
         outer_hdr, inner_hdr = hb[0], hb[1]
-        dom_b = _dominators(_blocks(_function_body(ll_before, func)), bb)
+        dom_b = _dominators(blocks_of(ll_before, func), bb)
         op, ow, _it, _nt, _lt, _c = _single_body_loop(bb, dom_b, outer_hdr, {})
     except Unsupported as exc:
         return {"status": "unsupported", "reason": str(exc)}
@@ -188,8 +187,7 @@ def _outer_abstract(ll_text, func, outer_hdr, inner_hdr):
     """Outer-loop model with the inner loop replaced by an uninterpreted function INNER applied to
     the inner's live-in (the enclosing state). The outer IV steps normally; the outer accumulator
     (fed from the inner) becomes INNER(state)."""
-    body = _function_body(ll_text, func)
-    blocks = _blocks(body)
+    blocks = blocks_of(ll_text, func)
     bmap = {lab: (lines, term) for lab, lines, term in blocks}
     dom = _dominators(blocks, bmap)
     params = dict(_params(ll_text, func))
@@ -243,4 +241,4 @@ def _outer_obligations(ob, oa):
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names

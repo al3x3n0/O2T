@@ -48,7 +48,9 @@ def main() -> int:
     swapped = opt_text.replace("select i1 %c, i32 %a, i32 %b", "select i1 %c, i32 %b, i32 %a")
     rs = cfg.validate_simplifycfg(z3, swapped, src, "diamond")
     assert rs["status"] == "refuted" and rs.get("model"), ("swapped not refuted", rs)
-    flipped = opt_text.replace("select i1 %c, i32 %a, i32 %b",
+    # Replace the WHOLE instruction, result name included: substituting only the `select ...` tail
+    # left `%a.b = %nc = xor ...`, which is not valid IR. The text reader accepted it; LLVM does not.
+    flipped = opt_text.replace("%a.b = select i1 %c, i32 %a, i32 %b",
                                "%nc = xor i1 %c, true\n  %a.b = select i1 %nc, i32 %a, i32 %b")
     rf = cfg.validate_simplifycfg(z3, flipped, src, "diamond")
     assert rf["status"] == "refuted", ("flipped condition not refuted", rf)

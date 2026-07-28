@@ -29,8 +29,8 @@ def main() -> int:
     src = (ROOT / "tests" / "fixtures" / "loop_nested_cases.ll").read_text()
 
     # the function really has two nested loops (outer + inner).
-    from o2t.validate.mem2reg_ir import _blocks, _function_body
-    blocks = _blocks(_function_body(src, "nested"))
+    from o2t.validate.mem2reg_ir import blocks_of
+    blocks = blocks_of(src, "nested")
     bmap = {lab: (l, t) for lab, l, t in blocks}
     assert N._loop_headers(blocks, bmap) == ["oh", "ih"], N._loop_headers(blocks, bmap)
 

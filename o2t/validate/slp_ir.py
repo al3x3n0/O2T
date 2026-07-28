@@ -27,7 +27,8 @@ import re
 import subprocess
 
 from o2t.formal_ir import smt_and, smt_or
-from o2t.validate.scalar_ir import _BIN, _const, _function_body, _own_poison, _own_ub, Unsupported
+from o2t.validate import ir_model as ir
+from o2t.validate.scalar_ir import _BIN, _const, _own_poison, _own_ub, Unsupported
 
 _VEC = r"<(\d+)\s+x\s+i(\d+)>"
 _DIV = ("udiv", "sdiv", "urem", "srem")
@@ -50,41 +51,52 @@ def _cell(env, base, offset, width):
     return env.cells[key]
 
 
-def _addr_of(env, tok):
+def _addr_of(env, value):
     """The (base, offset) of a pointer operand: a bare pointer arg is offset 0."""
-    if tok in env.addr:
-        return env.addr[tok]
-    return tok, 0                                     # pointer argument -> base, offset 0
+    name = value.name if getattr(value, "is_reg", False) else str(value)
+    if name in env.addr:
+        return env.addr[name]
+    return name, 0                                    # pointer argument -> base, offset 0
 
 
 def translate(ll_text, func):
     """Translate a single-BB function to (env). `env.stores` maps each output cell to its stored
-    term; `env.cells` are the input cells read. Raises Unsupported on any unmodeled shape."""
-    body = _function_body(ll_text, func)
-    if body is None:
+    term; `env.cells` are the input cells read. Raises Unsupported on any unmodeled shape.
+
+    Read from LLVM's parse: lane counts and widths come from the types, a shuffle mask from
+    `Instruction.mask` (where LLVM already reports -1 for an undef lane), and poison flags from
+    LLVM's accessors -- all of which this module previously recovered from instruction text."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
         raise Unsupported(f"function {func} not found")
-    if len(re.findall(r"^\s*[\w.]+:", body, re.M)) > 1:
+    if len(fn.blocks) > 1:
         raise Unsupported("multi-block function")
     env = _Env()
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";"):
+    for inst in fn.blocks[0].instructions:
+        if inst.op == "ret":
             continue
-        if line == "ret void" or re.fullmatch(r"ret\s+.*", line):
-            continue
-        _instruction(line, env)
+        _instruction(inst, env)
     return env
 
 
-def _scalar_operand(tok, width, env):
+def _vshape(t):
+    """(lanes, width) for a fixed vector of integers."""
+    if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
+        return t.n, t.elem.bits
+    raise Unsupported(f"type {t}")
+
+
+def _scalar_operand(value, width, env):
     """An operand -> (term, poison). Constants and input cells are defined (poison "false")."""
-    tok = tok.strip().rstrip(",")
-    if tok in env.scalar:
-        t, _w, p = env.scalar[tok]
-        return t, p
-    if re.fullmatch(r"-?\d+", tok):
-        return _const(int(tok), width), "false"
-    raise Unsupported(f"scalar operand {tok!r}")
+    if value.is_reg:
+        name = value.name
+        if name in env.scalar:
+            term, _w, poison = env.scalar[name]
+            return term, poison
+        raise Unsupported(f"scalar operand {name!r}")
+    if value.kind == "int":
+        return _const(value.int_value, width), "false"
+    raise Unsupported(f"scalar operand {value.kind}")
 
 
 def _binop(env, name, flags, w, at, ap, bt, bp):
@@ -97,101 +109,105 @@ def _binop(env, name, flags, w, at, ap, bt, bp):
     return f"({op} {at} {bt})", poison
 
 
-def _instruction(line, env):
-    m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
-    rhs = m.group(2) if m else line
-    dst = m.group(1) if m else None
+def _instruction(inst, env):
+    op, dst = inst.op, inst.result
 
-    gm = re.fullmatch(r"getelementptr\s+(?:inbounds\s+)?i(\d+),\s+ptr\s+(%[\w.]+),\s+i\d+\s+(-?\d+)", rhs)
-    if gm and dst:
-        base, off = _addr_of(env, gm.group(2))
-        env.addr[dst] = (base, off + int(gm.group(3)))
+    if op == "getelementptr" and dst:
+        src_t = inst.source_type
+        if src_t is None or not src_t.is_int():
+            raise Unsupported("gep over a non-integer element")
+        idxs = inst.operands[1:]
+        if len(idxs) != 1 or idxs[0].kind != "int":
+            raise Unsupported("gep with a non-constant or multi-level index")
+        base, off = _addr_of(env, inst.operands[0])
+        env.addr[dst] = (base, off + idxs[0].int_value)
         return
 
-    # vector load: lanes from consecutive cells at the base address.
-    vlm = re.fullmatch(r"load\s+" + _VEC + r",\s+ptr\s+(%[\w.]+)(?:,\s+align\s+\d+)?", rhs)
-    if vlm and dst:
-        n, w = int(vlm.group(1)), int(vlm.group(2))
-        base, off = _addr_of(env, vlm.group(3))
-        env.vector[dst] = [(_cell(env, base, off + i, w), w, "false") for i in range(n)]
+    if op == "load" and dst:
+        base, off = _addr_of(env, inst.operands[0])
+        if inst.type.kind == "vector":
+            n, w = _vshape(inst.type)
+            env.vector[dst] = [(_cell(env, base, off + i, w), w, "false") for i in range(n)]
+        elif inst.type.is_int():
+            w = inst.type.bits
+            env.scalar[dst] = (_cell(env, base, off, w), w, "false")
+        else:
+            raise Unsupported(f"load of {inst.type}")
         return
 
-    slm = re.fullmatch(r"load\s+i(\d+),\s+ptr\s+(%[\w.]+)(?:,\s+align\s+\d+)?", rhs)
-    if slm and dst:
-        w = int(slm.group(1))
-        base, off = _addr_of(env, slm.group(2))
-        env.scalar[dst] = (_cell(env, base, off, w), w, "false")
+    if op == "store":
+        val, ptr = inst.operands[0], inst.operands[1]
+        base, off = _addr_of(env, ptr)
+        if val.type.kind == "vector":
+            n, _w = _vshape(val.type)
+            if not val.is_reg or val.name not in env.vector:
+                raise Unsupported("vector store of a non-register")
+            lanes = env.vector[val.name]
+            for i in range(n):
+                env.stores[(base, off + i)] = lanes[i]
+        elif val.type.is_int():
+            w = val.type.bits
+            term, poison = _scalar_operand(val, w, env)
+            env.stores[(base, off)] = (term, w, poison)
+        else:
+            raise Unsupported(f"store of {val.type}")
         return
 
-    # vector store: write each lane to consecutive cells.
-    vsm = re.fullmatch(r"store\s+" + _VEC + r"\s+(%[\w.]+),\s+ptr\s+(%[\w.]+)(?:,\s+align\s+\d+)?", rhs)
-    if vsm:
-        n, w = int(vsm.group(1)), int(vsm.group(2))
-        lanes = env.vector[vsm.group(3)]
-        base, off = _addr_of(env, vsm.group(4))
-        for i in range(n):
-            env.stores[(base, off + i)] = lanes[i]
+    if op in _BIN and dst:
+        flags = list(inst.flags)
+        if inst.type.kind == "vector":
+            n, w = _vshape(inst.type)
+            a, b = inst.operands[0], inst.operands[1]
+            if not (a.is_reg and b.is_reg and a.name in env.vector and b.name in env.vector):
+                raise Unsupported("vector binop over a non-register operand")
+            x, y = env.vector[a.name], env.vector[b.name]
+            lanes = []
+            for i in range(n):
+                term, poison = _binop(env, op, flags, w, x[i][0], x[i][2], y[i][0], y[i][2])
+                lanes.append((term, w, poison))
+            env.vector[dst] = lanes
+        elif inst.type.is_int():
+            w = inst.type.bits
+            at, ap = _scalar_operand(inst.operands[0], w, env)
+            bt, bp = _scalar_operand(inst.operands[1], w, env)
+            term, poison = _binop(env, op, flags, w, at, ap, bt, bp)
+            env.scalar[dst] = (term, w, poison)
+        else:
+            raise Unsupported(f"binop on {inst.type}")
         return
 
-    ssm = re.fullmatch(r"store\s+i(\d+)\s+(\S+),\s+ptr\s+(%[\w.]+)(?:,\s+align\s+\d+)?", rhs)
-    if ssm:
-        w = int(ssm.group(1))
-        term, poison = _scalar_operand(ssm.group(2), w, env)
-        base, off = _addr_of(env, ssm.group(3))
-        env.stores[(base, off)] = (term, w, poison)
+    if op == "extractelement" and dst:
+        vec, idx = inst.operands[0], inst.operands[1]
+        if not vec.is_reg or idx.kind != "int":
+            raise Unsupported("extractelement with a non-constant index")
+        env.scalar[dst] = env.vector[vec.name][idx.int_value]
         return
 
-    # vector binop: lane-wise.
-    vbm = re.fullmatch(r"(\w+)((?:\s+(?:nsw|nuw|exact|disjoint))*)\s+" + _VEC + r"\s+(%[\w.]+),\s+(%[\w.]+)", rhs)
-    if vbm and dst and vbm.group(1) in _BIN:
-        name, flags, n, w = vbm.group(1), re.findall(r"nsw|nuw|exact|disjoint", vbm.group(2)), \
-            int(vbm.group(3)), int(vbm.group(4))
-        x, y = env.vector[vbm.group(5)], env.vector[vbm.group(6)]
-        lanes = []
-        for i in range(n):
-            term, poison = _binop(env, name, flags, w, x[i][0], x[i][2], y[i][0], y[i][2])
-            lanes.append((term, w, poison))
-        env.vector[dst] = lanes
-        return
-
-    sbm = re.fullmatch(r"(\w+)((?:\s+(?:nsw|nuw|exact|disjoint))*)\s+i(\d+)\s+(\S+),\s+(\S+)", rhs)
-    if sbm and dst and sbm.group(1) in _BIN:
-        name, flags, w = sbm.group(1), re.findall(r"nsw|nuw|exact|disjoint", sbm.group(2)), int(sbm.group(3))
-        at, ap = _scalar_operand(sbm.group(4), w, env)
-        bt, bp = _scalar_operand(sbm.group(5), w, env)
-        term, poison = _binop(env, name, flags, w, at, ap, bt, bp)
-        env.scalar[dst] = (term, w, poison)
-        return
-
-    em = re.fullmatch(r"extractelement\s+" + _VEC + r"\s+(%[\w.]+),\s+i\d+\s+(\d+)", rhs)
-    if em and dst:
-        env.scalar[dst] = env.vector[em.group(3)][int(em.group(4))]
-        return
-
-    im = re.fullmatch(r"insertelement\s+" + _VEC + r"\s+(%[\w.]+|poison|undef),\s+i\d+\s+(\S+),\s+i\d+\s+(\d+)", rhs)
-    if im and dst:
-        n, w = int(im.group(1)), int(im.group(2))
-        base = list(env.vector.get(im.group(3), [(None, w, "false")] * n))
-        term, poison = _scalar_operand(im.group(4), w, env)
-        base[int(im.group(5))] = (term, w, poison)
+    if op == "insertelement" and dst:
+        n, w = _vshape(inst.type)
+        vec, val, idx = inst.operands[0], inst.operands[1], inst.operands[2]
+        if idx.kind != "int":
+            raise Unsupported("insertelement with a non-constant index")
+        base = list(env.vector.get(vec.name, [(None, w, "false")] * n)) if vec.is_reg \
+            else [(None, w, "false")] * n
+        term, poison = _scalar_operand(val, w, env)
+        base[idx.int_value] = (term, w, poison)
         env.vector[dst] = base
         return
 
-    fm = re.fullmatch(r"shufflevector\s+<(\d+)\s+x\s+i(\d+)>\s+(%[\w.]+),\s+"
-                      r"<\d+\s+x\s+i\d+>\s+(%[\w.]+|poison|undef),\s+"
-                      r"<\d+\s+x\s+i32>\s+<([^>]*)>", rhs)
-    if fm and dst:
-        v1 = env.vector[fm.group(3)]
-        v2 = env.vector.get(fm.group(4), [])
-        mask = [int(x) for x in re.findall(r"i32\s+(-?\d+)", fm.group(5))]
+    if op == "shufflevector" and dst:
+        a, b = inst.operands[0], inst.operands[1]
+        v1 = env.vector[a.name] if a.is_reg else []
+        v2 = env.vector.get(b.name, []) if b.is_reg else []
         combined = v1 + v2
-        # a negative mask index is `poison`/`undef`; only sound when that lane is unused downstream.
+        mask = inst.mask
+        # LLVM reports -1 for a poison/undef mask lane; only sound when that lane is unused.
         if any(k < 0 or k >= len(combined) for k in mask):
             raise Unsupported("shuffle with poison/out-of-range lane")
         env.vector[dst] = [combined[k] for k in mask]
         return
 
-    raise Unsupported(rhs)
+    raise Unsupported(f"instruction {op!r}")
 
 
 def _cell_refines(src_poison, tgt_poison, src_val, tgt_val):
@@ -240,4 +256,4 @@ def validate_slp(z3_bin, src_text, opt_text, func):
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names

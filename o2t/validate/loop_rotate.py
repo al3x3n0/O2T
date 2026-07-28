@@ -20,17 +20,19 @@ from __future__ import annotations
 import re
 
 from o2t.validate.loop_induction import _eval, _resolve
-from o2t.validate.mem2reg_ir import _blocks, _params, _function_body, Unsupported
+from o2t.validate import ir_model as ir
+from o2t.validate.mem2reg_ir import blocks_of, _params, Unsupported
 from o2t.validate import loop_simulation as sim
 from o2t.validate.loop_induction import extract_loop
 
 
-def _phi(line):
-    pm = re.fullmatch(r"(%[\w.]+)\s*=\s*phi\s+i(\d+)\s+(.+)", line)
-    if not pm:
+def _phi(inst):
+    """(name, width, [(value, incoming_block)]) for a phi instruction, else None. LLVM reports the
+    incoming pairs directly, so the arms no longer have to be recovered from the printed form."""
+    if inst.op != "phi" or not inst.result or not inst.type.is_int():
         return None
-    arms = re.findall(r"\[\s*([^][,]+?)\s*,\s*%([\w.]+)\s*\]", pm.group(3))
-    return pm.group(1), int(pm.group(2)), arms
+    arms = [((v.name if v.is_reg else str(v)), lbl) for v, lbl in inst.incoming]
+    return inst.result, inst.type.bits, arms
 
 
 def _bool(term, sort):
@@ -44,10 +46,7 @@ def _subst(expr, frm, to):
 def extract_rotated_model(ll_text, func, prefix="t"):
     """Reconstruct a canonical (init, guard, step, result) model from rotated IR, plus self-check
     obligations (SMT goals that must be valid for the reconstruction to be faithful)."""
-    body = _function_body(ll_text, func)
-    if body is None:
-        raise Unsupported(f"function {func} not found")
-    blocks = _blocks(body)
+    blocks = blocks_of(ll_text, func)
     bmap = {lab: (lines, term) for lab, lines, term in blocks}
     entry_lab = blocks[0][0]
 
@@ -59,9 +58,9 @@ def extract_rotated_model(ll_text, func, prefix="t"):
     if header is None:
         raise Unsupported("no rotated loop header (self-phi)")
     hlines, hterm = bmap[header]
-    gm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%[\w.]+,\s+label\s+%[\w.]+", hterm)
-    if not gm:
+    if not (hterm.op == "br" and hterm.conditional):
         raise Unsupported("loop header not a conditional branch")
+    header_cond = hterm.operands[0]
 
     params = _params(ll_text, func)
     penv = {n: (n.lstrip("%").replace(".", "_"), "bool" if w == 1 else f"bv{w}")
@@ -86,21 +85,21 @@ def extract_rotated_model(ll_text, func, prefix="t"):
     init = [_resolve(penv, t, w)[0] for t, w in zip(init_tok, widths)]
 
     benv = dict(senv)
-    for ln in hlines:
-        if not re.search(r"=\s*phi\b", ln):
-            _eval(benv, ln)
+    for inst in hlines:
+        if inst.op != "phi":
+            _eval(benv, inst)
     step = [_resolve(benv, nv, widths[i])[0] for i, nv in enumerate(nexts)]
-    bg = _resolve(benv, gm.group(1).rstrip(","), 1)
+    bg = _resolve(benv, header_cond, 1)
     bottom_guard = _bool(bg[0], bg[1])          # = g(step(s)) as a function of current state
 
     # pre-guard: g at the entry state.
     eenv = dict(penv)
-    for ln in bmap[entry_lab][0]:
-        _eval(eenv, ln)
-    em = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%[\w.]+,\s+label\s+%[\w.]+", bmap[entry_lab][1])
-    if not em:
+    for inst in bmap[entry_lab][0]:
+        _eval(eenv, inst)
+    eterm = bmap[entry_lab][1]
+    if not (eterm.op == "br" and eterm.conditional):
         raise Unsupported("entry not a pre-guard branch")
-    pg = _resolve(eenv, em.group(1).rstrip(","), 1)
+    pg = _resolve(eenv, eterm.operands[0], 1)
     pre_guard = _bool(pg[0], pg[1])
 
     # induction variable: the phi whose init value appears in the pre-guard; canonical guard is the
@@ -112,7 +111,7 @@ def extract_rotated_model(ll_text, func, prefix="t"):
     guard = _subst(pre_guard, init[iv], state[iv])
 
     # exit/lcssa: skip value (entry edge) and loop value (loop-exit edge), resolved to the state.
-    exit_lab = next((lab for lab, _l, term in blocks if re.fullmatch(r"ret\s+.*", term)), None)
+    exit_lab = next((lab for lab, _l, term in blocks if term.op == "ret"), None)
     if exit_lab is None:
         raise Unsupported("no return block")
     # resolve names defined on the loop-exit critical path (single-incoming phis) down to header vals.
@@ -124,7 +123,7 @@ def extract_rotated_model(ll_text, func, prefix="t"):
             a = _phi(ln)
             if a and len(a[2]) == 1:
                 resolve_env[a[0]] = _resolve(resolve_env, a[2][0][0], a[1])
-            elif "=" in ln and not a:
+            elif ln.result is not None and not a:
                 _eval(resolve_env, ln)
     skip_val = loop_val = None
     for ln in bmap[exit_lab][0]:
@@ -184,4 +183,4 @@ def run_rotate(src_text, opt_bin="opt"):
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names

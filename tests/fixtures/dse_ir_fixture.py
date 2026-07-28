@@ -70,8 +70,11 @@ def main() -> int:
     vol_a = f("void @v(ptr %p){\n  store i32 1, ptr %p\n  ret void\n}")
     assert dse_ir.validate_dse(z3, vol_b, vol_a, "v")["status"] == "unsupported", "volatile not declined"
     # a call may write memory -> declined rather than silently skipped.
-    call_b = f("void @c(ptr %p){\n  store i32 0, ptr %p\n  call void @g(ptr %p)\n  store i32 1, ptr %p\n  ret void\n}")
-    call_a = f("void @c(ptr %p){\n  call void @g(ptr %p)\n  store i32 1, ptr %p\n  ret void\n}")
+    # `@g` is DECLARED: a call to an undeclared function is not valid LLVM IR, and the reader this
+    # module used to have simply did not notice. LLVM does.
+    decl = "declare void @g(ptr)\n"
+    call_b = decl + f("void @c(ptr %p){\n  store i32 0, ptr %p\n  call void @g(ptr %p)\n  store i32 1, ptr %p\n  ret void\n}")
+    call_a = decl + f("void @c(ptr %p){\n  call void @g(ptr %p)\n  store i32 1, ptr %p\n  ret void\n}")
     assert dse_ir.validate_dse(z3, call_b, call_a, "c")["status"] == "unsupported", "call not declined"
     # load observability: a store dropped though a surviving load reads it, with the SAME final
     # memory (a later store overwrites) -> missed by final-memory alone, now refuted at the load.

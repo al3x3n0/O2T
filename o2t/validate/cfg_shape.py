@@ -18,77 +18,78 @@ translation validator (§6), but for control-flow value equivalence rather than 
 from __future__ import annotations
 
 import re
+
+from o2t.validate import ir_model as ir
 import subprocess
 from pathlib import Path
 
 _SIG_RE = re.compile(r"define\b[^@]*@(\w+)\s*\(([^)]*)\)")
-_BR_RE = re.compile(r"\bbr\s+i1\s+(%[\w.]+),\s*label\s+(%[\w.]+),\s*label\s+(%[\w.]+)")
-_PHI_RE = re.compile(r"(%[\w.]+)\s*=\s*phi\s+\w+\s*"
-                     r"\[\s*([^,]+),\s*(%[\w.]+)\s*\]\s*,\s*\[\s*([^,]+),\s*(%[\w.]+)\s*\]")
-_SELECT_RE = re.compile(r"(%[\w.]+)\s*=\s*select\s+i1\s+(%[\w.]+|true|false),\s*\w+\s+([^,]+),\s*\w+\s+(\S+)")
-_XOR_NOT_RE = re.compile(r"(%[\w.]+)\s*=\s*xor\s+i1\s+(%[\w.]+),\s*true")
-
-
-def _function_body(ll_text, func):
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\([^)]*\)[^{]*\{", ll_text)
-    if not m:
-        return None
-    depth, j = 1, m.end()
-    while j < len(ll_text) and depth:
-        depth += {"{": 1, "}": -1}.get(ll_text[j], 0)
-        j += 1
-    return ll_text[m.end():j - 1]
-
 
 def _params(ll_text, func):
-    """name -> SMT sort, from the function signature (i1 -> Bool, iN -> (_ BitVec N))."""
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
+    """name -> SMT sort, from the parsed signature (i1 -> Bool, iN -> (_ BitVec N)). The regex this
+    replaces captured the parameter list with `([^)]*)` and split it on commas, so an attribute
+    containing either -- `ptr byval({ i32, i64 }) %s` is valid LLVM 18 -- truncated the list."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None:
+        return {}
     out = {}
-    if not m:
-        return out
-    for part in m.group(1).split(","):
-        toks = part.split()
-        if len(toks) >= 2 and toks[-1].startswith("%"):
-            ty = toks[-2] if len(toks) >= 2 else toks[0]
-            name = toks[-1]
-            tm = re.fullmatch(r"i(\d+)", ty)
-            if tm:
-                out[name] = "Bool" if tm.group(1) == "1" else f"(_ BitVec {tm.group(1)})"
+    for prm in fn.params:
+        if prm.type.is_int():
+            out[prm.name] = "Bool" if prm.type.bits == 1 else f"(_ BitVec {prm.type.bits})"
     return out
 
 
 def parse_diamond(ll_text, func):
     """The source diamond's merge value as (cond, then_value, else_value) SSA names, or None.
-    The phi operands are mapped to branches by their incoming-block labels."""
-    body = _function_body(ll_text, func)
-    if body is None:
+
+    Read STRUCTURALLY from the parse: find a conditional branch, then a `phi` whose incoming blocks
+    are that branch's successors, and map each incoming value to the arm it arrives from. LLVM
+    already knows the successor labels and the phi's incoming pairs, so nothing here has to recover
+    them from instruction text -- which is where a shape reader is most easily fooled by formatting."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
         return None
-    br = _BR_RE.search(body)
-    phi = _PHI_RE.search(body)
-    if not br or not phi:
+    cond = then_lbl = else_lbl = None
+    for blk in fn.blocks:
+        term = blk.terminator
+        if term is not None and term.op == "br" and term.conditional:
+            c = term.operands[0]
+            cond = c.name if c.is_reg else None
+            then_lbl, else_lbl = term.successors[0], term.successors[1]
+            break
+    if cond is None:
         return None
-    cond, then_lbl, else_lbl = br.group(1), br.group(2), br.group(3)
-    v1, b1, v2, b2 = phi.group(2).strip(), phi.group(3), phi.group(4).strip(), phi.group(5)
-    by_block = {b1: v1, b2: v2}
-    if then_lbl not in by_block or else_lbl not in by_block:
-        return None
-    return {"cond": cond, "then": by_block[then_lbl], "else": by_block[else_lbl]}
+    for inst in fn.instructions():
+        if inst.op != "phi" or len(inst.incoming) != 2:
+            continue
+        by_block = {lbl: (v.name if v.is_reg else str(v)) for v, lbl in inst.incoming}
+        if then_lbl in by_block and else_lbl in by_block:
+            return {"cond": cond, "then": by_block[then_lbl], "else": by_block[else_lbl]}
+    return None
 
 
 def parse_select(ll_text, func, source_text=""):
-    """The optimized `select` as (cond, true_value, false_value, negated). `negated` is True
-    when the select condition is `xor %c, true` of the source branch condition."""
-    body = _function_body(ll_text, func)
-    if body is None:
+    """The optimized `select` as (cond, true_value, false_value, negated). `negated` is True when the
+    select condition is `xor %c, true` of the source branch condition -- found by looking for that
+    xor as an instruction, rather than by matching its printed form."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
         return None
-    sel = _SELECT_RE.search(body)
-    if not sel:
+    sel = next((i for i in fn.instructions() if i.op == "select"), None)
+    if sel is None:
         return None
-    cond, tv, fv = sel.group(2), sel.group(3).strip(), sel.group(4).strip()
+    def _nm(v):
+        return v.name if v.is_reg else str(v)
+    cond, tv, fv = _nm(sel.operands[0]), _nm(sel.operands[1]), _nm(sel.operands[2])
     negated = False
-    nm = next((m for m in _XOR_NOT_RE.finditer(body) if m.group(1) == cond), None)
-    if nm:
-        cond, negated = nm.group(2), True
+    for inst in fn.instructions():
+        if inst.op == "xor" and inst.result == cond and inst.type.is_int(1):
+            ops = inst.operands
+            ones = [o for o in ops if o.kind == "int" and o.int_value in (1, -1)]
+            regs = [o for o in ops if o.is_reg]
+            if ones and regs:
+                cond, negated = regs[0].name, True
+                break
     return {"cond": cond, "true": tv, "false": fv, "negated": negated}
 
 
@@ -98,9 +99,8 @@ def _smt_atom(tok, params):
         return tok.lstrip("%").replace(".", "_")
     if tok in ("true", "false"):
         return tok
-    m = re.fullmatch(r"-?\d+", tok)
-    if m:
-        return tok  # decimal bv literal handled by caller width; kept simple for params-only
+    if tok.lstrip("-").isdigit():
+        return tok
     return tok.lstrip("%").replace(".", "_")
 
 

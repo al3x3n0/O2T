@@ -21,6 +21,8 @@ relational prover consumes, so this is a drop-in, parser-agnostic-prover fronten
 from __future__ import annotations
 
 import re
+
+from o2t.validate import ir_model as ir
 import shutil
 import subprocess
 from pathlib import Path
@@ -162,7 +164,6 @@ def recurrence_of(addrec_ops):
 _SECTION_RE = re.compile(r"Classifying expressions for:\s*@(\w+)")
 _PHI_RE = re.compile(r"^\s*(%[\w.]+)\s*=\s*phi\b")
 _SCEV_RE = re.compile(r"^\s*-->\s+(.*?)\s+U:\s")
-_RET_RE = re.compile(r"\bret\s+\S+\s+(%[\w.]+)")
 
 
 def scev_recurrences(ll_text, func, opt_bin="opt"):
@@ -216,11 +217,9 @@ def closed_form_boundary_ops(ll_text, func, opt_bin="opt"):
     reason the integer discharge (§2) cannot validate it. Sorted list, or [] when the
     SCEV/return value is unavailable or already inside the ring. Diagnostic only:
     NEVER affects a proof verdict."""
-    body = _function_body(ll_text, func)
-    ret = _RET_RE.search(body or "")
-    if ret is None:
+    ret_name = _returned_name(ll_text, func)      # e.g. %add.lcssa
+    if ret_name is None:
         return []
-    ret_name = ret.group(1)  # e.g. %add.lcssa
     out = run_scev(ll_text, opt_bin)
     if out is None:
         return []
@@ -251,11 +250,10 @@ def scev_loop_tuple(ll_text, func, opt_bin="opt"):
     accs = scev_recurrences(ll_text, func, opt_bin)
     if not accs:
         return None
-    body = _function_body(ll_text, func)
-    ret = _RET_RE.search(body or "")
-    if ret is None:
+    ret_name = _returned_name(ll_text, func)
+    if ret_name is None:
         return None
-    out_name = sanitize(ret.group(1))
+    out_name = sanitize(ret_name)
     if out_name not in accs:  # rotated exit-phi: %x.lcssa / %x.next -> strip suffix to the phi
         base = re.sub(r"_(lcssa|next)$", "", out_name)
         out_name = base if base in accs else out_name
@@ -265,20 +263,21 @@ def scev_loop_tuple(ll_text, func, opt_bin="opt"):
     return acc_list, [out_name], "i"
 
 
-_DEF_RE = re.compile(r"define\b[^@]*@(\w+)\s*\([^)]*\)[^{]*\{")
-
-
-def _function_body(ll_text, func):
-    for m in _DEF_RE.finditer(ll_text):
-        if m.group(1) != func:
-            continue
-        depth, j = 1, m.end()
-        while j < len(ll_text) and depth:
-            depth += {"{": 1, "}": -1}.get(ll_text[j], 0)
-            j += 1
-        return ll_text[m.end():j - 1]
+def _returned_name(ll_text, func):
+    """The SSA name a function returns, or None. Read from the parse: this used to find the `define`
+    with a regex, balance braces to slice the body, and then match `ret` in that text."""
+    try:
+        fn = ir.parse(ll_text).function(func)
+    except ir.IrParseError:
+        return None
+    if fn is None or fn.is_declaration:
+        return None
+    for blk in fn.blocks:
+        term = blk.terminator
+        if term is not None and term.op == "ret" and term.operands and term.operands[0].is_reg:
+            return term.operands[0].name
     return None
 
 
 def function_names(ll_text):
-    return [m.group(1) for m in _DEF_RE.finditer(ll_text)]
+    return ir.parse(ll_text).defined_names

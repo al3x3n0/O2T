@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from o2t.intent import pass_graph as pg
+from o2t.mine import clang_tree as ct
 
 # A candidate fold FUNCTION: returns Value*/Instruction* (free, static, or out-of-line method).
 _FUNC_RE = re.compile(
@@ -100,13 +101,22 @@ def _arm_outcome(arm: dict, z3: str) -> dict:
     return out
 
 
-def run_function(fn: dict, z3: str | None) -> dict:
-    """Slice one candidate function into its fold arms and drive each to a verdict."""
+def run_function(fn: dict, z3: str | None, cpp_path=None, includes=None,
+                 clang_bin: str = "clang", fragments: bool = False) -> dict:
+    """Slice one candidate function into its fold arms and drive each to a verdict.
+
+    Recovery goes through the CLANG AST, not O2T's own reading of the source text: the obligation
+    that gets proved is built from the real compiler's parse of the real code. That requires the
+    pass's compile context (`includes` -- the LLVM public headers plus the pass's lib-internal header
+    dir), which is why it is a required input rather than an option; there is deliberately no text
+    fallback, because a second recovery path is the dual-path drift this replaces."""
     result = {"function": fn["name"], "lines": fn["lines"]}
     if fn["skipped-oversize"]:
         result.update({"outcome": "skipped-oversize"})
         return result
-    arms = pg.recover_folds_from_function(fn["full"])
+    arms = (pg.recover_folds_from_function(fn["full"]) if fragments else
+            ct.recover_folds_from_source_file(str(cpp_path), fn["name"], list(includes or []),
+                                              clang_bin=clang_bin))
     if not arms:
         result.update({"outcome": "declined", "bucket": _decline_bucket(fn["full"])})
         return result
@@ -119,7 +129,39 @@ def run_function(fn: dict, z3: str | None) -> dict:
     return result
 
 
-def run_corpus(paths: list[Path], z3: str | None, max_lines: int | None = None) -> dict:
+class MissingCompileContext(RuntimeError):
+    """Real-source recovery needs the pass's compile context; there is no text fallback."""
+
+
+def run_corpus(paths: list[Path], z3: str | None, max_lines: int | None = None,
+               includes=None, clang_bin: str = "clang", fragments: bool = False) -> dict:
+    """Sweep a pass-source corpus.
+
+    TWO RECOVERY MODES, and which one produced a verdict is recorded in the report so a claim can
+    never be attributed to the wrong reader:
+
+    * DEFAULT -- real pass source. Obligations are recovered from the CLANG AST, so what gets proved
+      is built from the compiler's parse of code that actually compiles. `includes` (the pass's
+      compile context) is therefore REQUIRED, and its absence is an error rather than a quiet
+      downgrade: a silent second reader is the dual-path drift this design removes.
+
+    * `fragments=True` -- TEST-ONLY, and it must be asked for by name. O2T's shape fixtures exercise
+      recovery on C++ FRAGMENTS that deliberately do not compile (no headers, undeclared types), and
+      reading those is exactly what the text front-end can do and the AST front-end cannot: on the E6
+      synthetic corpus the text path recovers 6 of 11 functions and the AST path 0 of 11, because the
+      corpus is not a translation unit. This mode keeps that shape-level testing possible; it is not
+      a fallback, cannot be reached by omitting `includes`, and must never carry a verdict about a
+      real pass.
+    """
+    if fragments and includes:
+        raise ValueError("fragment mode reads source that does not compile; a compile context is "
+                         "meaningless there -- pass one or the other, not both")
+    if not fragments and not includes:
+        raise MissingCompileContext(
+            "pass-source recovery needs the compile context: pass -I<dir> for the LLVM public "
+            "headers and for the pass's own lib-internal header directory. Recovery reads the "
+            "clang AST of the real source; there is no text fallback. (Shape fixtures that "
+            "deliberately use non-compiling fragments must pass fragments=True explicitly.)")
     files = []
     for p in paths:
         files.extend(sorted(p.rglob("*.cpp")) if p.is_dir() else [p])
@@ -132,7 +174,8 @@ def run_corpus(paths: list[Path], z3: str | None, max_lines: int | None = None) 
             continue
         fns = extract_functions(text, max_lines)
         for fn in fns:
-            r = run_function(fn, z3)
+            r = run_function(fn, z3, cpp_path=f, includes=includes, clang_bin=clang_bin,
+                             fragments=fragments)
             r["file"] = f.name
             per_fn.append(r)
         per_file.append({"file": str(f), "functions": len(fns)})
@@ -147,10 +190,14 @@ def run_corpus(paths: list[Path], z3: str | None, max_lines: int | None = None) 
             buckets[r["bucket"]] = buckets.get(r["bucket"], 0) + 1
         if "rung" in r:
             rungs[r["rung"]] = rungs.get(r["rung"], 0) + 1
-        for arm in r.get("arms", []):
+        # `arms` is a LIST of per-arm outcomes when proving ran, but the no-z3 branch stores a COUNT
+        # instead. Iterating that crashes the sweep -- a pre-existing bug that never fired because the
+        # gate always has z3. Skip the arm accounting when there are no per-arm outcomes to account.
+        for arm in (r.get("arms") if isinstance(r.get("arms"), list) else []):
             total_arms += 1
             arm_counts[arm["outcome"]] = arm_counts.get(arm["outcome"], 0) + 1
     return {"files": per_file, "functions": len(per_fn), "outcomes": counts,
+            "recovery": "fragment-text (test-only)" if fragments else "clang-ast",
             "fold_arms": total_arms, "arm_outcomes": arm_counts,
             "decline_buckets": buckets, "rungs": rungs, "results": per_fn,
             "invariant": "every proved arm survived the reconcile cross-check (disagreements land "
@@ -188,12 +235,18 @@ def main(argv=None) -> int:
     ap.add_argument("--z3-bin", default="z3")
     ap.add_argument("--max-fn-lines", type=int, default=None,
                     help="skip (and count) function bodies above this bound")
+    ap.add_argument("-I", "--cxx-include", action="append", default=[], dest="cxx_includes",
+                    metavar="DIR",
+                    help="compile-context include dir (repeatable): the LLVM public headers, and the "
+                         "pass's own lib-internal header dir. REQUIRED -- recovery reads the clang AST")
+    ap.add_argument("--clang-bin", default="clang")
     ap.add_argument("--report", type=Path)
     ap.add_argument("--summary-text", type=Path)
     args = ap.parse_args(argv)
     import shutil
     z3 = shutil.which(args.z3_bin)
-    report = run_corpus(args.paths, z3, args.max_fn_lines)
+    report = run_corpus(args.paths, z3, args.max_fn_lines,
+                        includes=args.cxx_includes, clang_bin=args.clang_bin)
     text = render_table(report)
     if args.report:
         args.report.write_text(json.dumps(report, indent=2) + "\n")

@@ -32,6 +32,7 @@ import subprocess
 
 from o2t.facts import value_tracking as vt
 from o2t.intent import pass_graph as pg
+from o2t.validate import ir_model as irm
 from o2t.validate import scalar_ir as si
 
 _OPCODE_RE = re.compile(r"^\s*(?:%[\w.]+\s*=\s*)?([a-z][a-z.]*)\b")
@@ -52,21 +53,17 @@ def _assumption_premises(assumptions) -> list[str]:
     return clauses
 
 
-def _body_opcodes(ir: str, fn: str) -> list[str] | None:
-    """The sorted multiset of instruction opcodes in `fn`'s body (SSA names ignored) -- a robust
-    'did opt change the instruction structure' signal that does not depend on value numbering."""
-    body = si._function_body(ir, fn)
-    if body is None:
+def _body_opcodes(ir_text: str, fn: str) -> list[str] | None:
+    """The sorted multiset of instruction opcodes in `fn`'s body -- a robust 'did opt change the
+    instruction structure' signal that does not depend on value numbering. Taken from the parse, so
+    it is exactly LLVM's opcodes rather than the first token of each printed line."""
+    try:
+        parsed = irm.parse(ir_text).function(fn)
+    except irm.IrParseError:
         return None
-    ops: list[str] = []
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";") or re.fullmatch(r"[\w.]+:", line):
-            continue
-        m = _OPCODE_RE.match(line)
-        if m:
-            ops.append(m.group(1))
-    return sorted(ops)
+    if parsed is None or parsed.is_declaration:
+        return None
+    return sorted(i.op for i in parsed.instructions() if i.op != "ret")
 
 
 def _terms_equal(z3_bin: str, params: dict, t1: str, t2: str, premises=()) -> bool:
