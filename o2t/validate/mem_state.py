@@ -19,7 +19,9 @@ callees, and ARGUMENT PROMOTION (a `ptr` parameter a callee only loads, turned i
 parameter with the load hoisted to callers; see o2t/validate/argprom_tv.py).
 
 Scope: single-BB per function, byte-addressable load/store and getelementptr over opaque pointer
-ARGUMENTS, direct defined-callee inlining (bounded recursion). Pointer validity / null-deref UB is not
+ARGUMENTS, direct defined-callee inlining (bounded recursion). Types come from LLVM's parse, so a
+struct's field offsets are a walk over its parsed fields and the NAMED form real IR uses is
+handled -- the reader this replaces could only match a struct spelled inline in the gep text. Pointer validity / null-deref UB is not
 modeled, but the gap is ENFORCED rather than assumed: a NEW-DEREFERENCE guard declines any transform
 whose TARGET dereferences an address the SOURCE does not (a load/store the source lacks could fault
 where the source is defined). So store removal/reordering and load-hoisting-where-the-load-already-
@@ -28,199 +30,214 @@ occurred (argument promotion) prove, while an introduced dereference declines --
 
 from __future__ import annotations
 
-import re
 import subprocess
 
+from o2t.validate import ir_model as ir
 from o2t.validate import scalar_ir as si
+from o2t.validate import semantics as sem
 
-_PARAM_RE = re.compile(r"(ptr|i(\d+))\s+(%[\w.]+)")
-_MAX_CALL_DEPTH = 6
-
-
-def _split_args(arg_str):
-    """`ptr %q, i32 %y` -> ['ptr %q', 'i32 %y'] (scalar/pointer args, no nested commas)."""
-    return [a.strip() for a in arg_str.split(",")] if arg_str.strip() else []
-
-
-def _signature(ll_text, func):
-    """[(kind, name)] for params -- kind is 'ptr' or an int width. None if the function is absent.
-    Anchored on the `define` so a forward-reference CALL SITE above the definition is not misread as
-    the signature (which would bind callee params to the caller's argument names)."""
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
-    if not m:
-        return None
-    out = []
-    for part in m.group(1).split(","):
-        pm = _PARAM_RE.search(part.strip())
-        if pm:
-            out.append(("ptr" if pm.group(1) == "ptr" else int(pm.group(2)), pm.group(3)))
-    return out
-
+# --- the byte-addressable memory model, over LLVM's own parse -------------------------------------
+# `getelementptr` is where this pays off. The reader replaced here matched THREE separate regexes
+# against the gep text -- a scalar element, an array, and an integer struct -- and then re-derived the
+# struct's field offsets by splitting `{i32, i64}` on commas. It therefore only understood a struct
+# spelled INLINE in the gep, while real IR names its structs (`%T = type {...}`; `getelementptr %T,
+# ...`), so struct-field support largely did not fire on real code. LLVM already knows the layout:
+# `Instruction.source_type` arrives structured, field offsets are a walk over `type.fields`, and the
+# three patterns collapse into one traversal of the index list.
 
 def _addr_off(addr, off):
     return addr if off == 0 else f"(bvadd {addr} (_ bv{off} 64))"
 
 
 def _store_bytes(mem, addr, value, width):
-    """Store a `width`-bit value at byte address `addr`, LITTLE-ENDIAN (byte 0 = LSB)."""
     for i in range(width // 8):
         mem = f"(store {mem} {_addr_off(addr, i)} ((_ extract {i * 8 + 7} {i * 8}) {value}))"
     return mem
 
 
 def _load_bytes(mem, addr, width):
-    """Load a `width`-bit value from byte address `addr`, little-endian."""
     nb = width // 8
     if nb == 1:
         return f"(select {mem} {addr})"
     parts = [f"(select {mem} {_addr_off(addr, i)})" for i in range(nb)]
-    return f"(concat {' '.join(reversed(parts))})"      # MSB-first concat, byte 0 is the LSB
+    return f"(concat {' '.join(reversed(parts))})"
 
 
-def _idx64(tok, env):
-    """A gep index operand -> a 64-bit SMT term (sign-extended, as gep indices are signed)."""
-    if tok in env:
-        term, w, _, _ = env[tok]
+def _idx64(v, env):
+    """A gep index operand -> a 64-bit SMT term (sign-extended: gep indices are signed)."""
+    if v.is_reg:
+        if v.name not in env:
+            raise sem.Unsupported(f"gep index {v.name!r}")
+        term, w, _, _ = env[v.name]
         if w == 64:
             return term
         return f"((_ sign_extend {64 - w}) {term})" if w < 64 else f"((_ extract 63 0) {term})"
-    if re.fullmatch(r"-?\d+", tok):
-        return si._const(int(tok), 64)
-    raise si.Unsupported(f"gep index {tok!r}")
+    if v.kind == "int":
+        return sem.const(v.int_value, 64)
+    raise sem.Unsupported(f"gep index {v.kind}")
 
 
-def _scaled(base, idx64, stride):
-    return f"(bvadd {base} {idx64})" if stride == 1 else \
-        f"(bvadd {base} (bvmul {idx64} (_ bv{stride} 64)))"
+def _type_size(t):
+    """Size in BYTES of a modeled type. Only whole-byte integers and aggregates of them."""
+    if t.is_int():
+        if t.bits % 8:
+            raise sem.Unsupported(f"non-byte type i{t.bits}")
+        return t.bits // 8
+    if t.kind == "array":
+        return t.n * _type_size(t.elem)
+    if t.kind == "struct":
+        return _field_offsets(t)[1]
+    raise sem.Unsupported(f"type {t}")
 
 
-def _field_offsets(fields_bits, packed):
-    """BYTE offset of each field of an integer struct (alignment = field size unless packed)."""
+def _field_offsets(t):
+    """(byte offset of each field, total size) for an integer struct. Alignment = field size unless
+    the struct is packed -- the same rule the text reader implemented, now over parsed fields."""
     offs, cur = [], 0
-    for w in fields_bits:
-        sz = w // 8
-        if not packed and sz:
+    for f in t.fields:
+        sz = _type_size(f)
+        if not t.packed and sz:
             cur = (cur + sz - 1) // sz * sz
-        offs.append(cur); cur += sz
-    return offs
+        offs.append(cur)
+        cur += sz
+    return offs, cur
 
 
-def _gep(line, addr, env):
-    """`getelementptr` -> (dst, new BYTE address). Handles a scalar element `iW, ptr %b, iW %i`
-    (byte stride W/8), the array form `[N x iW], ptr %b, iW 0, iW %i`, and an integer-struct field
-    `{iA, iB, ...}, ptr %b, iW 0, iW K` (constant K -> field byte offset). Because memory is byte-
-    addressable, i8/i32/struct/type-punning all share ONE model and the array theory handles aliasing.
-    None if not a gep; declines an unmodeled gep (nested/pointer fields, non-byte width)."""
-    m = re.fullmatch(r"(%[\w.]+)\s*=\s*getelementptr\s+(?:inbounds\s+)?(.+)", line)
-    if not m:
+def _gep_address(inst, addr, env):
+    """`getelementptr` -> a new BYTE address. One traversal of the index list over the structured
+    source type, replacing three separate text patterns and the struct-layout regex."""
+    base = inst.operands[0]
+    if not base.is_reg or base.name not in addr:
+        raise sem.Unsupported("gep on a non-pointer base")
+    cur = addr[base.name]
+    t = inst.source_type
+    if t is None:
+        raise sem.Unsupported("gep without a source type")
+    idxs = inst.operands[1:]
+    if not idxs:
+        raise sem.Unsupported("gep without indices")
+    # The first index strides over the source type itself.
+    cur = _scaled(cur, _idx64(idxs[0], env), _type_size(t))
+    for v in idxs[1:]:
+        if t.kind == "struct":
+            if v.kind != "int":
+                raise sem.Unsupported("variable struct field index")
+            k = v.int_value
+            offs, _ = _field_offsets(t)
+            if k < 0 or k >= len(offs):
+                raise sem.Unsupported("struct field out of range")
+            cur = _addr_off(cur, offs[k])
+            t = t.fields[k]
+        elif t.kind == "array":
+            cur = _scaled(cur, _idx64(v, env), _type_size(t.elem))
+            t = t.elem
+        else:
+            raise sem.Unsupported(f"gep into {t}")
+    return cur
+
+
+def _scaled(base, idx, stride):
+    if idx == sem.const(0, 64):          # a zero index moves nowhere; emit no term for it
+        return base
+    return f"(bvadd {base} {idx})" if stride == 1 else \
+        f"(bvadd {base} (bvmul {idx} (_ bv{stride} 64)))"
+
+
+_MAX_CALL_DEPTH = 6
+
+
+def _signature(ll_text, func):
+    """[(kind, name)] for the parameters -- kind is 'ptr' or an integer width."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None:
         return None
-    dst, rest = m.group(1), m.group(2)
-    e1 = re.fullmatch(r"i(\d+),\s+ptr\s+(%[\w.]+),\s+i\d+\s+(\S+)", rest)
-    e2 = re.fullmatch(r"\[\d+\s+x\s+i(\d+)\],\s+ptr\s+(%[\w.]+),\s+i\d+\s+0,\s+i\d+\s+(\S+)", rest)
-    if e1 or e2:
-        g = e1 or e2
-        w = int(g.group(1))
-        if w % 8 or g.group(2) not in addr:
-            raise si.Unsupported("gep non-byte element / non-pointer base")
-        return dst, _scaled(addr[g.group(2)], _idx64(g.group(3), env), w // 8)
-    e3 = re.fullmatch(r"(<)?\{\s*(.+?)\s*\}>?,\s+ptr\s+(%[\w.]+),\s+i\d+\s+0,\s+i\d+\s+(\d+)", rest)
-    if e3:
-        fm = [re.fullmatch(r"i(\d+)", f.strip()) for f in e3.group(2).split(",")]
-        if not all(fm) or e3.group(3) not in addr:
-            raise si.Unsupported("non-integer struct field / non-pointer base")
-        fields = [int(f.group(1)) for f in fm]
-        k = int(e3.group(4))
-        if any(w % 8 for w in fields) or k >= len(fields):
-            raise si.Unsupported("struct field out of range / non-byte field")
-        return dst, _addr_off(addr[e3.group(3)], _field_offsets(fields, e3.group(1) == "<")[k])
-    raise si.Unsupported(f"gep form {rest[:40]!r}")
+    out = []
+    for p in fn.params:
+        if p.type.kind == "ptr":
+            out.append(("ptr", p.name))
+        elif p.type.is_int():
+            out.append((p.type.bits, p.name))
+    return out
 
 
-def _mem_translate(ll_text, func, module=None, bind=None, depth=0):
+def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
     """Symbolically execute a single-BB function over the memory array; return
-    (ret_term|None, ret_width, final_mem_term). Reuses scalar_ir for the scalar instructions.
-
-    `module` is where callees are looked up (defaults to `ll_text`); `bind` = (env, addr, mem)
-    supplies a caller's scalar-argument terms, pointer-argument ADDRESSES, and incoming memory when
-    this function is being INLINED at a call site. So a `call` threads the memory array THROUGH the
-    callee -- pointer-argument (non-scalar) callees and argument promotion are both verified this way.
-    Bounded by `_MAX_CALL_DEPTH` (recursion / over-deep declines)."""
-    module = module if module is not None else ll_text
-    body = si._function_body(ll_text, func)
-    if body is None:
-        raise si.Unsupported(f"function {func} not found")
-    if re.search(r"^\s*br\b", body, re.M):
-        raise si.Unsupported("multi-block")
+    (ret_term|None, ret_width, final_mem_term, derefs). Same model as the text reader it replaces:
+    pointer arguments are opaque address terms, a store/load splits into little-endian bytes, and a
+    direct call to a DEFINED callee is inlined THROUGH the memory array."""
+    module_text = module_text if module_text is not None else ll_text
+    module = ir.parse(module_text)
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
+        raise sem.Unsupported(f"function {func} not found")
+    if len(fn.blocks) > 1:
+        raise sem.Unsupported("multi-block")
     if bind is not None:
         env, addr, mem = dict(bind[0]), dict(bind[1]), bind[2]
     else:
         sig = _signature(ll_text, func) or []
         env = {n: (n, w, "false", "false") for w, n in sig if w != "ptr"}
-        addr = {n: n for w, n in sig if w == "ptr"}     # pointer arg -> its (opaque i64) address term
+        addr = {n: n for w, n in sig if w == "ptr"}
         mem = "mem0"
     ret_term, ret_width = None, None
-    derefs = []                                          # address terms this function DEREFERENCES
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";"):
-            continue
-        if line == "ret void":
-            ret_term = None
+    derefs = []
+
+    for inst in fn.blocks[0].instructions:
+        op = inst.op
+        if op == "ret":
+            if not inst.operands:                       # `ret void`
+                break
+            t = inst.operands[0].type
+            if not t.is_int():
+                raise sem.Unsupported("non-integer return")
+            ret_width = t.bits
+            ret_term = sem.value(inst.operands[0], env, ret_width)[0]
             break
-        rm = re.fullmatch(r"ret\s+i(\d+)\s+(\S+)", line)
-        if rm:
-            ret_width = int(rm.group(1))
-            ret_term, _, _, _ = si._operand(rm.group(2), ret_width, env)
-            break
-        sm = re.fullmatch(r"store\s+i(\d+)\s+(\S+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
-        if sm:
-            w = int(sm.group(1))
-            if w % 8 or sm.group(3) not in addr:
-                raise si.Unsupported("store width/target out of scope")
-            vt, _, _, _ = si._operand(sm.group(2), w, env)
-            derefs.append(addr[sm.group(3)])
-            mem = _store_bytes(mem, addr[sm.group(3)], vt, w)
+        if op == "store":
+            val, ptr = inst.operands[0], inst.operands[1]
+            w = val.type.bits if val.type.is_int() else None
+            if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
+                raise sem.Unsupported("store width/target out of scope")
+            vt = sem.value(val, env, w)[0]
+            derefs.append(addr[ptr.name])
+            mem = _store_bytes(mem, addr[ptr.name], vt, w)
             continue
-        lm = re.fullmatch(r"(%[\w.]+)\s*=\s*load\s+i(\d+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
-        if lm:
-            w = int(lm.group(2))
-            if w % 8 or lm.group(3) not in addr:
-                raise si.Unsupported("load width/target out of scope")
-            derefs.append(addr[lm.group(3)])
-            env[lm.group(1)] = (_load_bytes(mem, addr[lm.group(3)], w), w, "false", "false")
+        if op == "load":
+            ptr = inst.operands[0]
+            w = inst.type.bits if inst.type.is_int() else None
+            if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
+                raise sem.Unsupported("load width/target out of scope")
+            derefs.append(addr[ptr.name])
+            env[inst.result] = (_load_bytes(mem, addr[ptr.name], w), w, "false", "false")
             continue
-        gm = _gep(line, addr, env)                       # getelementptr on an i32 pointer -> a new address
-        if gm:
-            addr[gm[0]] = gm[1]
+        if op == "getelementptr":
+            addr[inst.result] = _gep_address(inst, addr, env)
             continue
-        cm = re.fullmatch(r"(?:(%[\w.]+)\s*=\s*)?call\s+(?:void|i(\d+))\s+@([\w.$]+)\s*\((.*)\)", line)
-        if cm and si._function_body(module, cm.group(3)) is not None:      # a DEFINED callee -> inline it
-            dst, callee, arg_str = cm.group(1), cm.group(3), cm.group(4)   # (declared/intrinsic fall thru)
-            if depth >= _MAX_CALL_DEPTH:
-                raise si.Unsupported("call too deep / recursion")
-            cparams = _signature(module, callee) or []
-            args = _split_args(arg_str)
-            if len(args) != len(cparams):
-                raise si.Unsupported("call arity mismatch")
-            cenv, caddr = {}, {}
-            for (kind, pname), a in zip(cparams, args):  # bind ptr args to ADDRESSES, scalars to terms
-                am = re.fullmatch(r"(?:ptr|i\d+)\s+(\S+)", a)
-                if not am:
-                    raise si.Unsupported(f"call arg {a!r}")
-                if kind == "ptr":
-                    if am.group(1) not in addr:
-                        raise si.Unsupported("pointer argument is not a known address")
-                    caddr[pname] = addr[am.group(1)]
-                else:
-                    cenv[pname] = si._operand(am.group(1), kind, env)
-            cret, cw, mem, cderefs = _mem_translate(module, callee, module, (cenv, caddr, mem), depth + 1)
-            derefs.extend(cderefs)                       # the callee's dereferences thread up to the caller
-            if dst is not None:                          # a value-returning call
-                if cret is None:
-                    raise si.Unsupported("value use of a void call")
-                env[dst] = (cret, cw, "false", "false")
-            continue
-        si._instruction(line, env, None, None)          # scalar op (alloca/other-gep decline here)
+        if op == "call" and not inst.indirect and sem.intrinsic_name(inst.callee) is None:
+            callee = module.function(inst.callee) if inst.callee else None
+            if callee is not None and not callee.is_declaration:
+                if depth >= _MAX_CALL_DEPTH:
+                    raise sem.Unsupported("call too deep / recursion")
+                cparams = _signature(module_text, callee.name) or []
+                if len(inst.args) != len(cparams):
+                    raise sem.Unsupported("call arity mismatch")
+                cenv, caddr = {}, {}
+                for (kind, pname), a in zip(cparams, inst.args):
+                    if kind == "ptr":
+                        if not a.is_reg or a.name not in addr:
+                            raise sem.Unsupported("pointer argument is not a known address")
+                        caddr[pname] = addr[a.name]
+                    else:
+                        cenv[pname] = sem.value(a, env, kind)
+                cret, cw, mem, cderefs = _mem_translate(module_text, callee.name, module_text,
+                                                       (cenv, caddr, mem), depth + 1)
+                derefs.extend(cderefs)
+                if inst.result is not None and not inst.type.kind == "void":
+                    if cret is None:
+                        raise sem.Unsupported("value use of a void call")
+                    env[inst.result] = (cret, cw, "false", "false")
+                continue
+        sem.evaluate(inst, env, {})                     # scalar op; alloca/other shapes decline here
     return ret_term, ret_width, mem, derefs
 
 

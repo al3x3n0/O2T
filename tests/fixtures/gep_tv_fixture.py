@@ -10,8 +10,10 @@ resulting aliasing is EXACT with no alias analysis: two geps alias iff they comp
   * gep REASSOCIATION -- `gep(gep(p, i), j)` addresses the same as `gep(p, i+j)`, so a store/load through
     either proves equivalent -- (p+i)+j == p+(i+j);
   * a real opt redundant-load elimination through a gep proves.
-Scope: i32-element pointers/arrays, constant/scalar indices; struct/i8/other-type geps decline. Needs
-z3 + opt 18.
+Scope: whole-byte integer elements, arrays and integer structs (named, inline and packed), with
+constant or scalar indices. The layout is read off LLVM's parsed type rather than regexed out of
+the instruction text, so the NAMED form real IR uses (`%T = type {...}`) is covered -- it used to
+decline, because the reader could only match a struct spelled inline. Needs z3 + opt 18.
 """
 
 from __future__ import annotations
@@ -96,6 +98,38 @@ def main() -> int:
                 "  %v = load i32, ptr %f1\n  ret i32 %v\n}\n")
     st_bad = st_alias.replace("%v = load i32, ptr %f1\n  ret i32 %v", "ret i32 %x")
     assert mem_state_tv(z3, st_alias, st_bad, "h")["status"] == "refuted", "struct fields 0,1 don't alias"
+
+    # 6b. NAMED and PACKED struct types -- the form real IR actually uses. Every case above spells the
+    #     struct INLINE in the gep, and the text reader this model replaced could match nothing else:
+    #     it regexed `{iA, iB, ...}` out of the instruction, so `%T = type {...}` + `getelementptr %T,
+    #     ...` simply declined. The capability was documented and fixture-gated while the shape real
+    #     code takes was never exercised -- the same pattern behind both false proofs in the 2026-07
+    #     review. LLVM reports the layout, so both forms are now covered here.
+    named = ("%T = type { i32, i64 }\n"
+             "define i64 @h(ptr %p, i64 %x) {\n  %f = getelementptr %T, ptr %p, i32 0, i32 1\n"
+             "  store i64 %x, ptr %f\n  %v = load i64, ptr %f\n  ret i64 %v\n}\n")
+    named_ok = ("%T = type { i32, i64 }\n"
+                "define i64 @h(ptr %p, i64 %x) {\n  %f = getelementptr %T, ptr %p, i32 0, i32 1\n"
+                "  store i64 %x, ptr %f\n  ret i64 %x\n}\n")
+    assert mem_state_tv(z3, named, named_ok, "h")["status"] == "proved", "named struct field store/load"
+
+    #     A PACKED struct lays field 1 at byte 4 where the unpacked one aligns it to 8, so reading the
+    #     alignment rule off the parsed type (rather than assuming) is load-bearing: a claim that the
+    #     packed layout matches the unpacked one must REFUTE.
+    packed = ("%P = type <{ i32, i64 }>\n"
+              "define i64 @h(ptr %p, i64 %x) {\n  %f = getelementptr %P, ptr %p, i32 0, i32 1\n"
+              "  store i64 %x, ptr %f\n  %v = load i64, ptr %f\n  ret i64 %v\n}\n")
+    packed_ok = packed.replace("%v = load i64, ptr %f\n  ret i64 %v", "ret i64 %x")
+    assert mem_state_tv(z3, packed, packed_ok, "h")["status"] == "proved", "packed struct field"
+    #     ...and the two layouts are genuinely different: storing through the PACKED offset and
+    #     loading through the UNPACKED one must not be provable.
+    cross = ("%P = type <{ i32, i64 }>\n%U = type { i32, i64 }\n"
+             "define i64 @h(ptr %p, i64 %x) {\n  %a = getelementptr %P, ptr %p, i32 0, i32 1\n"
+             "  store i64 %x, ptr %a\n  %b = getelementptr %U, ptr %p, i32 0, i32 1\n"
+             "  %v = load i64, ptr %b\n  ret i64 %v\n}\n")
+    cross_bad = cross.replace("%v = load i64, ptr %b\n  ret i64 %v", "ret i64 %x")
+    assert mem_state_tv(z3, cross, cross_bad, "h")["status"] == "refuted", \
+        "packed and unpacked field 1 are at different offsets"
 
     print("gep_tv_fixture OK: getelementptr over BYTE-ADDRESSABLE memory (theory of arrays) -- "
           "store p[i];load p[i] returns x (incl. opt's redundant-load elim), store p[i];load p[j] "
