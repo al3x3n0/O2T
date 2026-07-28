@@ -30,6 +30,8 @@ premise.
 from __future__ import annotations
 
 import json
+import re
+import pathlib
 import subprocess
 import tempfile
 from pathlib import Path
@@ -410,33 +412,117 @@ def recover_from_clang(source: str, marker: str = "probe.recovered.fold",
 _DEFN_KINDS = ("FunctionDecl", "CXXMethodDecl")
 
 
-def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
-                      clang_bin: str = "clang", timeout: int = 300) -> dict | None:
-    """SOURCE-FILE MODE: parse a whole upstream `.cpp` against its REAL compile context and
-    `-ast-dump-filter` to just `fn_name` (keeps the AST tractable -- KBs, not the GB of a full TU).
-    Works on an UNMODIFIED upstream `.cpp` (a free function OR an `InstCombinerImpl::` method) when
-    its lib-internal header dir is on `includes` (each dir is passed as `-I`). The filter can emit
-    several decls for one name -- a bodiless declaration plus the out-of-line definition -- so return
-    the FUNCTION/METHOD decl with `fn_name` that actually has a CompoundStmt BODY. If MORE THAN ONE
-    exact-name decl has a body (genuine overloads / redefinitions), the target is ambiguous and we
-    DECLINE (return None) rather than guess the first -- picking the wrong overload and attributing it
-    to `fn_name` would be a false-refutation vector. (The filter is a substring match, so the exact
-    `name == fn_name` check below already rejects unrelated longer names.)"""
-    clang = cp.find_clang(clang_bin)
-    if clang is None:
+# One clang run per FILE-AND-GROUP, not per function. The dominant cost of source-file mode is
+# COMPILING the translation unit, not producing the AST: a 154-line fold file preprocesses to ~121k
+# lines of LLVM headers, and parse+sema of that measures ~13s while `-ast-dump-filter` costs nothing
+# (filtered and unfiltered parses time the same; the filter only avoids serializing a 1.2 GB TU dump).
+# Asking for one function at a time therefore re-parsed those headers once per candidate -- 10
+# functions meant 10 identical compiles. The filter is a SUBSTRING match, so one run keyed on a
+# shared name prefix (`fold`, `simplify`, ...) yields every matching decl in the file at once, and
+# they are cached by exact name. Correctness is unchanged: results are indexed by EXACT name, a name
+# the group run does not produce falls back to its own dump, and the ambiguity rule below still
+# declines rather than guessing.
+_AST_CACHE: dict = {}
+_NAME_GROUP = re.compile(r"^(fold|simplify|visit|combine|match|canonicalize|transform|process)")
+
+
+def _group_filter(fn_name: str) -> str:
+    """The `-ast-dump-filter` to fetch `fn_name` AND its siblings in one parse."""
+    m = _NAME_GROUP.match(fn_name)
+    return m.group(1) if m else fn_name
+
+
+# A precompiled header for the pass's own include set. After batching, the remaining cost is one
+# header parse per clang run, and a PCH cuts that from ~7.6s to ~3.6s -- but building it costs ~9.6s,
+# so a single run cannot amortize it. It is therefore built LAZILY, on the SECOND run that wants this
+# include set: a lone run pays nothing, while a file needing a group run plus a fallback, or a sweep
+# over several files, gets it. (Measured on the vendored folds: 15.4s -> 12.2s for one file, and 5.5s
+# for the next file with the same context.) Two safety rules, because a wrong preprocessing context
+# would change the AST and therefore the recovered obligation:
+#   * the header is built from the .cpp's OWN `#include` lines, in order;
+#   * it is REFUSED if any `#define`/`#if` precedes them, since the includes would then be expanded
+#     under macros the PCH did not see;
+# and if a PCH-based dump comes back empty, the run is retried without it.
+_PCH_CACHE: dict = {}
+_PCH_SEEN: dict = {}
+_INCLUDE_LINE = re.compile(r"^\s*#\s*include\b")
+_COND_LINE = re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|undef)\b")
+
+
+def _pch_headers(cpp_path: str):
+    """The .cpp's own include lines, or None if a macro directive precedes them."""
+    try:
+        lines = pathlib.Path(cpp_path).read_text(errors="replace").splitlines()
+    except OSError:
         return None
-    argv = [clang, "-Xclang", "-ast-dump=json", "-Xclang", f"-ast-dump-filter={fn_name}",
-            "-fsyntax-only", "-std=c++17"]
+    out = []
+    for ln in lines:
+        if _INCLUDE_LINE.match(ln):
+            out.append(ln)
+        elif _COND_LINE.match(ln):
+            return None                  # includes expand under macros the PCH would not have
+        elif out and ln.strip() and not ln.lstrip().startswith("//"):
+            break                        # past the include block
+    return out or None
+
+
+def _pch_for(clang: str, cpp_path: str, includes: list[str], timeout: int):
+    """A PCH for this include set, built lazily on the SECOND run that needs it. None before that,
+    or if the source's preprocessing context makes one unsafe."""
+    key = (tuple(includes), clang)
+    seen = _PCH_SEEN.get(key, set())
+    if key in _PCH_CACHE:
+        return _PCH_CACHE[key]
+    if cpp_path not in seen:
+        seen.add(cpp_path)
+        _PCH_SEEN[key] = seen
+        if len(seen) < 2:                # first run with this context: the build would not pay
+            return None
+    headers = _pch_headers(cpp_path)
+    if not headers:
+        _PCH_CACHE[key] = None
+        return None
+    d = pathlib.Path(tempfile.mkdtemp(prefix="o2t-pch-"))
+    hdr, pch = d / "ctx.h", d / "ctx.pch"
+    hdr.write_text("\n".join(headers) + "\n")
+    argv = [clang, "-x", "c++-header", "-std=c++17"]
     for inc in includes:
         argv += ["-I", inc]
-    argv.append(cpp_path)
+    argv += [str(hdr), "-o", str(pch)]
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+        rc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout).returncode
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        rc = 1
+    _PCH_CACHE[key] = str(pch) if rc == 0 and pch.exists() else None
+    return _PCH_CACHE[key]
+
+
+def _run_dump(clang: str, cpp_path: str, filt: str, includes: list[str], timeout: int):
+    """One clang invocation; returns the concatenated JSON decls it printed, or None."""
+    def _dump(pch):
+        argv = [clang, "-Xclang", "-ast-dump=json", "-Xclang", f"-ast-dump-filter={filt}",
+                "-fsyntax-only", "-std=c++17"]
+        if pch:
+            argv += ["-include-pch", pch]
+        for inc in includes:
+            argv += ["-I", inc]
+        argv.append(cpp_path)
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    pch = _pch_for(clang, cpp_path, includes, timeout)
+    out = _dump(pch)
+    if pch and not (out or "").strip():          # PCH context mismatch -> redo without it
+        out = _dump(None)
+    return out
+
+
+def _index_decls(out: str) -> dict:
+    """name -> [bodied decls] from a stream of concatenated JSON decls."""
     dec = json.JSONDecoder()
-    i, n = 0, len(out)
-    bodied = []
+    i, n, found = 0, len(out), {}
     while i < n:
         while i < n and out[i] in " \t\r\n":
             i += 1
@@ -446,12 +532,49 @@ def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
             node, i = dec.raw_decode(out, i)
         except (json.JSONDecodeError, ValueError):
             break
-        if node.get("kind") in _DEFN_KINDS and node.get("name") == fn_name \
-                and _body_compound(node) is not None:
-            bodied.append(node)
+        if node.get("kind") in _DEFN_KINDS and _body_compound(node) is not None:
+            found.setdefault(node.get("name"), []).append(node)
+    return found
+
+
+def _dump_source_file(cpp_path: str, fn_name: str, includes: list[str],
+                      clang_bin: str = "clang", timeout: int = 300) -> dict | None:
+    """SOURCE-FILE MODE: parse a whole upstream `.cpp` against its REAL compile context and return the
+    AST of `fn_name`. Works on an UNMODIFIED upstream `.cpp` (a free function OR an
+    `InstCombinerImpl::` method) when its lib-internal header dir is on `includes`.
+
+    The filter can emit several decls for one name -- a bodiless declaration plus the out-of-line
+    definition -- so return the FUNCTION/METHOD decl with `fn_name` that actually has a CompoundStmt
+    BODY. If MORE THAN ONE exact-name decl has a body (genuine overloads / redefinitions), the target
+    is ambiguous and we DECLINE (return None) rather than guess the first -- picking the wrong
+    overload and attributing it to `fn_name` would be a false-refutation vector."""
+    clang = cp.find_clang(clang_bin)
+    if clang is None:
+        return None
+    key = (cpp_path, tuple(includes), clang)
+    cache = _AST_CACHE.setdefault(key, {})
+    if fn_name in cache:
+        bodied = cache[fn_name]
+    else:
+        out = _run_dump(clang, cpp_path, _group_filter(fn_name), includes, timeout)
+        if out is None:
+            return None
+        for name, decls in _index_decls(out).items():
+            cache.setdefault(name, decls)
+        if fn_name not in cache:            # the group run did not cover it -> ask for it by name
+            out = _run_dump(clang, cpp_path, fn_name, includes, timeout)
+            cache[fn_name] = _index_decls(out or "").get(fn_name, [])
+        bodied = cache[fn_name]
     if len(bodied) != 1:                 # 0 = not found; >1 = ambiguous overloads -> decline, never guess
         return None
     return bodied[0]
+
+
+def clear_ast_cache() -> None:
+    """Drop the per-file AST and PCH caches (the source on disk is assumed stable within a run)."""
+    _AST_CACHE.clear()
+    _PCH_CACHE.clear()
+    _PCH_SEEN.clear()
 
 
 def recover_from_source_file(cpp_path: str, fn_name: str, includes: list[str],
