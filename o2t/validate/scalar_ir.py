@@ -32,14 +32,23 @@ from o2t.formal_ir import VALID_FLAGS, flag_poison_smt, smt_and, smt_or
 from o2t.validate import ir_model as ir
 from o2t.validate import semantics as sem
 
-_BIN = {"add": "bvadd", "sub": "bvsub", "mul": "bvmul", "and": "bvand", "or": "bvor",
-        "xor": "bvxor", "shl": "bvshl", "lshr": "bvlshr", "ashr": "bvashr",
-        "udiv": "bvudiv", "sdiv": "bvsdiv", "urem": "bvurem", "srem": "bvsrem"}
-_ICMP = {"eq": "(= {a} {b})", "ne": "(distinct {a} {b})",
-         "ult": "(bvult {a} {b})", "ule": "(bvule {a} {b})",
-         "ugt": "(bvugt {a} {b})", "uge": "(bvuge {a} {b})",
-         "slt": "(bvslt {a} {b})", "sle": "(bvsle {a} {b})",
-         "sgt": "(bvsgt {a} {b})", "sge": "(bvsge {a} {b})"}
+# The instruction tables and the poison/UB rules live in the shared semantics layer. These names are
+# ALIASES, not copies: `slp_ir`, `mem2reg_ir` and `loop_induction` import them from here, so aliasing
+# puts the loop track on the same reading of LLVM as the peephole track without touching their code.
+# Duplicate models are what round 6 of the 2026-07 review found a false proof inside; there is now one
+# definition, and `semantics_fixture` asserts these were byte-identical before the collapse.
+_BIN = sem.BIN
+_ICMP = sem.ICMP
+_const = sem.const
+_own_poison = sem.own_poison
+_own_ub = sem.own_ub
+_INTRINSICS = sem.INTRINSICS
+
+# Flags whose presence means an operation can produce poison (see `poison_risk`).
+_POISON_FLAGS = {"nsw", "nuw", "exact", "disjoint", "nneg"}
+
+# Interprocedural inlining depth: a deeper (or recursive) call chain declines.
+_MAX_CALL_DEPTH = 6
 
 
 # ONE decline type across the stack: the semantics layer raises it, and every caller that catches
@@ -66,89 +75,20 @@ def _function_body(ll_text, func):
 # `i32 range(i32 0, 8) %x`, `i8 signext %c`). They are skipped for typing purposes, but `noundef` is
 # read separately by `_noundef_params` because it is what JUSTIFIES modeling the parameter as a single
 # definite value (see the undef-risk guard in `validate_transform`).
-_PARAM_ATTRS = r"(?:[\w.]+(?:\([^)]*\))?\s+)*"
-
-
-def _sig_text(ll_text, func):
-    """The text between the parentheses of `define ... @func(...)`, scanning to the MATCHING close
-    paren. A `([^)]*)` capture stops at the first `)`, which an attribute may contain
-    (`i32 range(i32 0, 8) %y`), truncating the list and silently dropping every later parameter."""
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(", ll_text)
-    if not m:
-        return None
-    depth, j = 1, m.end()
-    while j < len(ll_text) and depth:
-        depth += {"(": 1, ")": -1}.get(ll_text[j], 0)
-        j += 1
-    return ll_text[m.end():j - 1]
-
-
-def _split_params(sig):
-    """Split a parameter list on commas at PAREN DEPTH ZERO. An attribute may itself contain a comma
-    (`i32 range(i32 0, 8) %y`), and a naive split severs the parameter from its name, which drops it
-    from the model and declines the whole function on an unresolvable operand."""
-    parts, depth, cur = [], 0, ""
-    for ch in sig:
-        if ch in "([<":
-            depth += 1
-        elif ch in ")]>":
-            depth -= 1
-        if ch == "," and depth == 0:
-            parts.append(cur); cur = ""
-        else:
-            cur += ch
-    if cur.strip():
-        parts.append(cur)
-    return parts
-
-
 def _params(ll_text, func):
-    """Parameter name -> width, from the signature (declared as bitvectors). Anchored on the `define`
-    so a forward-reference CALL SITE `@func(args)` above the definition is not misread as the
-    signature (which would bind callee params to the caller's argument names). Parameter attributes
-    between the type and the name are skipped, so an attributed parameter is modeled rather than
-    making the whole function decline on an unresolvable operand."""
-    sig = _sig_text(ll_text, func)
-    out = {}
-    if sig is not None:
-        for part in _split_params(sig):
-            pm = re.search(r"i(\d+)\s+" + _PARAM_ATTRS + r"(%[\w.]+)", part.strip())
-            if pm:
-                out[pm.group(2)] = int(pm.group(1))
-    return out
+    """Integer parameter name -> width, from the parse. Non-integer parameters are skipped, so a use
+    of one declines naturally downstream."""
+    fn = ir.parse(ll_text).function(func)
+    return fn.int_params if fn else {}
 
 
 def _noundef_params(ll_text, func):
-    """The parameters declared `noundef`. Everything else may be `undef` at run time, and an `undef`
-    value is NOT one value: each USE of it may observe a different one. This model gives every
-    parameter a single SMT constant, i.e. it assumes `noundef` on every argument -- so this set is
-    exactly where that assumption is DECLARED rather than assumed (see the undef-risk guard)."""
-    sig = _sig_text(ll_text, func)
-    out = set()
-    if sig is not None:
-        for part in _split_params(sig):
-            pm = re.search(r"i\d+\s+" + _PARAM_ATTRS + r"(%[\w.]+)", part.strip())
-            if pm and re.search(r"\bnoundef\b", part):
-                out.add(pm.group(1))
-    return out
-
-
-def _operand(tok, width, env):
-    """An SSA operand or integer literal -> (term, width, poison, ub).
-
-    Parameters and constants are defined inputs (poison/ub = "false"); derived SSA values carry the
-    poison/ub terms accumulated by `_instruction`."""
-    tok = tok.strip()
-    if tok in env:
-        return env[tok]
-    if re.fullmatch(r"-?\d+", tok):
-        return _const(int(tok), width), width, "false", "false"
-    if tok in ("true", "false"):
-        return _const(1 if tok == "true" else 0, 1), 1, "false", "false"
-    raise Unsupported(f"operand {tok!r}")
-
-
-_MAX_CALL_DEPTH = 6
+    """The parameters declared `noundef`. Every other argument may be `undef` at run time, and an
+    `undef` value is not one value -- each USE of it may observe a different one. Modeling a parameter
+    as a single SMT constant assumes `noundef`, so this set is where that assumption is DECLARED
+    rather than assumed (see the undef-risk guard in `validate_transform`)."""
+    fn = ir.parse(ll_text).function(func)
+    return {p.name for p in fn.params if p.noundef} if fn else set()
 
 
 def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
@@ -162,476 +102,41 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
     return _translate_parsed(module, func, extra_ops, bindings, _depth, side, fresh)
 
 
-def _translate_text(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
-                    side="source", fresh=None):
-    """Translate a single-BB integer function to (params, ret_term, ret_width, ret_poison, ret_ub).
-    Raises Unsupported on any unmodeled instruction/shape (so it is declined, not mis-proved).
-    `extra_ops` is an optional list of handlers `(rhs, env) -> (smt, w, poison, ub) | None` for
-    instructions beyond the built-in fragment -- ENRICHMENTS that must be independently validated
-    (o2t/validate/enrich.py) before they are installed here, so the core is grown, never guessed.
-    `bindings`/`_module`/`_depth` support INTERPROCEDURAL resolution: a `call @g(args)` is modeled by
-    translating `g` (from `_module`) with its params bound to the argument terms -- so a caller is
-    translatable and inlining is verifiable. Recursion is bounded by `_MAX_CALL_DEPTH` (else declined).
-    `side` ("source"|"target") and `fresh` (a list the caller appends `(name, width)` declarations to)
-    support instructions whose semantics are NONDETERMINISTIC -- today just `freeze`, whose choice is
-    existential on the target and universal on the source (see the `freeze` case in `_instruction`).
-    The default is the conservative one: without a `fresh` list a source-side freeze simply declines."""
-    body = _function_body(ll_text, func)
-    if body is None:
-        raise Unsupported(f"function {func} not found")
-    params = _params(ll_text, func)
-    # `bindings` supplies a caller's argument terms for a resolved call (interprocedural inlining);
-    # `_module` is where callees are looked up (defaults to this text); `_depth` bounds recursion.
-    if bindings is not None:
-        env = dict(bindings)
-    else:
-        env = {name: (name, w, "false", "false") for name, w in params.items()}
-    call_ctx = {"module": _module if _module is not None else ll_text,
-                "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh}
-    if re.search(r"^\s*br\b", body, re.M):             # any branch -> a multi-block (CFG) function
-        return _translate_multiblock(body, params, env, extra_ops, call_ctx)
-    # LOCAL scalar memory (single-BB only): symbolic mem2reg over non-escaping allocas. An escaping
-    # pointer is never in `env` as a value, so its use declines naturally -- no aliasing is assumed.
-    call_ctx["mem"] = {"cell": {}, "val": {}}          # alloca ptr -> cell id ; cell id -> (term, poison)
-    ret_term = ret_width = None
-    ret_poison = ret_ub = "false"
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";") or re.fullmatch(r"[\w.]+:", line):
-            continue
-        rm = re.fullmatch(r"ret\s+i(\d+)\s+(\S+)", line)
-        if rm:
-            w = int(rm.group(1))
-            ret_term, _, ret_poison, ret_ub = _operand(rm.group(2), w, env)
-            ret_width = w
-            break
-        if line == "ret void":
-            raise Unsupported("void return")
-        sm = re.fullmatch(r"store\s+i(\d+)\s+(\S+),\s+ptr\s+(%[\w.]+)(?:,.*)?", line)
-        if sm:                                         # store v, ptr %p (%p must be a local alloca)
-            mem = call_ctx["mem"]
-            if sm.group(3) not in mem["cell"]:
-                raise Unsupported("store to a non-local/escaped pointer")
-            vt, _, vp, _ = _operand(sm.group(2), int(sm.group(1)), env)
-            mem["val"][mem["cell"][sm.group(3)]] = (vt, vp)
-            continue
-        _instruction(line, env, extra_ops, call_ctx)
-    if ret_term is None:
-        raise Unsupported("no scalar ret")
-    # UB is a whole-function property: a div-by-zero / INT_MIN-/-1 anywhere is UB even if its result
-    # is dead. So accumulate every computed value's ub (poison, by contrast, only matters when it
-    # reaches the returned value, so it stays on ret_poison).
-    func_ub = smt_or([ret_ub, *(v[3] for v in env.values())])
-    return params, ret_term, ret_width, ret_poison, func_ub
-
-
 def _bool_of(term, width):
     """An iW value -> an SMT boolean (true iff nonzero) -- the sense of a branch/select condition."""
     return f"(not (= {term} {_const(0, width)}))"
 
 
-def _parse_blocks(body):
-    """[(label, [instruction lines], terminator line)] for each basic block; None if malformed. The
-    entry block (leading instructions before the first label) is named `entry`."""
-    lines = [l.strip() for l in body.splitlines() if l.strip() and not l.strip().startswith(";")]
-    raw, label, cur = [], None, []
-    for l in lines:
-        m = re.fullmatch(r"([\w.]+):", l)
-        if m:
-            if label is not None or cur:
-                raw.append((label or "entry", cur))
-            label, cur = m.group(1), []
-        else:
-            cur.append(l)
-    raw.append((label or "entry", cur))
-    out = []
-    for lab, insts in raw:
-        if not insts:
-            return None
-        out.append((lab, insts[:-1], insts[-1]))
-    return out
-
-
-def _translate_multiblock(body, params, env, extra_ops, call_ctx):
-    """Symbolically execute an ACYCLIC single-function CFG to the same 5-tuple `translate` returns.
-    Each block gets a path condition; a `phi` becomes an `ite` over the predecessors' reached-from
-    conditions; returns are combined by path condition. SOUND-BY-SCOPE: div/rem (the only UB sources)
-    make it DECLINE (so whole-function UB is `false` and needs no path-conditioning); a back-edge
-    (loop) or an unhandled terminator/shape DECLINES. Poison propagates through the phi/return ites;
-    branch-on-poison is not modeled (a documented conservative gap, not a false proof)."""
-    blocks = _parse_blocks(body)
-    if not blocks:
-        raise Unsupported("unparseable CFG")
-    order = [lab for lab, _, _ in blocks]
-    binfo = {lab: (insts, term) for lab, insts, term in blocks}
-    succ = {}
-    for lab, insts, term in blocks:
-        if any(re.search(r"\b[us](?:div|rem)\b", ins) for ins in insts):
-            raise Unsupported("div/rem in multi-block (UB path-conditioning not modeled)")
-        if re.fullmatch(r"ret\s+i\d+\s+\S+", term):
-            succ[lab] = []
-        elif (um := re.fullmatch(r"br\s+label\s+%([\w.]+)", term)):
-            succ[lab] = [um.group(1)]
-        elif (cm := re.fullmatch(r"br\s+i1\s+\S+,\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)):
-            succ[lab] = [cm.group(1), cm.group(2)]
-        else:
-            raise Unsupported(f"terminator {term!r}")
-    preds = {lab: [] for lab in order}
-    for lab in order:
-        for s in succ[lab]:
-            if s not in preds:
-                raise Unsupported(f"branch to unknown block %{s}")
-            preds[s].append(lab)
-
-    path, edge, rets, branch_poison = {order[0]: "true"}, {}, [], []
-    done, todo, progress = set(), list(order), True
-    while todo and progress:
-        progress = False
-        for lab in list(todo):
-            if lab != order[0] and any(p not in done for p in preds[lab]):
-                continue
-            if lab != order[0]:
-                parts = [f"(and {path[p]} {edge[(p, lab)]})" for p in preds[lab]]
-                path[lab] = parts[0] if len(parts) == 1 else "(or " + " ".join(parts) + ")"
-            insts, term = binfo[lab]
-            for ins in insts:
-                pm = re.fullmatch(r"(%[\w.]+)\s*=\s*phi\s+i(\d+)\s+(.+)", ins)
-                if pm:
-                    dst, w = pm.group(1), int(pm.group(2))
-                    incs = re.findall(r"\[\s*([^,\]]+?)\s*,\s*%([\w.]+)\s*\]", pm.group(3))
-                    if not incs:
-                        raise Unsupported("phi parse")
-                    val = poi = None
-                    for vtok, plab in incs:
-                        vt, _, vp, _ = _operand(vtok.strip(), w, env)
-                        rf = f"(and {path.get(plab, 'false')} {edge.get((plab, lab), 'false')})"
-                        val = vt if val is None else f"(ite {rf} {vt} {val})"
-                        poi = vp if poi is None else f"(ite {rf} {vp} {poi})"
-                    env[dst] = (val, w, poi, "false")
-                    continue
-                _instruction(ins, env, extra_ops, call_ctx)
-            if term.startswith("ret"):
-                rm = re.fullmatch(r"ret\s+i(\d+)\s+(\S+)", term)
-                w = int(rm.group(1))
-                rt, _, rp, _ = _operand(rm.group(2), w, env)
-                rets.append((rt, rp, w, path[lab]))
-            elif (um := re.fullmatch(r"br\s+label\s+%([\w.]+)", term)):
-                edge[(lab, um.group(1))] = "true"
-            else:
-                cm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)
-                cv, _, cvp, _ = _operand(cm.group(1), 1, env)
-                if cvp != "false":                     # branching on POISON poisons the whole result
-                    branch_poison.append(f"(and {path[lab]} {cvp})")
-                cb = _bool_of(cv, 1)
-                edge[(lab, cm.group(2))], edge[(lab, cm.group(3))] = cb, f"(not {cb})"
-            done.add(lab); todo.remove(lab); progress = True
-    if todo:
-        raise Unsupported("cyclic CFG (loop) -- not modeled")
-    if not rets:
-        raise Unsupported("no scalar ret")
-    w = rets[0][2]
-    term, poison = rets[-1][0], rets[-1][1]
-    for rt, rp, _, pc in reversed(rets[:-1]):
-        term, poison = f"(ite {pc} {rt} {term})", f"(ite {pc} {rp} {poison})"
-    if branch_poison:                                  # a poison branch condition poisons the result
-        poison = smt_or([poison, *branch_poison])
-    return params, term, w, poison, "false"
-
-
-def _own_poison(name, op, flags, a, b, w):
-    """Poison introduced by the op itself (independent of operand poison), LLVM-faithful."""
-    conds = []
-    fl = [f for f in flags if f in VALID_FLAGS.get(op, set())]
-    if fl:  # nsw/nuw overflow, exact remainder, and oversize *flagged* shifts
-        conds.append(flag_poison_smt(op, fl, a, b, w))
-    if name == "or" and "disjoint" in flags:  # `or disjoint` requires no common bits
-        conds.append(f"(not (= (bvand {a} {b}) (_ bv0 {w})))")
-    if name in ("shl", "lshr", "ashr"):  # a plain shift by >= bitwidth is poison too
-        conds.append(f"(bvuge {b} (_ bv{w} {w}))")
-    return smt_or(conds)
-
-
 def poison_risk(ll_text, func):
-    """Does `func`'s body contain a poison-generating op that a VALUE-equality validator does not
-    refine? A flagged binop (nsw/nuw/exact/disjoint) or a shift whose amount is not a scalar in-range
-    constant (a variable, an oversize constant, or any vector shift). Such a validator may PROVE
-    soundly (value-equal => refinement) but must NOT REFUTE here -- a value mismatch could be a sound
-    poison exploitation (opt folding a poison `ashr x,x` to 0), so callers decline instead."""
-    body = _function_body(ll_text, func) or ""
-    if re.search(r"\b(nsw|nuw|exact|disjoint)\b", body):
-        return True
-    for m in re.finditer(r"\b(?:shl|lshr|ashr)\s+(i(\d+)|<[^>]+>)\s+[^,]+,\s*(\S+)", body):
-        width, amt = m.group(2), m.group(3).rstrip(",")
-        if width is None:                              # a vector shift -> conservatively poison risk
+    """Does `func` contain a poison-generating operation that a VALUE-equality validator does not
+    refine? A flagged operation, or a shift whose amount is not a scalar in-range constant (a
+    variable, an oversize constant, or any vector shift).
+
+    Such a validator may PROVE soundly -- value-equal everywhere implies refinement -- but must NOT
+    REFUTE on a value mismatch here, because the mismatch may be a sound poison exploitation (`opt`
+    folding a poison `ashr x,x` to 0). Callers decline instead. So the danger is UNDER-approximating:
+    missing a poison source turns a sound fold into a false refutation.
+
+    Read from the parse rather than from the body text. The regex this replaces searched the whole
+    body for the words `nsw|nuw|exact|disjoint`, which matched them inside COMMENTS -- and LLVM's own
+    test files are full of `; CHECK-NEXT: ... add nsw ...` lines, so 63 of 1,023 corpus functions were
+    flagged as poison-risky on the strength of a comment. That erred toward declining, so it was safe,
+    but it silently suppressed refutations. `nneg` is included here and was in neither the old word
+    list nor its intent: it is a genuine LLVM 18 poison flag, so omitting it was the dangerous
+    direction."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None:
+        return False
+    for inst in fn.instructions():
+        if _POISON_FLAGS & set(inst.flags):
             return True
-        if not re.fullmatch(r"-?\d+", amt) or not (0 <= int(amt) < int(width)):
-            return True                                # variable or out-of-range scalar shift
+        if inst.op in ("shl", "lshr", "ashr"):
+            if inst.type.kind == "vector":             # any vector shift -> conservatively risky
+                return True
+            amount = inst.operands[1]
+            if amount.kind != "int" or not (0 <= amount.int_value < inst.type.bits):
+                return True                            # variable or out-of-range scalar shift
     return False
-
-
-def _own_ub(name, a, b, w):
-    """Undefined behaviour introduced by the op itself (div/rem by zero; signed INT_MIN/-1)."""
-    conds = []
-    if name in ("udiv", "sdiv", "urem", "srem"):
-        conds.append(f"(= {b} (_ bv0 {w}))")
-    if name in ("sdiv", "srem"):
-        imin, ones = _const(1 << (w - 1), w), _const((1 << w) - 1, w)
-        conds.append(f"(and (= {a} {imin}) (= {b} {ones}))")
-    return smt_or(conds)
-
-
-# --- common integer intrinsics (SMT models; each lli-validated by intrinsics_ir_fixture) ----------
-def _intr_args(arg_str, w, env):
-    """Parse `iN v, iN v, ...` intrinsic args to a list of _operand tuples (types stripped)."""
-    out = []
-    for part in arg_str.split(","):
-        m = re.fullmatch(r"\s*i\d+\s+(\S+)\s*", part)
-        if not m:
-            raise Unsupported(f"intrinsic arg {part!r}")
-        out.append(_operand(m.group(1), w, env))
-    return out
-
-
-def _p(ops):                                          # combined operand poison / ub
-    return smt_or([o[2] for o in ops]), smt_or([o[3] for o in ops])
-
-
-def _intr_ctpop(ops, w):
-    a, (p, u) = ops[0][0], _p(ops)
-    bits = [f"((_ zero_extend {w - 1}) ((_ extract {i} {i}) {a}))" for i in range(w)]
-    return f"(bvadd {' '.join(bits)})", w, p, u
-
-
-def _intr_abs(ops, w):
-    if len(ops) != 2:
-        raise Unsupported("abs arity")
-    a, np = ops[0][0], ops[1][0]                       # np = the i1 is_int_min_poison flag
-    _, u = _p(ops[:1])
-    val = f"(ite (bvslt {a} (_ bv0 {w})) (bvneg {a}) {a})"
-    pois = smt_or([ops[0][2], f"(and (= {np} (_ bv1 1)) (= {a} {_const(1 << (w - 1), w)}))"])
-    return val, w, pois, u
-
-
-def _ctz(ops, w, leading):
-    """ctlz/cttz as a bounded nested-ite over the bits: the position of the highest (ctlz) or lowest
-    (cttz) set bit; W if the input is zero. Poison when the is_zero_poison flag is set and x == 0."""
-    if len(ops) != 2:
-        raise Unsupported("ct{l,t}z arity")
-    a, izp = ops[0][0], ops[1][0]
-    expr = _const(w, w)                                # x == 0 -> W
-    order = range(w) if leading else range(w - 1, -1, -1)   # leading: MSB ends outermost
-    for i in order:
-        val = (w - 1 - i) if leading else i            # count of leading/trailing zeros if bit i is it
-        expr = f"(ite (= ((_ extract {i} {i}) {a}) #b1) {_const(val, w)} {expr})"
-    pois = smt_or([ops[0][2], f"(and (= {izp} (_ bv1 1)) (= {a} (_ bv0 {w})))"])
-    return expr, w, pois, ops[0][3]
-
-
-def _funnel(ops, w, right):
-    if len(ops) != 3:
-        raise Unsupported("funnel-shift arity")
-    a, b, c = ops[0][0], ops[1][0], ops[2][0]
-    p, u = _p(ops)
-    s = f"(bvurem {c} (_ bv{w} {w}))"
-    cat = f"(concat {a} {b})"
-    if right:
-        return f"((_ extract {w - 1} 0) (bvlshr {cat} ((_ zero_extend {w}) {s})))", w, p, u
-    return f"((_ extract {2 * w - 1} {w}) (bvshl {cat} ((_ zero_extend {w}) {s})))", w, p, u
-
-
-def _intr_uadd_sat(ops, w):
-    a, b = ops[0][0], ops[1][0]
-    p, u = _p(ops)
-    s = f"(bvadd {a} {b})"
-    return f"(ite (bvult {s} {a}) (bvnot (_ bv0 {w})) {s})", w, p, u
-
-
-def _intr_usub_sat(ops, w):
-    a, b = ops[0][0], ops[1][0]
-    p, u = _p(ops)
-    return f"(ite (bvult {a} {b}) (_ bv0 {w}) (bvsub {a} {b}))", w, p, u
-
-
-def _s_sat(ops, w, sub):
-    """s{add,sub}.sat: compute in w+1 bits (no overflow), then clamp to [INT_MIN, INT_MAX]."""
-    a, b = ops[0][0], ops[1][0]
-    p, u = _p(ops)
-    a1, b1 = f"((_ sign_extend 1) {a})", f"((_ sign_extend 1) {b})"
-    s = f"({'bvsub' if sub else 'bvadd'} {a1} {b1})"
-    imax_w, imin_w = _const((1 << (w - 1)) - 1, w), _const(1 << (w - 1), w)   # 0x7f.. and 0x80..
-    imax_e, imin_e = f"((_ sign_extend 1) {imax_w})", f"((_ sign_extend 1) {imin_w})"
-    lo = f"((_ extract {w - 1} 0) {s})"
-    return f"(ite (bvsgt {s} {imax_e}) {imax_w} (ite (bvslt {s} {imin_e}) {imin_w} {lo}))", w, p, u
-
-
-# Note: `bswap` is deliberately NOT built in -- it is the worked example for the lli-gated
-# self-enrichment path (enrich_fixture), which demonstrates growing the vocabulary from outside.
-_INTRINSICS = {
-    "ctpop": _intr_ctpop, "abs": _intr_abs,
-    "ctlz": lambda ops, w: _ctz(ops, w, leading=True),
-    "cttz": lambda ops, w: _ctz(ops, w, leading=False),
-    "fshl": lambda ops, w: _funnel(ops, w, right=False),
-    "fshr": lambda ops, w: _funnel(ops, w, right=True),
-    "uadd.sat": _intr_uadd_sat, "usub.sat": _intr_usub_sat,
-    "sadd.sat": lambda ops, w: _s_sat(ops, w, sub=False),
-    "ssub.sat": lambda ops, w: _s_sat(ops, w, sub=True),
-}
-
-
-def _instruction(line, env, extra_ops=None, call_ctx=None):
-    m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
-    if not m:
-        raise Unsupported(line)
-    dst, rhs = m.group(1), m.group(2)
-
-    if call_ctx is not None and "mem" in call_ctx:     # LOCAL scalar memory (single-BB symbolic mem2reg)
-        am = re.fullmatch(r"alloca\s+i(\d+)(?:,.*)?", rhs)
-        if am:
-            mem = call_ctx["mem"]
-            mem["cell"][dst] = len(mem["cell"])        # a fresh, distinct cell per alloca
-            return
-        lm = re.fullmatch(r"load\s+i(\d+),\s+ptr\s+(%[\w.]+)(?:,.*)?", rhs)
-        if lm:
-            mem = call_ctx["mem"]
-            cell = mem["cell"].get(lm.group(2))
-            if cell is None or cell not in mem["val"]:
-                raise Unsupported("load from an escaped/uninitialized pointer")
-            vt, vp = mem["val"][cell]                   # last store to this alloca (textual = execution order)
-            env[dst] = (vt, int(lm.group(1)), vp, "false")
-            return
-
-    bm = re.fullmatch(r"(\w+)((?:\s+(?:nsw|nuw|exact|disjoint))*)\s+i(\d+)\s+(\S+),\s+(\S+)", rhs)
-    if bm and bm.group(1) in _BIN:
-        name, flags, w = bm.group(1), re.findall(r"nsw|nuw|exact|disjoint", bm.group(2)), int(bm.group(3))
-        a, _, ap, au = _operand(bm.group(4).rstrip(","), w, env)
-        b, _, bp, bu = _operand(bm.group(5), w, env)
-        op = _BIN[name]
-        poison = smt_or([ap, bp, _own_poison(name, op, flags, a, b, w)])
-        # div/rem by zero is UB; so is a poison divisor (poison used to control the result).
-        div_ub = bp if name in ("udiv", "sdiv", "urem", "srem") else "false"
-        ub = smt_or([au, bu, div_ub, _own_ub(name, a, b, w)])
-        env[dst] = (f"({op} {a} {b})", w, poison, ub)
-        return
-
-    im = re.fullmatch(r"icmp\s+(\w+)\s+i(\d+)\s+(\S+),\s+(\S+)", rhs)
-    if im and im.group(1) in _ICMP:
-        w = int(im.group(2))
-        a, _, ap, au = _operand(im.group(3).rstrip(","), w, env)
-        b, _, bp, bu = _operand(im.group(4), w, env)
-        pred = _ICMP[im.group(1)].format(a=a, b=b)
-        env[dst] = (f"(ite {pred} {_const(1, 1)} {_const(0, 1)})", 1, smt_or([ap, bp]), smt_or([au, bu]))
-        return
-
-    sm = re.fullmatch(r"select\s+i1\s+(\S+),\s+i(\d+)\s+(\S+),\s+i\d+\s+(\S+)", rhs)
-    if sm:
-        w = int(sm.group(2))
-        c, _, cp, cu = _operand(sm.group(1).rstrip(","), 1, env)
-        t, _, tp, tu = _operand(sm.group(3).rstrip(","), w, env)
-        f, _, fp, fu = _operand(sm.group(4), w, env)
-        picks_t = f"(= {c} {_const(1, 1)})"
-        # poison: the condition always propagates; only the SELECTED arm's poison reaches the result.
-        arm_poison = tp if tp == fp else f"(ite {picks_t} {tp} {fp})" if "false" not in (tp, fp) \
-            else smt_and([picks_t, tp]) if fp == "false" else smt_and([f"(not {picks_t})", fp])
-        poison = smt_or([cp, arm_poison])
-        env[dst] = (f"(ite {picks_t} {t} {f})", w, poison, smt_or([cu, tu, fu]))
-        return
-
-    # min/max intrinsics InstCombine canonicalizes select+icmp into.
-    mm = re.fullmatch(r"call\s+i(\d+)\s+@llvm\.(smin|smax|umin|umax)\.i\d+\("
-                      r"i\d+\s+(\S+),\s+i\d+\s+(\S+)\)", rhs)
-    if mm:
-        w = int(mm.group(1))
-        a, _, ap, au = _operand(mm.group(3).rstrip(","), w, env)
-        b, _, bp, bu = _operand(mm.group(4), w, env)
-        cmp = {"smin": "bvsle", "smax": "bvsge", "umin": "bvule", "umax": "bvuge"}[mm.group(2)]
-        env[dst] = (f"(ite ({cmp} {a} {b}) {a} {b})", w, smt_or([ap, bp]), smt_or([au, bu]))
-        return
-
-    # Common integer intrinsics InstCombine produces/folds. Each SMT model is lli-validated
-    # (intrinsics_ir_fixture) -- the model is not trusted on its own. Value semantics; operand poison
-    # propagates, and `abs`'s int-min poison flag is modeled.
-    im2 = re.fullmatch(r"call\s+i(\d+)\s+@llvm\.([a-z]+(?:\.sat)?)\.i\d+\((.*)\)", rhs)
-    if im2 and im2.group(2) in _INTRINSICS:
-        w = int(im2.group(1))
-        ops = _intr_args(im2.group(3), w, env)
-        env[dst] = _INTRINSICS[im2.group(2)](ops, w)
-        return
-
-    # `freeze` -- the instruction InstCombine INTRODUCES to launder poison (select->or, and the whole
-    # isGuaranteedNotToBePoison family), so declining it blinds Track B on exactly the poison-critical
-    # folds. Semantics: if the operand is not poison, freeze is the identity; if it is, freeze yields
-    # ONE arbitrary value, fixed for the execution (hence a single fresh constant per `freeze`, reused
-    # at every use of `dst`), and the result is never poison.
-    #
-    # That choice is NONDETERMINISM, and its quantifier depends on which side we are translating.
-    # Refinement is `every TARGET behaviour is one the SOURCE could have produced`, so in the
-    # refutation query the target's pick is EXISTENTIAL (a free constant the solver may choose to
-    # expose a difference -- correct: a target that freezes poison where the source returns a definite
-    # value really is unsound) while the source's pick is UNIVERSAL. A free constant for the source
-    # would let the solver pick the one value that differs and report a FALSE REFUTATION, and QF_BV
-    # cannot carry the quantifier -- so a SOURCE-side freeze always DECLINES.
-    #
-    # It declines even when the operand's poison term is "false", which looks like a needless refusal
-    # (freeze of a definite value is the identity) but is not: this model has no `undef`, and it treats
-    # PARAMETERS as definite. LLVM does not -- an argument may be `undef` unless `noundef`, and
-    # `freeze` is precisely the instruction that observes the difference. Taking the identity shortcut
-    # makes `freeze %x -> %x` prove, which reference Alive2 REFUTES (target `%x` may be undef, source
-    # `%z` is one fixed value). Removing a freeze is therefore outside the fragment until undef is
-    # modeled; introducing one -- what InstCombine actually does -- is inside it.
-    fz = re.fullmatch(r"freeze\s+i(\d+)\s+(\S+)", rhs)
-    if fz:
-        w = int(fz.group(1))
-        v, _, vp, vu = _operand(fz.group(2), w, env)
-        if call_ctx is None or call_ctx.get("side") != "target" or call_ctx.get("fresh") is None:
-            raise Unsupported("freeze in the source (its nondeterministic choice is universal, and "
-                              "this model has no undef -- so the identity shortcut is unsound)")
-        fresh = call_ctx["fresh"]
-        name = f"frz{len(fresh)}_{call_ctx['side']}"
-        fresh.append((name, w))
-        env[dst] = (f"(ite {vp} {name} {v})", w, "false", vu)
-        return
-
-    cm = re.fullmatch(r"(zext|sext|trunc)\s+i(\d+)\s+(\S+)\s+to\s+i(\d+)", rhs)
-    if cm:
-        src_w, dst_w = int(cm.group(2)), int(cm.group(4))
-        v, _, vp, vu = _operand(cm.group(3), src_w, env)
-        if cm.group(1) == "trunc":
-            env[dst] = (f"((_ extract {dst_w - 1} 0) {v})", dst_w, vp, vu)
-        else:
-            ext = "zero_extend" if cm.group(1) == "zext" else "sign_extend"
-            env[dst] = (f"((_ {ext} {dst_w - src_w}) {v})", dst_w, vp, vu)
-        return
-
-    # Interprocedural: a direct call `call iN @g(args)` to a function defined in the module is modeled
-    # by translating g with its params bound to the argument terms (inlining its semantics). Bounded
-    # recursion; an external/undefined/over-deep/recursive callee declines (never a mis-model).
-    callm = re.fullmatch(r"call\s+i(\d+)\s+@([\w.$]+)\s*\((.*)\)", rhs)
-    if callm and call_ctx is not None and _function_body(call_ctx["module"], callm.group(2)) is not None:
-        module, depth = call_ctx["module"], call_ctx["depth"]  # a DEFINED module function -> inline it
-        callee, arg_str = callm.group(2), callm.group(3)       # (declared/intrinsic calls fall through)
-        if depth >= _MAX_CALL_DEPTH:
-            raise Unsupported("call too deep / recursion")
-        cparams = _params(module, callee)
-        arg_toks = [a.strip() for a in arg_str.split(",")] if arg_str.strip() else []
-        if len(arg_toks) != len(cparams):
-            raise Unsupported("call arity mismatch")
-        bindings = {}
-        for (pname, pw), tok in zip(cparams.items(), arg_toks):
-            am = re.fullmatch(r"i\d+\s+(\S+)", tok)
-            if not am:
-                raise Unsupported(f"call arg {tok!r}")
-            bindings[pname] = _operand(am.group(1), pw, env)
-        _, cret, cw, cp, cu = translate(module, callee, call_ctx["extra_ops"], bindings,
-                                        module, depth + 1)
-        env[dst] = (cret, cw, cp, cu)
-        return
-
-    for handler in (extra_ops or ()):                 # validated enrichments (enrich.py)
-        result = handler(rhs, env)
-        if result is not None:
-            env[dst] = result
-            return
-    raise Unsupported(rhs)
 
 
 def run_passes(src_text, passes, opt_bin="opt"):
@@ -780,7 +285,7 @@ def validate_instcombine(z3_bin, src_text, opt_text, func):
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names
 
 
 # =================================================================================================

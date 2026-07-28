@@ -39,6 +39,25 @@ recovered fold that provably matches it.
 ✅ = a real proof or refutation with a witness. ⚠️ = an explicit `unsupported` decline (a sound
 non-answer), **never** a false `proved`.
 
+## How the IR is read
+
+O2T parses LLVM IR with **LLVM 18's own parser** (`cv-ir-dump` → `o2t/validate/ir_model.py`), not with
+regexes — the same parser `opt` used to produce the IR being validated, so the two cannot disagree
+about what the text means. Poison flags come from LLVM's accessors, types arrive structured (struct
+layouts, vector lane counts, scalable-ness), and an unmodeled opcode declines *on its opcode* rather
+than a pattern quietly failing to match. This is a hard requirement: there is no text fallback,
+because a silent second parser is the drift the migration removed. `o2t doctor` reports whether it is
+built.
+
+Two consequences worth knowing when reading verdicts:
+
+- IR that LLVM rejects now yields `error` (carrying LLVM's diagnostic) rather than being read past. A
+  transform that produces invalid IR — deleting a still-referenced function, removing a live argument
+  — is reported as such.
+- Some functions that previously declined now verify: a trailing `; comment`, an `immarg` attribute, a
+  `zeroinitializer`, LLVM 18's `splat (iW C)` spelling, and **named or packed struct types** in a
+  `getelementptr` were all valid IR the old readers could not match.
+
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV:** **428 / 715 (60%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test

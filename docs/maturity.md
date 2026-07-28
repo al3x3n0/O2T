@@ -56,6 +56,13 @@ unusually rigorous soundness discipline — not a production verifier of real pa
 - **Reproducibility**: ~449 gated fixtures; every paper claim mapped to a test
   (`claim-fixture-map.md`); seven of eight evaluation experiments measured.
 - **The novel idea**: certifying the source-*reading* (§4 of the draft) — to our knowledge new.
+- **The IR reader is out of the trusted base.** Track B parsed LLVM IR with per-module regexes, and
+  that produced a recurring bug *class* rather than isolated bugs — a call site read as a
+  signature (five modules at once), an overload guessed at, a parameter list truncated by an
+  attribute containing a comma, struct-field `getelementptr` support that only matched a struct
+  spelled inline and so never fired on real IR. The syntax layer is now LLVM 18's own parser, and
+  the first two failures are impossible *by construction* rather than by a better-anchored regex.
+  Each port was held to byte-identical SMT against the reader it replaced.
 
 ## Where it is immature — with the numbers
 

@@ -53,6 +53,20 @@ All notable changes to O2T are documented here. Format follows
   view: the same parser `opt` used to produce the IR being validated, so the two cannot disagree about
   what the text means. Poison flags come from LLVM's accessors, types are structured, shuffle masks
   carry `-1` for undef lanes, and arbitrary-width constants survive. Gated by `ir_model_fixture`.
+- **One shared semantics layer for both tracks** (`o2t/validate/semantics.py`). The peephole and loop
+  tracks each carried their own reading of what an LLVM instruction computes, and duplicate models are
+  where soundness bugs breed — round 6 of the 2026-07 review found a live false proof in the loop
+  track's `min`/`max` alias, while round 3's flag fix covered the loop path automatically *because*
+  that part was shared. The value, poison and UB rules now live in one place; `scalar_ir`'s tables are
+  aliases of it, so `slp_ir`, `mem2reg_ir` and `loop_induction` — which import those names — moved onto
+  the shared model without a line changing. Proof strategy is deliberately **not** unified: the bounded
+  track discharges over bit-vectors, the loop track over an integer ring whose ℤ→ℤ/2ⁿ homomorphism
+  proves a recurrence for every bitwidth at once. `semantics_fixture` required byte-identical SMT
+  before the collapse.
+- **`scalar_ir`, `vec_tv` and `mem_state` no longer parse text.** 38/23/13 regex sites → 1/0/0 (the one
+  remaining is `_function_body`, still imported by the loop track and the unported validators). Every
+  port was A/B'd against the reader it replaced: for whole-function TV, 1,023 LLVM InstCombine test
+  functions gave 500 identical SMT, 465 identical declines, 58 reach gains and **0 differences**.
 - **Build requirement:** Track B now requires LLVM 18 development libraries. `cmake` configures
   `cv-ir-dump` by default (`-DO2T_BUILD_IR_DUMP=OFF` opts out and disables Track B); a missing dumper
   raises `IrDumpUnavailable` rather than falling back to a text reader, because a silent second parser

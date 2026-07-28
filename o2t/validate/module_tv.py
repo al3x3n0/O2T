@@ -32,7 +32,16 @@ def signature_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     REMOVED parameter was DEAD (unused in the before body) AND the function -- as a function of the
     SURVIVING parameters -- refines. Removing a LIVE argument is refuted; added/promoted parameters are
     not modeled (a sound decline). No signature change -> ordinary whole-function TV."""
-    bp, ap = si._params(before_ll, func), si._params(after_ll, func)
+    # Removing a LIVE argument leaves the body using a value that no longer exists, so the result is
+    # not valid LLVM IR at all -- LLVM's parser rejects it (`use of undefined value '%x'`) where the
+    # text reader this replaced simply read on. That IS the unsoundness being tested, so it is
+    # reported as a refutation naming the cause, rather than surfacing as a parse exception.
+    try:
+        bp, ap = si._params(before_ll, func), si._params(after_ll, func)
+    except ir.IrParseError as exc:
+        first = str(exc).splitlines()[0]
+        return {"status": "refuted", "function": func,
+                "reason": f"transformed module is not valid LLVM IR: {first[:120]}"}
     removed = [n for n in bp if n not in ap]
     if [n for n in ap if n not in bp]:
         return {"status": "unsupported", "function": func, "reason": "added/promoted parameters"}
