@@ -840,6 +840,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; } && { command -v lli >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/lli; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/concrete_tv_fixture.py; else echo 'concrete_tv_fixture: z3/opt/lli not found, skipped'; fi"
     )
+    # Track A's recovery mode discipline: real pass source is recovered through the CLANG AST (a
+    # missing compile context is a hard error, never a quiet downgrade), while the text front-end is
+    # kept ONLY for shape fixtures whose corpus deliberately does not compile -- and that mode must be
+    # named, is refused alongside a compile context, and is recorded in the report. The AST half
+    # self-skips without clang 18.
+    add_test(
+        NAME recovery_mode_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/recovery_mode_fixture.py
+    )
     # The IR front-end: LLVM 18's own parser replaces O2T's regexes in Track B's trusted base. Pins
     # the four historical text-parsing failures as impossible by construction (forward-reference call
     # site read as a signature, `foo` resolving to `foobar`, an attribute containing a comma
