@@ -205,6 +205,104 @@ def _gen_freeze(rng, n_insns=6, w=32):
     return before, after
 
 
+def _gen_synth(rng, n_insns=6, w=32):
+    """A (before, after) pair whose TARGET IS SYNTHESIZED -- the fuzzer's blind spot, made visible.
+
+    Every opt-driven shape derives `after` by running real InstCombine, so the target distribution is
+    "what InstCombine emits". That means the oracles can only ever audit the assumptions InstCombine
+    happens to RESPECT, and it is precisely why the undeclared-`noundef` false proofs survived 2,600+
+    fuzzed functions and the whole corpus proved set: InstCombine never introduces a duplicated
+    argument use, so nothing in the campaign ever asked `validate_transform` about one. They were
+    found by hand instead.
+
+    But `validate_transform` is a general API: `compose_tv`, `module_tv`, `argprom_tv` and anyone
+    validating their own pass all reach it, and a buggy pass can emit anything. So here the target is
+    the source with one or two plausible PASS-LIKE REWRITES applied -- some sound, many not:
+
+      * duplicate a parameter use (the undef/noundef class -- sound only under `noundef`);
+      * add or drop a poison flag (the surface both 2026-07 false proofs lived on);
+      * swap a binop's operands, or substitute one operand for another value in scope;
+      * return a different in-scope value, or a constant;
+      * freeze the returned value.
+
+    Alive2 decides, not a claim about what opt would do. O2T proving where Alive2 refutes is a false
+    proof; the reverse is a false refutation. Declines are fine and expected -- the point is that the
+    QUESTION now gets asked.
+    """
+    params = [f"%p{i}" for i in range(2)]
+    vals, lines, idx = list(params), [], 0
+
+    def opnd():
+        return str(rng.choice([0, 1, -1, rng.randint(-8, 8)])) if rng.random() < 0.3 else rng.choice(vals)
+
+    for _ in range(n_insns):
+        op = rng.choice(_BINOPS)
+        fl = " " + rng.choice(_FLAGS[op]) if op in _FLAGS and rng.random() < 0.4 else ""
+        v = f"%v{idx}"; idx += 1
+        lines.append(f"  {v} = {op}{fl} i{w} {opnd()}, {opnd()}")
+        vals.append(v)
+    ret = rng.choice(vals)
+    sig = ", ".join(f"i{w} {p}" for p in params)
+    before = f"define i{w} @f({sig}) {{\n" + "\n".join(lines) + f"\n  ret i{w} {ret}\n}}\n"
+
+    # A dedicated shape for the undeclared-`noundef` class, because the generic mutations below do
+    # NOT reach it: that class needs a source whose result is INDEPENDENT of a parameter and a target
+    # that makes it depend on one through a self-combining expression (`ret 0` -> `xor %p, %p`, sound
+    # only if the argument cannot be `undef`). Sources here use their parameters everywhere, so
+    # duplicating a use just yields a sound target. Verified by disabling the undef guard: without
+    # this branch the campaign surfaced ZERO false proofs, i.e. it could not see the very bug it was
+    # written to catch.
+    if rng.random() < 0.35:
+        p_indep = rng.choice(params)
+        self_op = rng.choice(["xor", "sub", "and", "or"])
+        const = rng.randint(-3, 3)
+        before = (f"define i{w} @f({sig}) {{\n  ret i{w} {const}\n}}\n")
+        after = (f"define i{w} @f({sig}) {{\n"
+                 f"  %u = {self_op} i{w} {p_indep}, {p_indep}\n  ret i{w} %u\n}}\n")
+        return before, after
+
+    tgt, tret, extra = list(lines), ret, []
+    for _ in range(rng.randint(1, 2)):
+        kind = rng.choice(["dup_param", "add_flag", "drop_flag", "swap", "sub_operand",
+                           "ret_other", "ret_const", "freeze_ret"])
+        i = rng.randrange(len(tgt)) if tgt else 0
+        if kind == "dup_param" and tgt:
+            # the undef class: make the target read a parameter twice where the source may not have
+            p = rng.choice(params)
+            head, _, tail = tgt[i].partition(" i%d " % w)
+            if tail:
+                tgt[i] = f"{head} i{w} {p}, {p}"
+        elif kind == "add_flag" and tgt:
+            op = tgt[i].split("=")[1].split()[0]
+            if op in _FLAGS and not any(f" {f} " in tgt[i] for f in _FLAGS[op]):
+                tgt[i] = tgt[i].replace(f"= {op} ", f"= {op} {rng.choice(_FLAGS[op])} ", 1)
+        elif kind == "drop_flag" and tgt:
+            for f in ("nsw", "nuw", "exact", "disjoint"):
+                if f" {f} " in tgt[i]:
+                    tgt[i] = tgt[i].replace(f" {f} ", " ", 1)
+                    break
+        elif kind == "swap" and tgt:
+            head, _, ops = tgt[i].rpartition(f" i{w} ")
+            if "," in ops:
+                a, b = [x.strip() for x in ops.split(",", 1)]
+                tgt[i] = f"{head} i{w} {b}, {a}"
+        elif kind == "sub_operand" and tgt:
+            head, _, ops = tgt[i].rpartition(f" i{w} ")
+            if "," in ops:
+                a, b = [x.strip() for x in ops.split(",", 1)]
+                tgt[i] = f"{head} i{w} {rng.choice(vals)}, {b}"
+        elif kind == "ret_other":
+            tret = rng.choice(vals)
+        elif kind == "ret_const":
+            tret = str(rng.randint(-4, 4))
+        elif kind == "freeze_ret":
+            extra.append(f"  %fz = freeze i{w} {tret}")
+            tret = "%fz"
+    after = (f"define i{w} @f({sig}) {{\n" + "\n".join(tgt + extra)
+             + f"\n  ret i{w} {tret}\n}}\n")
+    return before, after
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--count", type=int, default=200)
@@ -213,7 +311,8 @@ def main(argv=None) -> int:
     ap.add_argument("--params", type=int, default=3)
     ap.add_argument("--intrinsics", action="store_true",
                     help="also generate the modeled intrinsic calls (fuzz their encodings vs Alive2)")
-    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg", "freeze"], default="scalar",
+    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg", "freeze", "synth"],
+                    default="scalar",
                     help="scalar (default), pointer memory, fixed vectors, a branch/phi diamond (cfg), "
                          "or freeze (target SYNTHESIZED, not opt output -- see _gen_freeze)")
     ap.add_argument("--passes", help="opt pipeline (default per shape)")
@@ -233,11 +332,12 @@ def main(argv=None) -> int:
            "memory": lambda: _gen_memory(rng, args.insns),
            "vector": lambda: _gen_vector(rng, args.insns),
            "cfg": lambda: _gen_cfg(rng, args.insns),
-           "freeze": lambda: _gen_freeze(rng, args.insns)}[args.shape]
+           "freeze": lambda: _gen_freeze(rng, args.insns),
+           "synth": lambda: _gen_synth(rng, args.insns)}[args.shape]
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
     vacuous = 0
     for i in range(args.count):
-        if args.shape == "freeze":              # target synthesized, not opt output (see _gen_freeze)
+        if args.shape in ("freeze", "synth"):    # target SYNTHESIZED, not opt output
             before, after = gen()
         else:
             before = gen()

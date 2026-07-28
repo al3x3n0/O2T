@@ -36,6 +36,14 @@ def validate_transform_ex(z3_bin: str, before_ll: str, after_ll: str, func: str,
                               cross_check=cross_check)
     if v["status"] != "unsupported":
         return v
+    # A GUARD decline is not a shape decline. `scalar_ir` declines an undef-risky transform because
+    # the transform itself is out of scope (its soundness depends on an argument not being `undef`),
+    # so falling through would hand the same pair to a VALUE-EQUALITY validator that has no such
+    # guard -- and `ret 0 -> xor %p, %p` is value-equal, so it would be PROVED. That is a false proof
+    # the synthesized-target fuzzer found at exactly this seam: the guard lived in one validator while
+    # the dispatcher could route around it.
+    if v.get("guard"):
+        return v
     for name, validator in (("mem_state", mem_state_tv), ("vec", vec_tv), ("svec", svec_tv)):
         vv = validator(z3_bin, before_ll, after_ll, func, timeout=timeout, cross_check=cross_check)
         if vv["status"] in ("proved", "refuted"):

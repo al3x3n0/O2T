@@ -226,7 +226,10 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     risky = [n for n in sorted(p0) if n not in _noundef_params(src_text, func)
              and _mentions(n, r1, tp) and not _mentions(n, r0, sp)]
     if risky:
-        return {"status": "unsupported", "function": func,
+        # Tagged so the Track B DISPATCHER can tell this decline apart from "this validator does not
+        # model that shape". It is a statement about the TRANSFORM, not about this validator, so
+        # handing the same pair to another one must not be allowed to overturn it.
+        return {"status": "unsupported", "function": func, "guard": "undef-risk",
                 "reason": f"target result depends on possibly-undef parameter(s) "
                           f"{', '.join(risky)} the source result does not (add `noundef` to declare "
                           f"them defined; an undef argument may read differently at each use)"}

@@ -36,7 +36,8 @@ def main() -> int:
                          (["--shape", "memory"], "memory"),
                          (["--shape", "vector"], "vector"),
                          (["--shape", "cfg"], "cfg"),
-                         (["--shape", "freeze"], "freeze")):
+                         (["--shape", "freeze"], "freeze"),
+                         (["--shape", "synth"], "synth")):
         proc = subprocess.run([sys.executable, str(TOOL), "--count", "8", "--seed", "20704",
                                "--insns", "8", *extra], capture_output=True, text=True, timeout=300)
         out = proc.stdout + proc.stderr
@@ -45,7 +46,7 @@ def main() -> int:
 
     print("fuzz_differential_fixture OK: small differential-fuzz batches across all Track B shapes -- "
           "scalar+intrinsics, pointer-memory (theory of arrays), fixed vectors (lane model), the "
-          "multi-block CFG path, and the freeze encoding -- each O2T vs reference Alive2, found ZERO "
+          "multi-block CFG path, the freeze encoding, and SYNTHESIZED targets (which audit the API's decision surface rather than opt's output distribution) -- each O2T vs reference Alive2, found ZERO "
           "disagreements. A standing regression net for false proofs over the whole fragment (full "
           "campaign: cv-fuzz-differential --shape {scalar,memory,vector,cfg,freeze} [--intrinsics] "
           "--count N)")

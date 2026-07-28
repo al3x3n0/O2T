@@ -900,6 +900,17 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/alive_diff_fixture.py; else echo 'alive_diff_fixture: z3 or alive-tv not found, skipped'; fi"
     )
+    # The fuzzer's blind spot, closed: opt-driven shapes only ever audit assumptions InstCombine
+    # respects, which is why the undeclared-`noundef` false proofs survived every campaign. This shape
+    # SYNTHESIZES targets and decides them against Alive2 -- and the fixture's acid test disables the
+    # guard to require that the shape can actually SEE that class, since a fuzzer that cannot reach the
+    # bug it targets proves nothing. Needs z3 + alive-tv.
+    add_test(
+        NAME synth_target_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/synth_target_fixture.py; else echo 'synth_target_fixture: z3 or alive-tv not found, skipped'; fi"
+    )
     # Standing differential-fuzz: random IR -> real opt -> O2T Track B vs reference Alive2, hunting for
     # a false proof (zero disagreements is the invariant). Small batch here; full campaign is manual.
     add_test(
