@@ -23,47 +23,51 @@ from __future__ import annotations
 import re
 import subprocess
 
-from o2t.validate.scalar_ir import _BIN, _ICMP, _const, _function_body
+from o2t.validate import ir_model as ir
+from o2t.validate.scalar_ir import _BIN, _ICMP, _const
 
 
 class Unsupported(Exception):
     pass
 
 
-def _blocks(body):
-    """Parse a function body into ordered blocks: [(label, [lines], terminator_line)]."""
-    # an implicit entry label for the first block.
-    lines = [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith(";")]
-    blocks, cur_label, cur = [], "entry", []
-    started = False
-    for ln in lines:
-        lm = re.fullmatch(r"([\w.]+):(?:\s*;.*)?", ln)
-        if lm:
-            if started:
-                blocks.append((cur_label, cur))
-            cur_label, cur, started = lm.group(1), [], True
-            continue
-        started = True
-        cur.append(ln)
-    blocks.append((cur_label, cur))
+def blocks_of(ll_text, func):
+    """Ordered blocks of a function as [(label, [Instruction], terminator Instruction)].
+
+    The shared CFG reader for this module AND the loop track. It used to split a body string on
+    `label:` lines and hand back raw text, which every consumer then re-parsed with its own regexes;
+    LLVM already gives the block structure, the terminator, and each instruction, so the shape
+    analyses below work on data instead of formatting."""
+    # A module LLVM cannot parse is one we cannot analyse, so it DECLINES with the parser's own
+    # reason rather than propagating. The shape fixtures deliberately feed malformed functions (a
+    # phi removed, leaving its uses dangling) to check exactly that they are declined.
+    try:
+        fn = ir.parse(ll_text).function(func)
+    except ir.IrParseError as exc:
+        raise Unsupported(f"unparseable module: {str(exc).splitlines()[0][:120]}") from None
+    if fn is None or fn.is_declaration:
+        raise Unsupported(f"function {func} not found")
     out = []
-    for label, body_lines in blocks:
-        if not body_lines:
-            raise Unsupported(f"empty block {label}")
-        out.append((label, body_lines[:-1], body_lines[-1]))
+    for blk in fn.blocks:
+        instrs = blk.instructions
+        if not instrs:
+            raise Unsupported(f"empty block {blk.name}")
+        out.append((blk.name, instrs[:-1], instrs[-1]))
     return out
+
+
+def _blocks(body_or_text, func=None):
+    """Back-compat shim: `blocks_of` when given (text, func). The old body-string form is gone --
+    every caller in the tree passes the module text and a function name."""
+    if func is None:
+        raise Unsupported("blocks now require (ll_text, func); the body-string reader is retired")
+    return blocks_of(body_or_text, func)
 
 
 def _params(ll_text, func):
-    # anchored on `define` so a forward-reference call site is not misread as the signature
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
-    out = {}
-    if m:
-        for part in m.group(1).split(","):
-            pm = re.search(r"i(\d+)\s+(%[\w.]+)", part.strip())
-            if pm:
-                out[pm.group(2)] = int(pm.group(1))
-    return out
+    """Integer parameter name -> width, from the parse."""
+    fn = ir.parse(ll_text).function(func)
+    return fn.int_params if fn else {}
 
 
 class _Ctx:
@@ -88,35 +92,37 @@ def _decl_syms(ctx):
     return out
 
 
-def _resolve(ctx, tok, width):
+def _resolve(ctx, value, width):
     """An operand -> (term, sort)."""
-    tok = tok.strip().rstrip(",")
-    if tok in ctx.ssa:
-        return ctx.ssa[tok]
-    if re.fullmatch(r"-?\d+", tok):
-        return _const(int(tok), width), f"bv{width}"
-    if tok in ("true", "false"):
-        return tok, "bool"
-    raise Unsupported(f"operand {tok!r}")
+    if getattr(value, "is_reg", False):
+        if value.name in ctx.ssa:
+            return ctx.ssa[value.name]
+        raise Unsupported(f"operand {value.name!r}")
+    kind = getattr(value, "kind", None)
+    if kind == "int":
+        if width == 1 and value.type is not None and value.type.is_int(1):
+            return ("true" if value.int_value else "false"), "bool"
+        return _const(value.int_value, width), f"bv{width}"
+    raise Unsupported(f"operand {kind!r}")
 
 
 def _edges(term, label):
-    bm = re.fullmatch(r"br\s+i1\s+(\S+),\s+label\s+%([\w.]+),\s+label\s+%([\w.]+)", term)
-    if bm:
-        return [(bm.group(2), ("cond", bm.group(1).rstrip(","))),
-                (bm.group(3), ("ncond", bm.group(1).rstrip(",")))]
-    um = re.fullmatch(r"br\s+label\s+%([\w.]+)", term)
-    if um:
-        return [(um.group(1), ("true", None))]
-    if re.fullmatch(r"ret\s+.*", term):
+    """Outgoing (successor, guard) edges of a terminator, read from the parse."""
+    if term.op == "br":
+        if term.conditional:
+            cond = term.operands[0]
+            return [(term.successors[0], ("cond", cond)),
+                    (term.successors[1], ("ncond", cond))]
+        return [(term.successors[0], ("true", None))]
+    if term.op == "ret":
         return []
-    raise Unsupported(f"terminator {term!r}")
+    raise Unsupported(f"terminator {term.op!r}")
 
 
-def _cond_expr(ctx, kind, tok):
+def _cond_expr(ctx, kind, value):
     if kind == "true":
         return "true"
-    t, sort = _resolve(ctx, tok, 1)
+    t, sort = _resolve(ctx, value, 1)
     if sort != "bool":
         t = f"(= {t} {_const(1, 1)})"
     return t if kind == "cond" else f"(not {t})"
@@ -151,48 +157,58 @@ def _merge_mem(ctx, label, preds_list):
     return state
 
 
-def _inst(ctx, ln, mem, after):
-    m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", ln)
-    dst, rhs = (m.group(1), m.group(2)) if m else (None, ln)
+def _inst(ctx, inst, mem, after):
+    """Interpret one instruction of a promoted-memory function into `ctx.ssa` / `mem`."""
+    op, dst = inst.op, inst.result
 
-    if rhs.startswith("alloca"):
+    if op == "alloca":
         return
-    sm = re.fullmatch(r"store\s+i(\d+)\s+(\S+),\s+ptr\s+(%[\w.]+)", rhs)
-    if sm:
-        if sm.group(3) not in ctx.allocas:
+    if op == "store":
+        val, ptr = inst.operands[0], inst.operands[1]
+        if not ptr.is_reg or ptr.name not in ctx.allocas:
             raise Unsupported("store to non-promoted pointer")
-        mem[sm.group(3)] = _resolve(ctx, sm.group(2), int(sm.group(1)))[0]
+        if not val.type.is_int():
+            raise Unsupported(f"store of {val.type}")
+        mem[ptr.name] = _resolve(ctx, val, val.type.bits)[0]
         return
-    lm = re.fullmatch(r"load\s+i(\d+),\s+ptr\s+(%[\w.]+)", rhs)
-    if lm and dst:
-        if lm.group(2) not in ctx.allocas:
+    if op == "load" and dst:
+        ptr = inst.operands[0]
+        if not ptr.is_reg or ptr.name not in ctx.allocas:
             raise Unsupported("load from non-promoted pointer")
-        ctx.ssa[dst] = (mem[lm.group(2)], f"bv{lm.group(1)}")
+        if not inst.type.is_int():
+            raise Unsupported(f"load of {inst.type}")
+        ctx.ssa[dst] = (mem[ptr.name], f"bv{inst.type.bits}")
         return
-    pm = re.fullmatch(r"phi\s+i(\d+)\s+(.+)", rhs)
-    if pm and dst:
-        w = int(pm.group(1))
-        arms = re.findall(r"\[\s*(\S+),\s*%([\w.]+)\s*\]", pm.group(2))
+    if op == "phi" and dst:
+        if not inst.type.is_int():
+            raise Unsupported(f"phi of {inst.type}")
+        w = inst.type.bits
+        arms = inst.incoming
+        if not arms:
+            raise Unsupported("phi without incoming values")
         acc = _resolve(ctx, arms[-1][0], w)[0]
         for val, pred in reversed(arms[:-1]):
             acc = f"(ite {ctx.came[(pred, _phi_block(ctx))]} {_resolve(ctx, val, w)[0]} {acc})"
         ctx.ssa[dst] = (acc, f"bv{w}")
         return
-    im = re.fullmatch(r"icmp\s+(\w+)\s+i(\d+)\s+(\S+),\s+(\S+)", rhs)
-    if im and dst and im.group(1) in _ICMP:
-        w = int(im.group(2))
-        a = _resolve(ctx, im.group(3), w)[0]
-        b = _resolve(ctx, im.group(4), w)[0]
-        ctx.ssa[dst] = (_ICMP[im.group(1)].format(a=a, b=b), "bool")
+    if op == "icmp" and dst and inst.pred in _ICMP:
+        operand_t = inst.operands[0].type
+        if not operand_t.is_int():
+            raise Unsupported(f"icmp on {operand_t}")
+        w = operand_t.bits
+        a = _resolve(ctx, inst.operands[0], w)[0]
+        b = _resolve(ctx, inst.operands[1], w)[0]
+        ctx.ssa[dst] = (_ICMP[inst.pred].format(a=a, b=b), "bool")
         return
-    bm = re.fullmatch(r"(\w+)(?:\s+(?:nsw|nuw))*\s+i(\d+)\s+(\S+),\s+(\S+)", rhs)
-    if bm and dst and bm.group(1) in _BIN:
-        w = int(bm.group(2))
-        a = _resolve(ctx, bm.group(3), w)[0]
-        b = _resolve(ctx, bm.group(4), w)[0]
-        ctx.ssa[dst] = (f"({_BIN[bm.group(1)]} {a} {b})", f"bv{w}")
+    if op in _BIN and dst:
+        if not inst.type.is_int():
+            raise Unsupported(f"{op} on {inst.type}")
+        w = inst.type.bits
+        a = _resolve(ctx, inst.operands[0], w)[0]
+        b = _resolve(ctx, inst.operands[1], w)[0]
+        ctx.ssa[dst] = (f"({_BIN[op]} {a} {b})", f"bv{w}")
         return
-    raise Unsupported(rhs)
+    raise Unsupported(f"instruction {op!r}")
 
 
 # phi resolution needs the current block label; stash it during _exec via a tiny shim.
@@ -209,10 +225,28 @@ def run_mem2reg(src_text, opt_bin="opt"):
 _POISON_UB_TOK = re.compile(r"\b(nsw|nuw|exact|disjoint|udiv|sdiv|urem|srem)\b")
 
 
-def _poison_ub_counts(body):
+def _poison_ub_counts(ll_text, func):
+    """How many poison-generating flags and UB-capable ops a function contains, per kind.
+
+    Counted from the PARSE. The regex this replaces searched the body TEXT for
+    `nsw|nuw|exact|disjoint|udiv|sdiv|urem|srem`, which also matched those words inside COMMENTS --
+    and LLVM's own test files are full of `; CHECK-NEXT: ... add nsw ...` lines. That is not merely
+    imprecise here: this count gates a DECLINE by comparing before against after, so a comment in the
+    SOURCE inflates the baseline and can mask a flag the optimized IR genuinely introduced, letting a
+    poison-introducing transform through to a value-equality proof."""
     counts = {}
-    for tok in _POISON_UB_TOK.findall(body or ""):
-        counts[tok] = counts.get(tok, 0) + 1
+    try:
+        fn = ir.parse(ll_text).function(func)
+    except ir.IrParseError:
+        return counts
+    if fn is None:
+        return counts
+    for inst in fn.instructions():
+        for flag in inst.flags:
+            if flag in ("nsw", "nuw", "exact", "disjoint"):
+                counts[flag] = counts.get(flag, 0) + 1
+        if inst.op in ("udiv", "sdiv", "urem", "srem"):
+            counts[inst.op] = counts.get(inst.op, 0) + 1
     return counts
 
 
@@ -232,8 +266,8 @@ def validate_mem2reg(z3_bin, src_text, opt_text, func):
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if b.params != a.params:
         return {"status": "error", "function": func, "reason": "signature changed"}
-    cb = _poison_ub_counts(_function_body(src_text, func))
-    ca = _poison_ub_counts(_function_body(opt_text, func))
+    cb = _poison_ub_counts(src_text, func)
+    ca = _poison_ub_counts(opt_text, func)
     if any(ca[k] > cb.get(k, 0) for k in ca):
         return {"status": "unsupported", "function": func,
                 "reason": "optimized IR introduces a poison-generating flag / UB op "
@@ -257,20 +291,17 @@ def validate_mem2reg(z3_bin, src_text, opt_text, func):
 
 def _exec_blocks(ll_text, func, after):
     """_exec with the current-block label tracked for phi resolution."""
-    body = _function_body(ll_text, func)
-    if body is None:
-        raise Unsupported(f"function {func} not found")
     ctx = _Ctx(_params(ll_text, func))
-    blocks = _blocks(body)
+    blocks = blocks_of(ll_text, func)
     block_term = {lab: term for lab, _, term in blocks}
     preds = {}
     for lab, _, term in blocks:
         for tgt, _cond in _edges(term, lab):
             preds.setdefault(tgt, []).append(lab)
-    for lab, lines, _term in blocks:
-        for ln in lines:
-            if re.search(r"=\s*alloca\b", ln):
-                ctx.allocas.add(ln.split("=")[0].strip())
+    for lab, instrs, _term in blocks:
+        for inst in instrs:
+            if inst.op == "alloca" and inst.result:
+                ctx.allocas.add(inst.result)
     order = _topo(blocks, preds)
     bmap = {lab: (lines, term) for lab, lines, term in blocks}
     for lab in order:
@@ -284,17 +315,16 @@ def _exec_blocks(ll_text, func, after):
             cond = next(c for t, c in _edges(block_term[p], p) if t == lab)
             ctx.came[(p, lab)] = f"(and {ctx.reach[p]} {_cond_expr(ctx, *cond)})"
         mem = _merge_mem(ctx, lab, plist) if not after else {}
-        for ln in lines:
-            _inst(ctx, ln, mem, after)
+        for inst in lines:
+            _inst(ctx, inst, mem, after)
         if not after:
             ctx.exit_mem[lab] = dict(mem)
-        rm = re.fullmatch(r"ret\s+i(\d+)\s+(\S+)", term)
-        if rm:
-            ctx.ret = _resolve(ctx, rm.group(2), int(rm.group(1)))
+        if term.op == "ret" and term.operands and term.operands[0].type.is_int():
+            ctx.ret = _resolve(ctx, term.operands[0], term.operands[0].type.bits)
     if ctx.ret is None:
         raise Unsupported("no scalar ret")
     return ctx
 
 
 def function_names(ll_text):
-    return re.findall(r"define\b[^@]*@(\w+)\s*\(", ll_text)
+    return ir.parse(ll_text).defined_names
