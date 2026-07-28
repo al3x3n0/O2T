@@ -164,6 +164,17 @@ std::string constantJson(const Constant *C) {
     }
     return s + "]}";
   }
+  // A SPLAT -- every lane the same value. Asked via LLVM's own `getSplatValue`, which answers for
+  // scalable vectors too, where there is no element list to enumerate (`splat (i32 -1)` at
+  // <vscale x 4 x i32> is not a ConstantVector). Reported after the enumerable cases above, so a
+  // fixed vector still arrives as its elements and only the non-enumerable form needs this.
+  if (C->getType()->isVectorTy()) {
+    if (Constant *S = C->getSplatValue()) {
+      bool scalable = isa<ScalableVectorType>(C->getType());
+      return "{\"kind\":\"splat\",\"scalable\":" + std::string(scalable ? "true" : "false") +
+             ",\"elem\":" + constantJson(S) + ",\"type\":" + typeJson(C->getType()) + "}";
+    }
+  }
   if (auto *GV = dyn_cast<GlobalValue>(C))
     return "{\"kind\":\"global\",\"name\":" + quote(valueName(GV)) +
            ",\"type\":" + typeJson(GV->getType()) + "}";

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vectors: whole-function TV via a LANE MODEL (fixed-width, element-wise + shuffle/extract/insert).
+r"""Vectors: whole-function TV via a LANE MODEL (fixed-width, element-wise + shuffle/extract/insert).
 
 A vector value is modeled as a LIST of per-lane scalar SMT terms (a scalar is a 1-lane list), so
 element-wise operations lower lane-by-lane and the cross-lane instructions -- `extractelement`,
@@ -9,240 +9,255 @@ vector fold (`and <2 x i32> %x, <-1,-1> -> %x`) proves, and a wrong lane refutes
 
 Scope: fixed-width `<N x iW>` vectors; lane-wise binops/icmp; `extractelement`/`insertelement` with a
 CONSTANT index; `shufflevector` with a constant, fully-defined mask (an undef/poison mask lane declines);
-integer element constants / `zeroinitializer`. Single-BB. Scalable vectors, variable indices, reductions,
-FP, memory, and undef decline (a sound decline, never a mis-model).
+integer element constants / `zeroinitializer` / `splat`. Single-BB. Variable indices, reductions, FP,
+memory, and undef decline (a sound decline, never a mis-model); scalable vectors are handled by the
+per-lane model below.
+
+The module reads LLVM's OWN parse (`ir_model`), not instruction text. The reader it replaces did
+string surgery on types -- `<(\d+) x i(\d+)>` for the lane count and width, a comma split for a vector
+literal, a regex for a shuffle mask -- and its signature reader carried the same truncation bug the
+rest of Track B had. Lane counts, element types, shuffle masks (with -1 for an undef lane) and splats
+are all structured data in the parse, so the whole file is now free of regexes.
 """
 
 from __future__ import annotations
 
-import re
 import subprocess
 
+from o2t.validate import ir_model as ir
 from o2t.validate import scalar_ir as si
+from o2t.validate import semantics as sem
 
-_VEC = re.compile(r"<(\d+)\s+x\s+i(\d+)>")
-
-
-def _vtype(t):
-    m = _VEC.fullmatch(t.strip())
-    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def _signature(ll_text, func):
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
-    out = []
-    if m:
-        for part in m.group(1).split(","):
-            pm = re.search(r"(<\d+\s+x\s+i\d+>|i\d+)\s+(%[\w.]+)", part.strip())
-            if pm:
-                out.append((pm.group(1), pm.group(2)))
-    return out
+    r"""[(type-string, name)] for the parameters, from the parse. The regex this replaces captured
+    the parenthesised list with `([^)]*)` and split it on commas, so a parameter attribute containing either -- `ptr byval({ i32,
+    i64 }) %s` is valid LLVM 18 -- truncated the list and silently dropped every later parameter."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None:
+        return []
+    return [(str(p.type), p.name) for p in fn.params]
 
 
-def _lanes(tok, n, w, env):
+# --- the fixed-width lane model, over LLVM's own parse ------------------------------------------
+# The reader this replaces did string surgery on types: `<(\d+) x i(\d+)>` for the lane count and
+# width, a comma split over `<i32 1, i32 2>` for a vector literal, and a regex over `<i32 0, i32 5>`
+# for a shuffle mask. All three are structured data in the parse (`type.n`, `type.elem.bits`,
+# `Value.elements`, `Instruction.mask`, where LLVM already reports -1 for an undef lane).
+#
+# Ported FAITHFULLY -- same lane terms, same declines -- with one deliberate non-change: the old
+# binop regex discarded poison flags in a non-capturing group, so this model ignores nsw/nuw/exact/
+# disjoint entirely and gates refutation on `poison_risk` instead. The parse now makes those flags
+# available, but using them would change verdicts, and a refactor is the wrong place to do that.
+
+def _lanes_of(v, n, w, env):
     """A scalar/vector operand -> a list of n lane terms of width w."""
-    tok = tok.strip()
-    if tok in env:
-        lanes, _ = env[tok]
-        if len(lanes) != n:
-            raise si.Unsupported("lane-count mismatch")
-        return lanes
-    if tok == "zeroinitializer":
-        return [si._const(0, w)] * n
-    m = re.fullmatch(r"<(.+)>", tok)
-    if m:                                              # a vector literal <iW c0, iW c1, ...>
-        elems = [e.strip() for e in m.group(1).split(",")]
+    if v.is_reg:
+        if v.name not in env:
+            raise sem.Unsupported(f"operand {v.name!r}")
+        ls, _ = env[v.name]
+        if len(ls) != n:
+            raise sem.Unsupported("lane-count mismatch")
+        return ls
+    if v.kind == "zeroinit":
+        return [sem.const(0, w)] * n
+    if v.kind == "splat":                      # every lane the same value
+        elem = v.splat_elem
+        if elem is None or elem.kind != "int":
+            raise sem.Unsupported("non-integer splat")
+        return [sem.const(elem.int_value, w)] * n
+    if v.kind == "vector":
+        elems = v.elements
         if len(elems) != n:
-            raise si.Unsupported("vector-literal arity")
+            raise sem.Unsupported("vector-literal arity")
         out = []
         for e in elems:
-            em = re.fullmatch(r"i\d+\s+(-?\d+|true|false)", e)
-            if not em:
-                raise si.Unsupported(f"vector element {e!r}")
-            v = em.group(1)
-            out.append(si._const(1 if v == "true" else 0 if v == "false" else int(v), w))
+            if e.kind != "int":                        # an undef/poison element -> decline
+                raise sem.Unsupported(f"vector element {e.kind}")
+            out.append(sem.const(e.int_value, w))
         return out
-    if n == 1:                                         # a scalar literal
-        if re.fullmatch(r"-?\d+", tok):
-            return [si._const(int(tok), w)]
-        if tok in ("true", "false"):
-            return [si._const(1 if tok == "true" else 0, w)]
-    raise si.Unsupported(f"operand {tok!r}")
+    if v.kind == "int" and n == 1:
+        return [sem.const(v.int_value, w)]
+    raise sem.Unsupported(f"operand {v.kind}")
+
+
+def _vshape(t):
+    """(lanes, width) for a vector or scalar integer type."""
+    if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
+        return t.n, t.elem.bits
+    if t.is_int():
+        return 1, t.bits
+    raise sem.Unsupported(f"type {t}")
+
+
+def _vec_instr(inst, env):
+    op = inst.op
+    if op in sem.BIN:
+        n, w = _vshape(inst.type)
+        a = _lanes_of(inst.operands[0], n, w, env)
+        b = _lanes_of(inst.operands[1], n, w, env)
+        smt = sem.BIN[op]
+        env[inst.result] = ([f"({smt} {a[i]} {b[i]})" for i in range(n)], w)
+        return
+    if op == "icmp":
+        if inst.pred not in sem.ICMP:
+            raise sem.Unsupported(f"icmp predicate {inst.pred!r}")
+        n, w = _vshape(inst.operands[0].type)
+        a = _lanes_of(inst.operands[0], n, w, env)
+        b = _lanes_of(inst.operands[1], n, w, env)
+        env[inst.result] = ([f"(ite {sem.ICMP[inst.pred].format(a=a[i], b=b[i])} "
+                             f"{sem.const(1, 1)} {sem.const(0, 1)})" for i in range(n)], 1)
+        return
+    if op == "extractelement":
+        n, w = _vshape(inst.operands[0].type)
+        idx = inst.operands[1]
+        if idx.kind != "int":
+            raise sem.Unsupported("variable extractelement index")
+        k = idx.int_value
+        ls = _lanes_of(inst.operands[0], n, w, env)
+        if k < 0 or k >= n:
+            raise sem.Unsupported("extractelement index out of range")
+        env[inst.result] = ([ls[k]], w)
+        return
+    if op == "insertelement":
+        n, w = _vshape(inst.type)
+        idx = inst.operands[2]
+        if idx.kind != "int":
+            raise sem.Unsupported("variable insertelement index")
+        k = idx.int_value
+        ls = list(_lanes_of(inst.operands[0], n, w, env))
+        elt = _lanes_of(inst.operands[1], 1, w, env)[0]
+        if k < 0 or k >= n:
+            raise sem.Unsupported("insertelement index out of range")
+        ls[k] = elt
+        env[inst.result] = (ls, w)
+        return
+    if op == "shufflevector":
+        n, w = _vshape(inst.operands[0].type)
+        a = _lanes_of(inst.operands[0], n, w, env)
+        b = _lanes_of(inst.operands[1], n, w, env)
+        pool = a + b
+        out = []
+        for idx in inst.mask:
+            if idx < 0:                                # LLVM reports -1 for an undef/poison lane
+                raise sem.Unsupported("shuffle mask undef lane")
+            if idx >= len(pool):
+                raise sem.Unsupported("shuffle index out of range")
+            out.append(pool[idx])
+        env[inst.result] = (out, w)
+        return
+    raise sem.Unsupported(f"instruction {op!r}")
 
 
 def _vtranslate(ll_text, func):
     """Single-BB vector function -> (result lanes, lane width, param declarations)."""
-    body = si._function_body(ll_text, func)
-    if body is None:
-        raise si.Unsupported(f"function {func} not found")
-    if re.search(r"^\s*br\b", body, re.M):
-        raise si.Unsupported("multi-block")
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
+        raise sem.Unsupported(f"function {func} not found")
+    if len(fn.blocks) > 1:
+        raise sem.Unsupported("multi-block")
     env, decls = {}, []
-    for typ, name in _signature(ll_text, func):
-        vt = _vtype(typ)
-        if vt:
-            nn, ww = vt
-            lanes = [f"{name}!{i}" for i in range(nn)]
-            decls += [(lane, ww) for lane in lanes]
-            env[name] = (lanes, ww)
+    for p in fn.params:
+        t = p.type
+        if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
+            ls = [f"{p.name}!{i}" for i in range(t.n)]
+            decls += [(lane, t.elem.bits) for lane in ls]
+            env[p.name] = (ls, t.elem.bits)
+        elif t.is_int():
+            decls.append((p.name, t.bits))
+            env[p.name] = ([p.name], t.bits)
         else:
-            ww = int(typ[1:])
-            decls.append((name, ww)); env[name] = ([name], ww)
-    ret = ret_w = None
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";"):
-            continue
-        rm = re.fullmatch(r"ret\s+(<\d+\s+x\s+i\d+>|i\d+)\s+(\S+)", line)
-        if rm:
-            vt = _vtype(rm.group(1))
-            n, w = vt if vt else (1, int(rm.group(1)[1:]))
-            ret, ret_w = _lanes(rm.group(2), n, w, env), w
-            break
-        m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
-        if not m:
-            raise si.Unsupported(line)
-        dst, rhs = m.group(1), m.group(2)
-        _vec_instr(dst, rhs, env)
-    if ret is None:
-        raise si.Unsupported("no vector/scalar ret")
-    return ret, ret_w, decls
+            raise sem.Unsupported(f"parameter type {t}")
+    for inst in fn.blocks[0].instructions:
+        if inst.op == "ret":
+            if not inst.operands:
+                raise sem.Unsupported("no vector/scalar ret")
+            n, w = _vshape(inst.operands[0].type)
+            return _lanes_of(inst.operands[0], n, w, env), w, decls
+        _vec_instr(inst, env)
+    raise sem.Unsupported("no vector/scalar ret")
 
 
-def _vec_instr(dst, rhs, env):
-    _OPD = r"((?:<[^>]*>)|[^,\s]+)"                     # an operand: a `<...>` literal (has commas) or a token
-    bm = re.fullmatch(r"(\w+)(?:\s+(?:nsw|nuw|exact|disjoint))*\s+<(\d+)\s+x\s+i(\d+)>\s+"
-                      + _OPD + r",\s+" + _OPD, rhs)
-    if bm and bm.group(1) in si._BIN:
-        n, w = int(bm.group(2)), int(bm.group(3))
-        a, b = _lanes(bm.group(4), n, w, env), _lanes(bm.group(5), n, w, env)
-        op = si._BIN[bm.group(1)]
-        env[dst] = ([f"({op} {a[i]} {b[i]})" for i in range(n)], w)
-        return
-    im = re.fullmatch(r"icmp\s+(\w+)\s+<(\d+)\s+x\s+i(\d+)>\s+" + _OPD + r",\s+" + _OPD, rhs)
-    if im and im.group(1) in si._ICMP:
-        n, w = int(im.group(2)), int(im.group(3))
-        a, b = _lanes(im.group(4), n, w, env), _lanes(im.group(5), n, w, env)
-        env[dst] = ([f"(ite {si._ICMP[im.group(1)].format(a=a[i], b=b[i])} {si._const(1, 1)} {si._const(0, 1)})"
-                     for i in range(n)], 1)
-        return
-    em = re.fullmatch(r"extractelement\s+<(\d+)\s+x\s+i(\d+)>\s+(\S+),\s+i\d+\s+(\d+)", rhs)
-    if em:
-        n, w, k = int(em.group(1)), int(em.group(2)), int(em.group(4))
-        lanes = _lanes(em.group(3).rstrip(","), n, w, env)
-        if k >= n:
-            raise si.Unsupported("extractelement index out of range")
-        env[dst] = ([lanes[k]], w)
-        return
-    nm = re.fullmatch(r"insertelement\s+<(\d+)\s+x\s+i(\d+)>\s+(\S+),\s+i\d+\s+(\S+),\s+i\d+\s+(\d+)", rhs)
-    if nm:
-        n, w, k = int(nm.group(1)), int(nm.group(2)), int(nm.group(5))
-        lanes = list(_lanes(nm.group(3).rstrip(","), n, w, env))
-        elt = _lanes(nm.group(4).rstrip(","), 1, w, env)[0]
-        if k >= n:
-            raise si.Unsupported("insertelement index out of range")
-        lanes[k] = elt
-        env[dst] = (lanes, w)
-        return
-    sm = re.fullmatch(r"shufflevector\s+<(\d+)\s+x\s+i(\d+)>\s+(\S+),\s+<\d+\s+x\s+i\d+>\s+(\S+),\s+"
-                      r"<(\d+)\s+x\s+i\d+>\s+<(.+)>", rhs)
-    if sm:
-        n, w = int(sm.group(1)), int(sm.group(2))
-        a = _lanes(sm.group(3).rstrip(","), n, w, env)
-        b = _lanes(sm.group(4).rstrip(","), n, w, env)
-        pool = a + b
-        mask = []
-        for e in sm.group(6).split(","):
-            km = re.fullmatch(r"i\d+\s+(-?\d+)", e.strip())
-            if not km:                                 # an undef/poison mask lane -> decline
-                raise si.Unsupported(f"shuffle mask {e!r}")
-            idx = int(km.group(1))
-            if idx < 0 or idx >= len(pool):
-                raise si.Unsupported("shuffle index out of range")
-            mask.append(pool[idx])
-        env[dst] = (mask, w)
-        return
-    raise si.Unsupported(rhs)
+# --- the scalable-vector model, over the same parse ----------------------------------------------
+# A `<vscale x N x iW>` value is ONE symbolic per-lane term. Because element-wise ops do not cross
+# lanes, proving the lanes equal for an unconstrained lane index proves it for ALL lanes -- and any
+# CROSS-lane operation (extract/insert/shuffle/reduce) is simply not modeled here, so it declines and
+# the per-lane abstraction stays sound. The parse removes the `<vscale x N x iW>` regex and, with it,
+# the separate `splat (iW C)` spelling the text reader had to special-case.
+
+def _sv_width(t):
+    """The lane width of a scalable vector, or the width of a plain integer."""
+    if t.kind == "vector" and t.scalable and t.elem and t.elem.is_int():
+        return t.elem.bits
+    if t.is_int():
+        return t.bits
+    raise sem.Unsupported(f"type {t}")
 
 
-# --- scalable vectors: a per-lane symbolic model (element-wise only) --------------------------------
-_SVEC = re.compile(r"<vscale\s+x\s+\d+\s+x\s+i(\d+)>")
-_SV_OPD = r"((?:splat\s*\([^)]*\))|zeroinitializer|[^,\s]+)"
-
-
-def _sv_lane(tok, w, env):
+def _sv_lane(v, w, env):
     """A scalable-vector operand -> its value at THE symbolic lane. A splat/zeroinitializer is that
-    constant at every lane; a vector name is its per-lane symbol; a scalar literal is itself."""
-    tok = tok.strip()
-    if tok in env:
-        return env[tok][0]
-    if tok == "zeroinitializer":
-        return si._const(0, w)
-    sm = re.fullmatch(r"splat\s*\(\s*i\d+\s+(-?\d+)\s*\)", tok)
-    if sm:
-        return si._const(int(sm.group(1)), w)
-    if re.fullmatch(r"-?\d+", tok):
-        return si._const(int(tok), w)
-    raise si.Unsupported(f"scalable operand {tok!r}")
+    constant at every lane; a vector register is its per-lane symbol; a scalar literal is itself."""
+    if v.is_reg:
+        if v.name not in env:
+            raise sem.Unsupported(f"scalable operand {v.name!r}")
+        return env[v.name][0]
+    if v.kind == "zeroinit":
+        return sem.const(0, w)
+    if v.kind == "splat":                      # `splat (iW C)` -- LLVM reports the repeated value
+        elem = v.splat_elem
+        if elem is None or elem.kind != "int":
+            raise sem.Unsupported("non-integer splat")
+        return sem.const(elem.int_value, w)
+    if v.kind == "vector":                     # an enumerated constant vector that is uniform
+        elems = v.elements
+        if not elems or any(e.kind != "int" or e.int_value != elems[0].int_value for e in elems):
+            raise sem.Unsupported("non-splat scalable constant")
+        return sem.const(elems[0].int_value, w)
+    if v.kind == "int":
+        return sem.const(v.int_value, w)
+    raise sem.Unsupported(f"scalable operand {v.kind}")
 
 
 def _svtranslate(ll_text, func):
-    """Translate a scalable-vector function at ONE symbolic lane -> (lane term, width, declarations).
-    Element-wise only: any cross-lane op (extract/insert/shuffle/reduce) is unmatched and DECLINES, so
-    the per-lane model stays sound (lane i of an element-wise result depends only on lane i)."""
-    body = si._function_body(ll_text, func)
-    if body is None:
-        raise si.Unsupported(f"function {func} not found")
-    if re.search(r"^\s*br\b", body, re.M):
-        raise si.Unsupported("multi-block")
+    """Translate a scalable-vector function at ONE symbolic lane -> (lane term, width, declarations)."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None or fn.is_declaration:
+        raise sem.Unsupported(f"function {func} not found")
+    if len(fn.blocks) > 1:
+        raise sem.Unsupported("multi-block")
     env, decls = {}, []
-    for typ, name in _signature_scal(ll_text, func):
-        m = _SVEC.fullmatch(typ)
-        w = int(m.group(1)) if m else int(typ[1:])
-        decls.append((name, w)); env[name] = (name, w)   # a scalable vec's value AT the symbolic lane
-    ret = ret_w = None
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";"):
+    for p in fn.params:
+        w = _sv_width(p.type)
+        decls.append((p.name, w))
+        env[p.name] = (p.name, w)              # a scalable vector's value AT the symbolic lane
+    for inst in fn.blocks[0].instructions:
+        if inst.op == "ret":
+            if not inst.operands:
+                raise sem.Unsupported("no ret")
+            rw = _sv_width(inst.operands[0].type)
+            return _sv_lane(inst.operands[0], rw, env), rw, decls
+        if inst.op in sem.BIN:
+            w = _sv_width(inst.type)
+            env[inst.result] = (f"({sem.BIN[inst.op]} {_sv_lane(inst.operands[0], w, env)} "
+                                f"{_sv_lane(inst.operands[1], w, env)})", w)
             continue
-        rm = re.fullmatch(r"ret\s+(<vscale\s+x\s+\d+\s+x\s+i\d+>|i\d+)\s+(\S+)", line)
-        if rm:
-            sm = _SVEC.fullmatch(rm.group(1))
-            ret_w = int(sm.group(1)) if sm else int(rm.group(1)[1:])
-            ret = _sv_lane(rm.group(2), ret_w, env)
-            break
-        m = re.fullmatch(r"(%[\w.]+)\s*=\s*(.+)", line)
-        if not m:
-            raise si.Unsupported(line)
-        dst, rhs = m.group(1), m.group(2)
-        bm = re.fullmatch(r"(\w+)(?:\s+(?:nsw|nuw|exact|disjoint))*\s+<vscale\s+x\s+\d+\s+x\s+i(\d+)>\s+"
-                          + _SV_OPD + r",\s+" + _SV_OPD, rhs)
-        if bm and bm.group(1) in si._BIN:
-            w = int(bm.group(2))
-            env[dst] = (f"({si._BIN[bm.group(1)]} {_sv_lane(bm.group(3), w, env)} "
-                        f"{_sv_lane(bm.group(4), w, env)})", w)
+        if inst.op == "icmp" and inst.pred in sem.ICMP:
+            w = _sv_width(inst.operands[0].type)
+            pred = sem.ICMP[inst.pred].format(a=_sv_lane(inst.operands[0], w, env),
+                                              b=_sv_lane(inst.operands[1], w, env))
+            env[inst.result] = (f"(ite {pred} {sem.const(1, 1)} {sem.const(0, 1)})", 1)
             continue
-        im = re.fullmatch(r"icmp\s+(\w+)\s+<vscale\s+x\s+\d+\s+x\s+i(\d+)>\s+" + _SV_OPD + r",\s+" + _SV_OPD, rhs)
-        if im and im.group(1) in si._ICMP:
-            w = int(im.group(2))
-            pred = si._ICMP[im.group(1)].format(a=_sv_lane(im.group(3), w, env), b=_sv_lane(im.group(4), w, env))
-            env[dst] = (f"(ite {pred} {si._const(1, 1)} {si._const(0, 1)})", 1)
-            continue
-        raise si.Unsupported(rhs)                          # cross-lane / unmodeled -> sound decline
-    if ret is None:
-        raise si.Unsupported("no ret")
-    return ret, ret_w, decls
+        raise sem.Unsupported(f"instruction {inst.op!r}")   # cross-lane / unmodeled -> sound decline
+    raise sem.Unsupported("no ret")
 
 
 def _signature_scal(ll_text, func):
-    m = re.search(r"define\b[^@]*@" + re.escape(func) + r"\s*\(([^)]*)\)", ll_text)
-    out = []
-    if m:
-        for part in m.group(1).split(","):
-            pm = re.search(r"(<vscale\s+x\s+\d+\s+x\s+i\d+>|i\d+)\s+(%[\w.]+)", part.strip())
-            if pm:
-                out.append((pm.group(1), pm.group(2)))
-    return out
+    """[(type-string, name)] for the parameters -- kept as a comparable signature for the callers."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None:
+        return []
+    return [(str(p.type), p.name) for p in fn.params]
 
 
 def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
@@ -257,6 +272,9 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
         ra, wa, _ = _svtranslate(after_ll, func)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
+    except ir.IrParseError as exc:
+        return {"status": "error", "function": func,
+                "reason": f"module is not valid LLVM IR: {str(exc).splitlines()[0][:120]}"}
     if wb != wa:
         return {"status": "error", "function": func, "reason": "lane width changed"}
     ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]
@@ -294,6 +312,9 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
         ra, wa, _ = _vtranslate(after_ll, func)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
+    except ir.IrParseError as exc:
+        return {"status": "error", "function": func,
+                "reason": f"module is not valid LLVM IR: {str(exc).splitlines()[0][:120]}"}
     if wb != wa or len(rb) != len(ra):
         return {"status": "error", "function": func, "reason": "result shape changed"}
     ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]

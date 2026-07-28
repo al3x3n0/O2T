@@ -168,6 +168,13 @@ class Value:
         return self.kind == "reg"
 
     @property
+    def splat_elem(self) -> "Value | None":
+        """For a splat constant, the value every lane holds. LLVM answers this for scalable vectors
+        too, where there is no element list to enumerate."""
+        e = self.raw.get("elem")
+        return Value(e) if (self.kind == "splat" and e) else None
+
+    @property
     def is_undef(self) -> bool:
         return self.kind == "undef"
 

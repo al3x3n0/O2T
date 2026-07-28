@@ -710,6 +710,9 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
         p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops, side="target", fresh=fresh)
     except Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
+    except ir.IrParseError as exc:
+        return {"status": "error", "function": func,
+                "reason": f"module is not valid LLVM IR: {str(exc).splitlines()[0][:120]}"}
     if p0 != p1 or w0 != w1:
         return {"status": "error", "function": func, "reason": "signature changed"}
 
