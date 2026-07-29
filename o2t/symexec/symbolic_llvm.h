@@ -15,6 +15,22 @@
 
 // a symbolic SSA value = its SMT term, plus optional instruction structure (opcode + operands) so
 // NESTED PatternMatch (m_Add(m_Mul(...), ...)) can recurse, the way real LLVM matchers do.
+/* A construct the shim cannot model SOUNDLY. This aborts rather than returning an approximation:
+ * the driver sees the harness die and records the path as an ERROR, which `verify_fold` refuses to
+ * count as sound. Degrading quietly would let a wrong value (say a truncated mask) flow into an
+ * obligation and produce a proof about something other than the fold. Fail closed. */
+[[noreturn]] inline void cv_unsupported(const char *why) {
+  std::fprintf(stderr, "cv_unsupported: %s\n", why);
+  std::abort();
+}
+
+enum CvOpcode { OP_OTHER, OP_ADD, OP_SUB, OP_MUL, OP_AND, OP_OR, OP_XOR,
+                OP_SHL, OP_LSHR, OP_ASHR, OP_UDIV, OP_SDIV, OP_UREM, OP_SREM };
+
+enum CVPredicate { ICMP_EQ, ICMP_NE, ICMP_ULT, ICMP_ULE, ICMP_UGT, ICMP_UGE,
+                   ICMP_SLT, ICMP_SLE, ICMP_SGT, ICMP_SGE,
+                   FCMP_OEQ, FCMP_ONE, FCMP_UNO, FCMP_ORD };
+
 struct Value {
   std::string t;
   int opcode = 0;                                // 0 == a leaf / non-instruction value
@@ -22,7 +38,65 @@ struct Value {
   bool is_const = false;                         // a ConstantInt (for isa/m_ConstantInt)
   bool one_use = true;                           // single-use (profitability guards)
   std::string poison = "false";                  // SMT bool: when this value is poison (UB modeling)
+
+  // --- the accessor surface UNMODIFIED upstream folds call on a Value/Instruction. Everything in
+  // --- this shim aliases to Value (a symbolic value IS its defining instruction), so the members a
+  // --- real fold reaches for -- operands, opcode, type, predicate, select arms, use counts -- live
+  // --- here. They are STRUCTURAL: they expose the symbolic term's own structure so the fold's real
+  // --- branches can run. No analysis meaning is invented; semantic queries stay choice points.
+  typedef CVPredicate Predicate;
+  // upstream names these as ICmpInst::ICMP_EQ / CmpInst::ICMP_NE, and every instruction class here
+  // aliases to Value, so the enumerators must be reachable as members too.
+  static const CVPredicate ICMP_EQ = ::ICMP_EQ, ICMP_NE = ::ICMP_NE,
+      ICMP_ULT = ::ICMP_ULT, ICMP_ULE = ::ICMP_ULE, ICMP_UGT = ::ICMP_UGT, ICMP_UGE = ::ICMP_UGE,
+      ICMP_SLT = ::ICMP_SLT, ICMP_SLE = ::ICMP_SLE, ICMP_SGT = ::ICMP_SGT, ICMP_SGE = ::ICMP_SGE;
+  // upstream spells opcodes `Instruction::Xor` / `BinaryOperator::Add`; both are typedefs of Value
+  // here, so the enumerators live on Value and alias the same CvOpcode values `cv_node` records.
+  static const int Add = OP_ADD, Sub = OP_SUB, Mul = OP_MUL, And = OP_AND, Or = OP_OR,
+                   Xor = OP_XOR, Shl = OP_SHL, LShr = OP_LSHR, AShr = OP_ASHR,
+                   UDiv = OP_UDIV, SDiv = OP_SDIV, URem = OP_UREM, SRem = OP_SREM;
+  // `Not X` is `xor X, -1`; bvnot is exactly that, so this is the fold's own rewrite, not an
+  // approximation of it. The name argument upstream passes is metadata and carries no semantics.
+  static Value *CreateNot(Value *v, const std::string & = "");
+  static bool isEquality(CVPredicate p) { return p == ::ICMP_EQ || p == ::ICMP_NE; }
+  static CVPredicate getInversePredicate(CVPredicate p) { return p == ::ICMP_EQ ? ::ICMP_NE : ::ICMP_EQ; }
+  Predicate pred = ::ICMP_EQ;
+  struct Type *ty = nullptr;
+  Value *cond = nullptr, *tval = nullptr, *fval = nullptr;   // select arms, when this is a select
+  std::string name;
+
+  Value *getOperand(unsigned i) { return i == 0 ? op0 : op1; }
+  int getOpcode() const { return opcode; }
+  bool hasOneUse() const { return one_use; }
+  bool hasNUses(unsigned n) const { return one_use && n == 1; }
+  Predicate getPredicate() const { return pred; }
+  Value *getCondition() { return cond; }
+  Value *getTrueValue() { return tval; }
+  Value *getFalseValue() { return fval; }
+  const std::string &getName() const { return name; }
+  struct Type *getType();
+  // upstream also builds instructions via the static factories on the instruction
+  // classes (`BinaryOperator::CreateSub(A, B)`), not only through the IRBuilder.
+  static Value *CreateAShr(Value *a, Value *b);
+  static Value *CreateAdd(Value *a, Value *b);
+  static Value *CreateAnd(Value *a, Value *b);
+  static Value *CreateLShr(Value *a, Value *b);
+  static Value *CreateMul(Value *a, Value *b);
+  static Value *CreateOr(Value *a, Value *b);
+  static Value *CreateSDiv(Value *a, Value *b);
+  static Value *CreateShl(Value *a, Value *b);
+  static Value *CreateSub(Value *a, Value *b);
+  static Value *CreateUDiv(Value *a, Value *b);
+  static Value *CreateURem(Value *a, Value *b);
+  static Value *CreateXor(Value *a, Value *b);
 };
+
+// Stable storage for values the pass holds by POINTER. Unmodified upstream code is written in terms
+// of `Value *` throughout -- matchers bind pointers, builders take and return them -- so the shim
+// hands back addresses into this arena rather than temporaries.
+static Value CV_VARENA_M[256];
+static int CV_MPOS_M;
+inline Value *cv_keep(const Value &v) { Value *p = &CV_VARENA_M[CV_MPOS_M++]; *p = v; return p; }
 
 static std::vector<int> CV_CHOICES;              // the path being explored (one bit per query)
 static size_t CV_IDX = 0;
@@ -55,6 +129,49 @@ inline std::string cv_orp(const std::string &p, const std::string &q) {
 
 // --- IRBuilder: each create-call returns the symbolic term of the built instruction ----------
 struct IRBuilder {
+  // upstream passes and receives `Value *`; these forward to the by-value forms below.
+  Value *CreateAShr(Value *a, Value *b) { return cv_keep(CreateAShr(*a, *b)); }
+  Value *CreateAShr(Value *a, Value b)  { return cv_keep(CreateAShr(*a, b)); }
+  Value *CreateAShr(Value a, Value *b)  { return cv_keep(CreateAShr(a, *b)); }
+  Value *CreateAdd(Value *a, Value *b) { return cv_keep(CreateAdd(*a, *b)); }
+  Value *CreateAdd(Value *a, Value b)  { return cv_keep(CreateAdd(*a, b)); }
+  Value *CreateAdd(Value a, Value *b)  { return cv_keep(CreateAdd(a, *b)); }
+  Value *CreateAnd(Value *a, Value *b) { return cv_keep(CreateAnd(*a, *b)); }
+  Value *CreateAnd(Value *a, Value b)  { return cv_keep(CreateAnd(*a, b)); }
+  Value *CreateAnd(Value a, Value *b)  { return cv_keep(CreateAnd(a, *b)); }
+  Value *CreateLShr(Value *a, Value *b) { return cv_keep(CreateLShr(*a, *b)); }
+  Value *CreateLShr(Value *a, Value b)  { return cv_keep(CreateLShr(*a, b)); }
+  Value *CreateLShr(Value a, Value *b)  { return cv_keep(CreateLShr(a, *b)); }
+  Value *CreateMul(Value *a, Value *b) { return cv_keep(CreateMul(*a, *b)); }
+  Value *CreateMul(Value *a, Value b)  { return cv_keep(CreateMul(*a, b)); }
+  Value *CreateMul(Value a, Value *b)  { return cv_keep(CreateMul(a, *b)); }
+  Value *CreateOr(Value *a, Value *b) { return cv_keep(CreateOr(*a, *b)); }
+  Value *CreateOr(Value *a, Value b)  { return cv_keep(CreateOr(*a, b)); }
+  Value *CreateOr(Value a, Value *b)  { return cv_keep(CreateOr(a, *b)); }
+  Value *CreateOrPoisoning(Value *a, Value *b) { return cv_keep(CreateOrPoisoning(*a, *b)); }
+  Value *CreateOrPoisoning(Value *a, Value b)  { return cv_keep(CreateOrPoisoning(*a, b)); }
+  Value *CreateOrPoisoning(Value a, Value *b)  { return cv_keep(CreateOrPoisoning(a, *b)); }
+  Value *CreateSDiv(Value *a, Value *b) { return cv_keep(CreateSDiv(*a, *b)); }
+  Value *CreateSDiv(Value *a, Value b)  { return cv_keep(CreateSDiv(*a, b)); }
+  Value *CreateSDiv(Value a, Value *b)  { return cv_keep(CreateSDiv(a, *b)); }
+  Value *CreateShl(Value *a, Value *b) { return cv_keep(CreateShl(*a, *b)); }
+  Value *CreateShl(Value *a, Value b)  { return cv_keep(CreateShl(*a, b)); }
+  Value *CreateShl(Value a, Value *b)  { return cv_keep(CreateShl(a, *b)); }
+  Value *CreateSub(Value *a, Value *b) { return cv_keep(CreateSub(*a, *b)); }
+  Value *CreateSub(Value *a, Value b)  { return cv_keep(CreateSub(*a, b)); }
+  Value *CreateSub(Value a, Value *b)  { return cv_keep(CreateSub(a, *b)); }
+  Value *CreateUDiv(Value *a, Value *b) { return cv_keep(CreateUDiv(*a, *b)); }
+  Value *CreateUDiv(Value *a, Value b)  { return cv_keep(CreateUDiv(*a, b)); }
+  Value *CreateUDiv(Value a, Value *b)  { return cv_keep(CreateUDiv(a, *b)); }
+  Value *CreateURem(Value *a, Value *b) { return cv_keep(CreateURem(*a, *b)); }
+  Value *CreateURem(Value *a, Value b)  { return cv_keep(CreateURem(*a, b)); }
+  Value *CreateURem(Value a, Value *b)  { return cv_keep(CreateURem(a, *b)); }
+  Value *CreateXor(Value *a, Value *b) { return cv_keep(CreateXor(*a, *b)); }
+  Value *CreateXor(Value *a, Value b)  { return cv_keep(CreateXor(*a, b)); }
+  Value *CreateXor(Value a, Value *b)  { return cv_keep(CreateXor(a, *b)); }
+
+  Value *CreateNot(Value *v, const std::string & = "") { return cv_keep(Value{"(bvnot " + v->t + ")"}); }
+  Value CreateNot(Value v) { return {"(bvnot " + v.t + ")"}; }
   Value CreateAnd(Value a, Value b) { return {"(bvand " + a.t + " " + b.t + ")"}; }
   Value CreateOr(Value a, Value b)  { return {"(bvor " + a.t + " " + b.t + ")"}; }
   Value CreateXor(Value a, Value b) { return {"(bvxor " + a.t + " " + b.t + ")"}; }
@@ -112,7 +229,86 @@ struct IRBuilder {
 struct ConstantInt {
   static Value get(unsigned long v) { Value r = cv_bv(v); r.is_const = true; return r; }
 };
-struct BinaryOperator {};                         /* tag types for isa<>/dyn_cast<> */
+typedef Value BinaryOperator;                     /* a fold's `BinaryOperator &I` is a Value */
+
+// --- enough of the PASS CLASS and instruction hierarchy that UNMODIFIED upstream fold definitions
+// --- parse against this shim. Measured over LLVM 18's InstCombine sources: 89 of 106 fold-shaped
+// --- functions sit within 8 missing symbols of compiling here, and the single most-wanted is the
+// --- enclosing class itself -- an `InstCombinerImpl::foldX(...)` definition cannot even parse
+// --- without it. These are STRUCTURAL declarations: they let real source compile so the symbolic
+// --- executor can run its ACTUAL branches. They deliberately model no analysis semantics; every
+// --- query that carries meaning goes through the choice-point machinery above.
+struct Type {
+  unsigned bits = 32;
+  unsigned getScalarSizeInBits() const { return bits; }
+  unsigned getIntegerBitWidth() const { return bits; }
+  bool isIntOrIntVectorTy() const { return true; }
+  bool isVectorTy() const { return false; }
+  Type *getScalarType() { return this; }
+};
+static Type CV_I32;
+inline Value *cv_allones() { return cv_keep(Value{"(_ bv4294967295 32)"}); }
+inline Type *Value::getType() { return ty ? ty : &CV_I32; }
+inline Value *Value::CreateAShr(Value *a, Value *b) { return cv_keep(Value{"(bvashr " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateAdd(Value *a, Value *b) { return cv_keep(Value{"(bvadd " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateAnd(Value *a, Value *b) { return cv_keep(Value{"(bvand " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateLShr(Value *a, Value *b) { return cv_keep(Value{"(bvlshr " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateMul(Value *a, Value *b) { return cv_keep(Value{"(bvmul " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateNot(Value *v, const std::string &) { return cv_keep(Value{"(bvnot " + v->t + ")"}); }
+inline Value *Value::CreateOr(Value *a, Value *b) { return cv_keep(Value{"(bvor " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateSDiv(Value *a, Value *b) { return cv_keep(Value{"(bvsdiv " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateShl(Value *a, Value *b) { return cv_keep(Value{"(bvshl " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateSub(Value *a, Value *b) { return cv_keep(Value{"(bvsub " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateUDiv(Value *a, Value *b) { return cv_keep(Value{"(bvudiv " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateURem(Value *a, Value *b) { return cv_keep(Value{"(bvurem " + a->t + " " + b->t + ")"}); }
+inline Value *Value::CreateXor(Value *a, Value *b) { return cv_keep(Value{"(bvxor " + a->t + " " + b->t + ")"}); }
+
+// `Instruction` is already an alias for Value further down (a symbolic value IS its defining
+// instruction here), so the opcode enum lives beside it rather than in a competing class.
+namespace CVOpcodes {
+  enum BinaryOps { Add = 1, Sub, Mul, And, Or, Xor, Shl, LShr, AShr, UDiv, SDiv, URem, SRem };
+}
+struct CmpInst {
+  typedef CVPredicate Predicate;
+  static bool isEquality(Predicate p) { return p == ICMP_EQ || p == ICMP_NE; }
+  static Predicate getInversePredicate(Predicate p) { return p == ICMP_EQ ? ICMP_NE : ICMP_EQ; }
+  static Predicate getSwappedPredicate(Predicate p) { return p; }
+};
+typedef Value ICmpInst;
+typedef Value FCmpInst;
+typedef Value SelectInst;
+typedef Value ZExtInst;
+typedef Value CallInst;
+struct Function {};
+typedef Value Constant;
+struct APInt {
+  unsigned long v = 0, bits = 32;
+  bool isZero() const { return v == 0; }
+  bool isOne() const { return v == 1; }
+  bool isAllOnes() const { return v == 0xFFFFFFFFul; }
+  unsigned getBitWidth() const { return bits; }
+  unsigned long getZExtValue() const { return v; }
+  // getMaxValue(n) is the all-ones value OF WIDTH n (2^n - 1), which is how folds build half-width
+  // masks; getMinValue is 0. Widths >= 64 would overflow the host word, so they are refused rather
+  // than silently truncated -- a wrong mask would silently weaken every obligation built from it.
+  static APInt getMaxValue(unsigned n) {
+    if (n >= 64) cv_unsupported("APInt::getMaxValue width >= 64");
+    APInt a; a.bits = n; a.v = (n == 0) ? 0ul : ((1ul << n) - 1ul); return a;
+  }
+  static APInt getMinValue(unsigned n) { APInt a; a.bits = n; a.v = 0; return a; }
+  static APInt getAllOnes(unsigned n) { return getMaxValue(n); }
+};
+
+// The pass class an upstream fold is a member of. `Builder` is the shim's symbolic IRBuilder, so a
+// verbatim `Builder.CreateXor(...)` in real source builds a symbolic term exactly as the fold does.
+struct InstCombiner {
+  using BuilderTy = IRBuilder;
+  IRBuilder Builder;
+  // the InstCombine rewrite sink: the fold's returned replacement value
+  Value *replaceInstUsesWith(Value &I, Value *V) { return V; }
+  Value *replaceOperand(Value &I, unsigned, Value *V) { return V; }
+};
+struct InstCombinerImpl : InstCombiner {};
 template <class T> bool isa(const Value &v);
 template <> inline bool isa<ConstantInt>(const Value &v)   { return v.is_const; }
 template <> inline bool isa<BinaryOperator>(const Value &v){ return v.opcode != 0; }
@@ -217,16 +413,19 @@ inline Value cv_logBase2(Value /*C*/) {
 // `match(I, m_Sub(m_Mul(m_Value(A), m_Value(B)), m_Value(C)))` returns whether I has that tree
 // shape and captures the leaves -- the same composable matchers LLVM passes use. Matchers live in
 // a static pool so nested `m_*(...)` calls stay valid through the match.
-enum CvOpcode { OP_OTHER, OP_ADD, OP_SUB, OP_MUL, OP_AND, OP_OR, OP_XOR,
-                OP_SHL, OP_LSHR, OP_ASHR, OP_UDIV, OP_SDIV, OP_UREM, OP_SREM };
 
 enum CvMKind { MK_VALUE, MK_SPECIFIC, MK_CONSTANT, MK_ZERO, MK_ONE, MK_ALLONES, MK_BINOP,
                MK_SPECIFICINT, MK_ONEUSE, MK_COMBINEOR };
 struct Matcher {
   int kind, opcode;
-  Value *cap;                                    // MK_VALUE / MK_CONSTANT: where to store
+  Value *cap = nullptr;                          // MK_VALUE / MK_CONSTANT: where to store
+  // UNMODIFIED upstream folds declare `Value *A, *B;` and write `m_Value(A)`, i.e. they bind a
+  // POINTER, while folds authored against this shim bind a reference. Supporting both is what lets
+  // real InstCombine source compile here at all -- it was the single most pervasive difference.
+  Value **capp = nullptr;
   const Value *specific;                         // MK_SPECIFIC: the value to compare against
   unsigned long imm;                             // MK_SPECIFICINT: the constant to match
+  const APInt **apint = nullptr;                 // MK_CONSTANT via m_APInt: where to store
   bool commutative = false;                       // MK_BINOP: try both operand orders (m_c_*)
   Matcher *a, *b;                                // MK_BINOP / MK_ONEUSE / MK_COMBINEOR: sub-matcher(s)
 };
@@ -235,6 +434,7 @@ static int CV_MPOS;
 static Matcher *cv_m(int kind) { Matcher *m = &CV_MPOOL[CV_MPOS++]; *m = Matcher{}; m->kind = kind; return m; }
 
 inline Matcher *m_Value(Value &v)        { Matcher *m = cv_m(MK_VALUE); m->cap = &v; return m; }
+inline Matcher *m_Value(Value *&v)       { Matcher *m = cv_m(MK_VALUE); m->capp = &v; return m; }
 inline Matcher *m_ConstantInt(Value &v)  { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
 inline Matcher *m_Specific(const Value &v){ Matcher *m = cv_m(MK_SPECIFIC); m->specific = &v; return m; }
 inline Matcher *m_Zero()                 { return cv_m(MK_ZERO); }
@@ -242,9 +442,28 @@ inline Matcher *m_One()                  { return cv_m(MK_ONE); }
 inline Matcher *m_AllOnes()              { return cv_m(MK_ALLONES); }
 inline Matcher *m_SpecificInt(unsigned long n) { Matcher *m = cv_m(MK_SPECIFICINT); m->imm = n; return m; }
 inline Matcher *m_OneUse(Matcher *inner) { Matcher *m = cv_m(MK_ONEUSE); m->a = inner; return m; }
+
+// --- the remaining matcher surface unmodified upstream folds name. `m_APInt`/`m_Constant` capture a
+// --- constant operand (the shim's Value carries `is_const`), `m_Not`/`m_Neg` are the canonical
+// --- sugar for `xor X, -1` / `sub 0, X`, and `m_Deferred` re-matches an already-bound value. These
+// --- are STRUCTURAL: they let the fold's real matcher tree run, and any operand the executor cannot
+// --- resolve simply fails the match on that path, as it would in LLVM.
+inline Matcher *m_SpecificInt(const APInt &a) { Matcher *m = cv_m(MK_SPECIFICINT); m->imm = a.v; return m; }
+inline Matcher *m_APInt(const APInt *&c)  { Matcher *m = cv_m(MK_CONSTANT); m->apint = &c; return m; }
+inline Matcher *m_Constant(Value &v)      { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
+inline Matcher *m_Constant(Value *&v)     { Matcher *m = cv_m(MK_CONSTANT); m->capp = &v; return m; }
+inline Matcher *m_ConstantInt(Value *&v)  { Matcher *m = cv_m(MK_CONSTANT); m->capp = &v; return m; }
+inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_SPECIFIC); m->specific = v; return m; }
+inline Matcher *m_Specific(Value *v)      { Matcher *m = cv_m(MK_SPECIFIC); m->specific = v; return m; }
+inline Matcher *m_ImmConstant(Value &v)   { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
+inline Matcher *m_ImmConstant(Value *&v)  { Matcher *m = cv_m(MK_CONSTANT); m->capp = &v; return m; }
+inline Matcher *m_Deferred(Value &v)      { Matcher *m = cv_m(MK_SPECIFIC); m->specific = &v; return m; }
+inline Matcher *m_ZeroInt()               { return cv_m(MK_ZERO); }
 static Matcher *cv_bin(int op, Matcher *a, Matcher *b) {
   Matcher *m = cv_m(MK_BINOP); m->opcode = op; m->a = a; m->b = b; return m;
 }
+inline Matcher *m_Not(Matcher *inner)     { return cv_bin(OP_XOR, inner, m_AllOnes()); }
+inline Matcher *m_Neg(Matcher *inner)     { return cv_bin(OP_SUB, m_Zero(), inner); }
 inline Matcher *m_Add(Matcher *a, Matcher *b)  { return cv_bin(OP_ADD, a, b); }
 inline Matcher *m_Sub(Matcher *a, Matcher *b)  { return cv_bin(OP_SUB, a, b); }
 inline Matcher *m_Mul(Matcher *a, Matcher *b)  { return cv_bin(OP_MUL, a, b); }
@@ -269,8 +488,17 @@ inline Matcher *m_CombineOr(Matcher *a, Matcher *b) { Matcher *m = cv_m(MK_COMBI
 
 static bool cv_matchV(const Value &v, Matcher *m) {
   switch (m->kind) {
-    case MK_VALUE:    *m->cap = v; return true;          // capture any value
-    case MK_CONSTANT: if (!v.is_const) return false; *m->cap = v; return true;  // a ConstantInt
+    case MK_VALUE:                                       // capture any value
+      // Bind the ACTUAL node, not a copy. LLVM's m_Value(A) binds the real `Value *`, and real folds
+      // rely on that: `hasCommonOperand(A,B,C,D)` in foldNotXor tests `A == C` to detect a SHARED
+      // operand. Binding a copy makes every such pointer-identity test false, so the fold silently
+      // declines and the arm is never explored -- not unsound, but invisible non-modelling.
+      if (m->capp) { *m->capp = const_cast<Value *>(&v); } else if (m->cap) { *m->cap = v; }
+      return true;
+    case MK_CONSTANT:                                    // a ConstantInt
+      if (!v.is_const) return false;
+      if (m->capp) { *m->capp = cv_keep(v); } else if (m->cap) { *m->cap = v; }
+      return true;
     case MK_SPECIFIC: return v.t == m->specific->t;       // the same value (by term)
     case MK_ZERO:     return v.t == "(_ bv0 32)";
     case MK_ONE:      return v.t == "(_ bv1 32)";
@@ -286,6 +514,8 @@ static bool cv_matchV(const Value &v, Matcher *m) {
   return false;
 }
 inline bool match(const Value &v, Matcher *m) { CV_MPOS = 0; return cv_matchV(v, m); }
+// upstream writes `match(&I, ...)` and `match(Op0, ...)` -- the subject arrives as a POINTER
+inline bool match(const Value *v, Matcher *m) { return v && match(*v, m); }
 
 // --- build a symbolic input instruction / tree (operands live in a Value arena) ---------------
 static Value CV_VARENA[64];

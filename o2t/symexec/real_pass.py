@@ -111,6 +111,9 @@ def verify_fold(z3_bin, exe, fold):
     rewriting = [r for r in rows if r["rewrote"]]
     refuted = [r for r in rewriting if r["status"] == "refuted"]
     proved = [r for r in rewriting if r["status"] == "proved"]
-    ok = bool(rewriting) and not refuted
+    # SOUND requires every rewriting path to be PROVED, not merely "not refuted": a path whose
+    # discharge errored or returned `unknown` is a non-answer, and counting it as sound reports a
+    # fold verified when nothing was decided about it.
+    ok = bool(rewriting) and all(r["status"] == "proved" for r in rewriting)
     return {"fold": fold, "paths": len(paths), "rewriting_paths": len(rewriting),
             "proved": len(proved), "refuted": len(refuted), "ok": ok, "rows": rows}

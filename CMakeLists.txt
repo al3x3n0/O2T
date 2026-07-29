@@ -900,6 +900,16 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/alive_diff_fixture.py; else echo 'alive_diff_fixture: z3 or alive-tv not found, skipped'; fi"
     )
+    # THE HEADLINE CAPABILITY: verify an UNMODIFIED upstream InstCombine fold by executing its REAL
+    # C++ against the symbolic-LLVM shim -- the fold's own branches, discharged per path. The vendored
+    # source is byte-for-byte LLVM 18, so a compile failure here means the shim has drifted away from
+    # genuine pass source. Teeth: corrupting the rewrite refutes with a witness. Needs clang++ and z3.
+    add_test(
+        NAME upstream_symexec_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/upstream_symexec_fixture.py; else echo 'upstream_symexec_fixture: z3 or clang++ not found, skipped'; fi"
+    )
     # "Value-equal everywhere implies refinement" is FALSE when the TARGET can be poison -- poison is
     # not a value. The value-equality validators (memory, lane models) had no poison term at all, and
     # `poison_risk` only ever stopped them REFUTING; nothing stopped them PROVING a transform that
