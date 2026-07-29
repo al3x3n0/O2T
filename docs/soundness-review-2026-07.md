@@ -225,4 +225,5 @@ in Track B (a cyclic CFG is an outright decline), and the inherent low reach (de
 | freeze identity shortcut | `freeze_tv_fixture` — freeze-removal declines (Alive2 refutes it); introduction proves; new-poison freeze refutes |
 | undeclared `noundef` | `undef_param_fixture` — `ret 0 -> xor %x,%x` declines; `noundef` makes it prove; UB refutations unaffected |
 | guard routed around by the dispatcher | `dispatcher_guard_fixture` — a guard decline survives dispatch; reverting the rule makes false proofs reappear |
+| value equality proving against a poison target | `target_poison_fixture` — a lane target adding `exact`, and a memory target storing an oversize-shift value, both decline |
 | fuzzer blind to its own target distribution | `synth_target_fixture` — synthesized targets; disabling the undef guard must surface false proofs |

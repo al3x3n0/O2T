@@ -92,6 +92,25 @@ def _bool_of(term, width):
     return f"(not (= {term} {_const(0, width)}))"
 
 
+def target_may_poison(after_ll, func):
+    """May the TARGET produce poison? A value-equality validator may only PROVE when it cannot.
+
+    Those validators compare values and have no poison term at all, and `poison_risk` only stops them
+    REFUTING (a value mismatch may be a sound poison exploitation). Nothing stopped them PROVING, and
+    "value-equal everywhere implies refinement" is FALSE when the target introduces poison -- poison
+    is not a value. Two live false proofs found by the synthesized-target fuzzer:
+
+      * a lane-model target adding `exact` to an `lshr` feeding the result: values identical, target
+        poison where the source is not;
+      * a memory target storing `shl %x, (ashr 1, -1)`, which LLVM makes poison (shift >= width) but
+        SMT gives a defined 0, so the stored values looked equal.
+
+    If the target has no poison source and its values agree everywhere, it is defined wherever the
+    source is, so refinement genuinely holds -- which is why gating on the TARGET is enough and the
+    source may still carry poison."""
+    return poison_risk(after_ll, func)
+
+
 def poison_risk(ll_text, func):
     """Does `func` contain a poison-generating operation that a VALUE-equality validator does not
     refine? A flagged operation, or a shift whose amount is not a scalar in-range constant (a
@@ -116,8 +135,24 @@ def poison_risk(ll_text, func):
         if _POISON_FLAGS & set(inst.flags):
             return True
         if inst.op in ("shl", "lshr", "ashr"):
-            if inst.type.kind == "vector":             # any vector shift -> conservatively risky
-                return True
+            if inst.type.kind == "vector":
+                # A vector shift is risky unless EVERY lane's amount is a visible in-range constant.
+                # Treating them all as risky was safe but, now that this also gates PROVING, it
+                # declined every vector function containing a shift at all.
+                amount, width = inst.operands[1], inst.type.elem.bits if inst.type.elem else None
+                if width is None:
+                    return True
+                if amount.kind == "splat":
+                    e = amount.splat_elem
+                    if e is None or e.kind != "int" or not (0 <= e.int_value < width):
+                        return True
+                elif amount.kind == "vector":
+                    for e in amount.elements:
+                        if e.kind != "int" or not (0 <= e.int_value < width):
+                            return True
+                else:
+                    return True                        # a variable or opaque lane-wise amount
+                continue
             amount = inst.operands[1]
             if amount.kind != "int" or not (0 <= amount.int_value < inst.type.bits):
                 return True                            # variable or out-of-range scalar shift

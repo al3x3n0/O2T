@@ -32,7 +32,7 @@ refutations** across six measured runs. A second, complementary track validates 
 on *real code*: it runs the actual `opt` and proves its whole-function output a sound refinement of
 the input over a complete bounded-code fragment — acyclic branch/phi control flow, byte-addressable
 memory under the theory of arrays (aliasing exact, no alias analysis), fixed and scalable vectors, and
-interprocedural value flow — proving **511 of 715 of LLVM's own InstCombine test functions end-to-end
+interprocedural value flow — proving **495 of 715 of LLVM's own InstCombine test functions end-to-end
 with zero false refutations and none of them vacuous**, composing those proofs up to pipelines, module deletion, and signature
 changes, and meeting the recovery track at **attribution**, where a proved transform is credited to
 the recovered fold that provably matches it. Because this track rests on a hand-written encoding, its
@@ -106,7 +106,7 @@ source**. Doing so requires solving four problems that per-pair tools never face
 - **A second verification track: closed-loop translation validation of the real transform** (§6).
   The actual `opt` output is proved a sound refinement of the input over a complete bounded-code
   fragment — branch/phi control flow, byte-addressable memory (theory of arrays, exact aliasing),
-  fixed and scalable vectors, interprocedural value flow — reaching 511/715 of LLVM's own InstCombine
+  fixed and scalable vectors, interprocedural value flow — reaching 495/715 of LLVM's own InstCombine
   tests with zero false refutations; refinement composes up to pipelines, module deletion, and
   signature changes; the recovery track and this one **meet at attribution**, crediting a proved
   transform to the recovered fold that provably matches it; and a self-enrichment loop grows the
@@ -303,8 +303,8 @@ where a proved whole-function transform is explained by the recovered fold that 
 
 **Whole-function refinement of real `opt`.** For a corpus of real IR functions, `opt` is run and the
 whole-function output is proved a refinement of the input. Over LLVM's own InstCombine tests
-(`and/or/xor/add.ll`, 715 functions) **511 (71%) are proved sound end-to-end with zero false
-refutations, and none of the 511 is vacuous**; the rest decline on shapes the translator does not
+(`and/or/xor/add.ll`, 715 functions) **495 (69%) are proved sound end-to-end with zero false
+refutations, and none of the 495 is vacuous**; the rest decline on shapes the translator does not
 model, plus a few solver timeouts — never a false proof. *Non-vacuity* is a check in its own right:
 refinement holds trivially wherever the source is UB or poison, so an over-approximated UB model would
 turn refutations into proofs of exactly that shape, invisibly to the execution and Alive2 oracles

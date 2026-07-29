@@ -900,6 +900,14 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/alive_diff_fixture.py; else echo 'alive_diff_fixture: z3 or alive-tv not found, skipped'; fi"
     )
+    # "Value-equal everywhere implies refinement" is FALSE when the TARGET can be poison -- poison is
+    # not a value. The value-equality validators (memory, lane models) had no poison term at all, and
+    # `poison_risk` only ever stopped them REFUTING; nothing stopped them PROVING a transform that
+    # introduces poison. The synthesized-target fuzzer found two live instances. Needs z3.
+    add_test(
+        NAME target_poison_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/target_poison_fixture.py
+    )
     # A guard is only as strong as the DISPATCHER above it. Track B takes the first proved/refuted
     # from an ordered list of validators, which is sound for "this validator does not model that
     # shape" but NOT for a guard -- a guard is about the transform, so routing to a validator without

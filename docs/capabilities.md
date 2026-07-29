@@ -60,10 +60,11 @@ Two consequences worth knowing when reading verdicts:
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV:** **511 / 715 (71%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
+- **Track B whole-function TV:** **495 / 715 (69%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
   functions proved sound end-to-end, **0 false refutations**; the rest decline on shapes above, plus a
   handful of timing-dependent per-function solver timeouts (a sound decline). Re-measured at the
-  current head: the scalar refinement path proves ~430 and the memory/vector dispatch the other ~81.
+  current head: the scalar refinement path proves ~434 and the memory/vector dispatch the other ~61 (the dispatch
+  share fell when the value-equality models stopped proving against targets that can produce poison).
   The rise over the previously documented 428 is the parser migration: trailing `; comments`,
   `immarg`, `zeroinitializer`, `splat (iW C)` and named/packed struct geps are all valid IR the old
   text readers could not match.
@@ -75,11 +76,11 @@ Two consequences worth knowing when reading verdicts:
   or poison, so `udiv %x, 0` legitimately "refines" to anything — and an *over-approximated* UB model
   would quietly convert refutations into proofs of exactly that shape, invisibly to the execution and
   Alive2 oracles (which are consulted only on the proved set). Every proof on the refinement path
-  (~430 of the 511; the split with the value-equality validators shifts a little with timeouts) is
+  (~434 of the 495; the split with the value-equality validators shifts a little with timeouts) is
   probed for a defined source: **none is vacuous**, so the reach number is not inflated and the
   UB/poison model is not over-approximating anywhere on LLVM's own tests. The memory and vector
   validators carry no vacuity flag — they compare *values* and have no UB term to over-approximate.
-- **Solver independence: 511 / 511 confirmed by a second solver.** Every decided query is replayed
+- **Solver independence: 495 / 495 confirmed by a second solver.** Every decided query is replayed
   verbatim through an independently implemented SMT solver (`bitwuzla`, or `cvc5`/`cvc4` if present),
   including the QF_ABV memory encoding — **zero disagreements**. The other oracles check O2T's
   *encoding*; this is the only one that checks the *solver*.

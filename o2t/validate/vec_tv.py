@@ -289,6 +289,10 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
+        if si.target_may_poison(after_ll, func):
+            return {"status": "unsupported", "function": func, "guard": "target-poison",
+                    "reason": "target can produce poison; a value-equality model cannot prove "
+                              "refinement against it (values agree, poison is not a value)"}
         return {"status": "proved", "function": func, **xc}
     if head == "sat":
         # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
@@ -329,6 +333,10 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
+        if si.target_may_poison(after_ll, func):
+            return {"status": "unsupported", "function": func, "guard": "target-poison",
+                    "reason": "target can produce poison; a value-equality model cannot prove "
+                              "refinement against it (values agree, poison is not a value)"}
         return {"status": "proved", "function": func, **xc}
     if head == "sat":
         # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is

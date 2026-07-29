@@ -90,6 +90,10 @@ equivalent to the input — with a minimized concrete counterexample on failure.
 | The `noundef` assumption behind the single-constant parameter model is declared and enforced — the load-bearing shape declines, `noundef` makes it provable | `undef_param_fixture` |
 | IR is read by LLVM 18's own parser; the historical text-parsing failures are impossible by construction | `ir_model_fixture` |
 | One instruction-semantics layer serves both tracks, byte-identical to the readers it replaced | `semantics_fixture` |
+| Value-equality validators decline rather than prove when the TARGET can be poison | `target_poison_fixture` |
+| An UNMODIFIED upstream InstCombine fold is verified by executing its real C++ (symbolic shim, per-path discharge) | `upstream_symexec_fixture` |
+| A guard decline cannot be overturned by the dispatcher routing to another validator | `dispatcher_guard_fixture` |
+| The fuzzer audits the API's decision surface, not just `opt`'s output distribution | `synth_target_fixture` |
 | Exhaustive poison-flag coverage (every `(op, flag)` refutes on introduce / proves on remove; completeness-enforced) | `flag_matrix_fixture` |
 | Common integer intrinsics modeled (`ctpop`/`abs`/`ctlz`/`cttz`/`fshl`/`fshr`/u,s`{add,sub}.sat`), each lli-validated | `intrinsics_ir_fixture` |
 | Unified Track B dispatcher — memory/vector functions prove via `mem_state`/`vec`/`svec` instead of declining | `track_b_dispatch_fixture` |

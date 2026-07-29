@@ -303,6 +303,135 @@ def _gen_synth(rng, n_insns=6, w=32):
     return before, after
 
 
+def _gen_synth_memory(rng, n_insns=6, w=32):
+    """A (before, after) pair over POINTER MEMORY whose target is synthesized.
+
+    `mem_state` has only ever been fuzzed with opt-produced targets, and it is one of the WEAKEST
+    models in the tree: it compares values and final memory, with no poison refinement, which is why
+    it needs a `poison_risk` guard to avoid false refutations at all. So its decision surface deserves
+    the same adversarial pressure the scalar path just got -- these are the rewrites a buggy memory
+    pass plausibly emits, most of them unsound:
+
+      * drop a store (sound only if a later store to the SAME address overwrites it);
+      * reorder two stores (sound only if the addresses cannot alias);
+      * forward a load from a DIFFERENT pointer (alias-unsound);
+      * change a stored value, or introduce a load the source never performs (a new dereference).
+    """
+    ptrs, vals, lines, idx = ["%p", "%q"], ["%x", "%y"], [], 0
+
+    def opnd():
+        return str(rng.choice([0, 1, -1, rng.randint(-8, 8)])) if rng.random() < 0.3 else rng.choice(vals)
+
+    for _ in range(n_insns):
+        r = rng.random()
+        if r < 0.4:
+            lines.append(f"  store i{w} {opnd()}, ptr {rng.choice(ptrs)}")
+        elif r < 0.7:
+            v = f"%v{idx}"; idx += 1
+            lines.append(f"  {v} = load i{w}, ptr {rng.choice(ptrs)}")
+            vals.append(v)
+        else:
+            v = f"%v{idx}"; idx += 1
+            lines.append(f"  {v} = {rng.choice(_BINOPS)} i{w} {opnd()}, {opnd()}")
+            vals.append(v)
+    ret = rng.choice(vals)
+    sig = f"ptr %p, ptr %q, i{w} %x, i{w} %y"
+    before = f"define i{w} @f({sig}) {{\n" + "\n".join(lines) + f"\n  ret i{w} {ret}\n}}\n"
+
+    tgt = list(lines)
+    stores = [i for i, l in enumerate(tgt) if l.lstrip().startswith("store")]
+    loads = [i for i, l in enumerate(tgt) if " = load " in l]
+    kind = rng.choice(["drop_store", "reorder", "realias_load", "change_value", "new_load"])
+    if kind == "drop_store" and stores:
+        del tgt[rng.choice(stores)]
+    elif kind == "reorder" and len(stores) >= 2:
+        i, j = rng.sample(stores, 2)
+        tgt[i], tgt[j] = tgt[j], tgt[i]
+    elif kind == "realias_load" and loads:
+        i = rng.choice(loads)
+        tgt[i] = tgt[i].replace("ptr %p", "ptr %__T").replace("ptr %q", "ptr %p").replace("%__T", "%q")
+    elif kind == "change_value" and stores:
+        i = rng.choice(stores)
+        head, _, rest = tgt[i].partition(f"store i{w} ")
+        tgt[i] = f"{head}store i{w} {rng.choice(vals + ['0', '1'])}," + rest.partition(",")[2]
+    elif kind == "new_load":
+        tgt.append(f"  %nl = load i{w}, ptr {rng.choice(ptrs)}")
+    after = f"define i{w} @f({sig}) {{\n" + "\n".join(tgt) + f"\n  ret i{w} {ret}\n}}\n"
+    return before, after
+
+
+def _gen_synth_vector(rng, n_insns=5, w=32, lanes=4):
+    """A (before, after) pair over FIXED VECTORS whose target is synthesized.
+
+    Same reasoning as the memory shape: the lane model compares per-lane VALUES with no poison
+    refinement, and has only ever seen targets InstCombine chose to emit. These are the rewrites a
+    buggy vectoriser plausibly emits -- a permuted shuffle mask, a changed lane, swapped operands, a
+    dropped flag, a splat substituted for a general vector."""
+    vt = f"<{lanes} x i{w}>"
+    vals, lines, idx = ["%x", "%y"], [], 0
+
+    def opnd():
+        if rng.random() < 0.25:
+            elts = ", ".join(f"i{w} {rng.choice([0, 1, -1, rng.randint(-4, 4)])}" for _ in range(lanes))
+            return f"<{elts}>"
+        return rng.choice(vals)
+
+    for _ in range(n_insns):
+        v = f"%v{idx}"; idx += 1
+        # bias away from shifts: a lane-wise variable shift is a poison source, so an all-shift
+        # generator would produce only functions the model must decline, and the shape would stop
+        # exercising anything.
+        op = rng.choice(_BINOPS if rng.random() < 0.35 else
+                        ["add", "sub", "mul", "and", "or", "xor"])
+        fl = " " + rng.choice(_FLAGS[op]) if op in _FLAGS and rng.random() < 0.35 else ""
+        lines.append(f"  {v} = {op}{fl} {vt} {opnd()}, {opnd()}")
+        vals.append(v)
+    ret = rng.choice(vals)
+    before = f"define {vt} @f({vt} %x, {vt} %y) {{\n" + "\n".join(lines) + f"\n  ret {vt} {ret}\n}}\n"
+
+    tgt, tret = list(lines), ret
+    kind = rng.choice(["shuffle", "swap", "drop_flag", "add_flag", "splat", "ret_other"])
+    if kind == "shuffle":
+        mask = ", ".join(f"i32 {rng.randrange(2 * lanes)}" for _ in range(lanes))
+        tgt.append(f"  %sh = shufflevector {vt} {tret}, {vt} %y, <{lanes} x i32> <{mask}>")
+        tret = "%sh"
+    elif kind == "swap" and tgt:
+        i = rng.randrange(len(tgt))
+        head, _, ops = tgt[i].rpartition(f"{vt} ")
+        # Split at ANGLE-BRACKET DEPTH ZERO: a vector literal `<i32 -1, i32 0>` contains commas, and
+        # a naive split severs it -- the very mistake the lane model's own operand regex once made.
+        depth, cut = 0, -1
+        for k, ch in enumerate(ops):
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                cut = k
+                break
+        if cut > 0:
+            a, b = ops[:cut], ops[cut + 1:]
+            tgt[i] = f"{head}{vt} {b.strip()}, {a.strip()}"
+    elif kind in ("drop_flag", "add_flag") and tgt:
+        i = rng.randrange(len(tgt))
+        if kind == "drop_flag":
+            for f in ("nsw", "nuw", "exact", "disjoint"):
+                if f" {f} " in tgt[i]:
+                    tgt[i] = tgt[i].replace(f" {f} ", " ", 1); break
+        else:
+            op = tgt[i].split("=")[1].split()[0]
+            if op in _FLAGS and not any(f" {f} " in tgt[i] for f in _FLAGS[op]):
+                tgt[i] = tgt[i].replace(f"= {op} ", f"= {op} {rng.choice(_FLAGS[op])} ", 1)
+    elif kind == "splat":
+        c = rng.randint(-3, 3)
+        tgt.append(f"  %sp = add {vt} {tret}, <" + ", ".join(f"i{w} {c}" for _ in range(lanes)) + ">")
+        tret = "%sp"
+    elif kind == "ret_other":
+        tret = rng.choice(vals)
+    after = f"define {vt} @f({vt} %x, {vt} %y) {{\n" + "\n".join(tgt) + f"\n  ret {vt} {tret}\n}}\n"
+    return before, after
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--count", type=int, default=200)
@@ -311,7 +440,8 @@ def main(argv=None) -> int:
     ap.add_argument("--params", type=int, default=3)
     ap.add_argument("--intrinsics", action="store_true",
                     help="also generate the modeled intrinsic calls (fuzz their encodings vs Alive2)")
-    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg", "freeze", "synth"],
+    ap.add_argument("--shape", choices=["scalar", "memory", "vector", "cfg", "freeze", "synth",
+                             "synth-memory", "synth-vector"],
                     default="scalar",
                     help="scalar (default), pointer memory, fixed vectors, a branch/phi diamond (cfg), "
                          "or freeze (target SYNTHESIZED, not opt output -- see _gen_freeze)")
@@ -333,11 +463,13 @@ def main(argv=None) -> int:
            "vector": lambda: _gen_vector(rng, args.insns),
            "cfg": lambda: _gen_cfg(rng, args.insns),
            "freeze": lambda: _gen_freeze(rng, args.insns),
-           "synth": lambda: _gen_synth(rng, args.insns)}[args.shape]
+           "synth": lambda: _gen_synth(rng, args.insns),
+           "synth-memory": lambda: _gen_synth_memory(rng, args.insns),
+           "synth-vector": lambda: _gen_synth_vector(rng, args.insns)}[args.shape]
     pair, alive_v, disagreements, opt_fail = Counter(), Counter(), [], 0
     vacuous = 0
     for i in range(args.count):
-        if args.shape in ("freeze", "synth"):    # target SYNTHESIZED, not opt output
+        if args.shape.startswith("synth") or args.shape == "freeze":   # target SYNTHESIZED
             before, after = gen()
         else:
             before = gen()

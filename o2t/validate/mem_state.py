@@ -296,6 +296,10 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
+        if si.target_may_poison(after_ll, func):
+            return {"status": "unsupported", "function": func, "guard": "target-poison",
+                    "reason": "target can produce poison; a value-equality model cannot prove "
+                              "refinement against it (values agree, poison is not a value)"}
         return {"status": "proved", "function": func, **xc}   # value-equal everywhere => sound refinement
     if head == "sat":
         # This model compares VALUES, not poison-refinement. So a value mismatch is a genuine miscompile
