@@ -48,6 +48,8 @@ def validate_transform_ex(z3_bin: str, before_ll: str, after_ll: str, func: str,
         vv = validator(z3_bin, before_ll, after_ll, func, timeout=timeout, cross_check=cross_check)
         if vv["status"] in ("proved", "refuted"):
             return {**vv, "via": name}
+        if vv.get("guard"):        # a guard decline from ANY validator is final, as above
+            return {**vv, "via": name}
     return v                                           # everything declined -> honest unsupported
 
 

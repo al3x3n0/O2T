@@ -284,6 +284,7 @@ def validate_mem2reg(z3_bin, src_text, opt_text, func):
         from o2t.validate.scalar_ir import poison_risk
         if poison_risk(src_text, func):
             return {"status": "unsupported", "function": func,
+                    "guard": "poison-risk",
                     "reason": "value mismatch under possible poison (mem2reg model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out}
     return {"status": "error", "function": func, "reason": head}

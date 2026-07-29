@@ -224,3 +224,5 @@ in Track B (a cyclic CFG is an outright decline), and the inherent low reach (de
 | unchecked solver | `vacuity_tv_fixture` — bitwuzla reproduces proof and refutation; a lying stub is caught; absent ⇒ `skipped` |
 | freeze identity shortcut | `freeze_tv_fixture` — freeze-removal declines (Alive2 refutes it); introduction proves; new-poison freeze refutes |
 | undeclared `noundef` | `undef_param_fixture` — `ret 0 -> xor %x,%x` declines; `noundef` makes it prove; UB refutations unaffected |
+| guard routed around by the dispatcher | `dispatcher_guard_fixture` — a guard decline survives dispatch; reverting the rule makes false proofs reappear |
+| fuzzer blind to its own target distribution | `synth_target_fixture` — synthesized targets; disabling the undef guard must surface false proofs |

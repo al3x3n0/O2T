@@ -900,6 +900,18 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/alive_diff_fixture.py; else echo 'alive_diff_fixture: z3 or alive-tv not found, skipped'; fi"
     )
+    # A guard is only as strong as the DISPATCHER above it. Track B takes the first proved/refuted
+    # from an ordered list of validators, which is sound for "this validator does not model that
+    # shape" but NOT for a guard -- a guard is about the transform, so routing to a validator without
+    # it overturns the decline (the undef-risk case the lane model proves by value equality, and
+    # Alive2 refutes). Every guard now tags its decline and the dispatcher honours the tag; the
+    # fixture's acid test reverts the rule and requires false proofs to reappear.
+    add_test(
+        NAME dispatcher_guard_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/dispatcher_guard_fixture.py; else echo 'dispatcher_guard_fixture: z3 or alive-tv not found, skipped'; fi"
+    )
     # The fuzzer's blind spot, closed: opt-driven shapes only ever audit assumptions InstCombine
     # respects, which is why the undeclared-`noundef` false proofs survived every campaign. This shape
     # SYNTHESIZES targets and decides them against Alive2 -- and the fixture's acid test disables the

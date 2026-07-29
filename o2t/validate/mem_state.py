@@ -281,7 +281,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         except subprocess.TimeoutExpired:
             return {"status": "timeout", "function": func}
         if (pout.strip().splitlines() or ["error"])[0].strip() != "unsat":
-            return {"status": "unsupported", "function": func,
+            return {"status": "unsupported", "function": func, "guard": "new-deref",
                     "reason": "target introduces a dereference the source lacks (null-deref UB not modeled)"}
 
     diffs = ([f"(not (= {rb} {ra}))"] if rb is not None else []) + [f"(not (= {mb} {ma}))"]
@@ -303,7 +303,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         # (opt folding a poison `ashr x,x` to 0), and refuting it would be a false refutation. Decline
         # rather than refute when the source carries poison risk.
         if si.poison_risk(before_ll, func):
-            return {"status": "unsupported", "function": func,
+            return {"status": "unsupported", "function": func, "guard": "poison-risk",
                     "reason": "value mismatch under possible poison (memory model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out, **xc}
     return {"status": "error", "function": func, "reason": head}
