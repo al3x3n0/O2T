@@ -10,6 +10,7 @@
 #define CV_SYMBOLIC_LLVM_H
 #include <string>
 #include <vector>
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 
@@ -415,10 +416,12 @@ inline Value cv_logBase2(Value /*C*/) {
 // a static pool so nested `m_*(...)` calls stay valid through the match.
 
 enum CvMKind { MK_VALUE, MK_SPECIFIC, MK_CONSTANT, MK_ZERO, MK_ONE, MK_ALLONES, MK_BINOP,
+               MK_COMBINEAND, MK_DEFERRED,
                MK_SPECIFICINT, MK_ONEUSE, MK_COMBINEOR };
 struct Matcher {
   int kind, opcode;
   Value *cap = nullptr;                          // MK_VALUE / MK_CONSTANT: where to store
+  Value **deferred = nullptr;                    // MK_DEFERRED: the BINDING to re-read at match time
   // UNMODIFIED upstream folds declare `Value *A, *B;` and write `m_Value(A)`, i.e. they bind a
   // POINTER, while folds authored against this shim bind a reference. Supporting both is what lets
   // real InstCombine source compile here at all -- it was the single most pervasive difference.
@@ -442,6 +445,11 @@ inline Matcher *m_One()                  { return cv_m(MK_ONE); }
 inline Matcher *m_AllOnes()              { return cv_m(MK_ALLONES); }
 inline Matcher *m_SpecificInt(unsigned long n) { Matcher *m = cv_m(MK_SPECIFICINT); m->imm = n; return m; }
 inline Matcher *m_OneUse(Matcher *inner) { Matcher *m = cv_m(MK_ONEUSE); m->a = inner; return m; }
+// m_CombineAnd(P, Q): the value must satisfy BOTH sub-patterns -- upstream uses it to capture a
+// node (m_Value) while ALSO constraining its shape in the same position.
+inline Matcher *m_CombineAnd(Matcher *a, Matcher *b) {
+  Matcher *m = cv_m(MK_COMBINEAND); m->a = a; m->b = b; return m;
+}
 
 // --- the remaining matcher surface unmodified upstream folds name. `m_APInt`/`m_Constant` capture a
 // --- constant operand (the shim's Value carries `is_const`), `m_Not`/`m_Neg` are the canonical
@@ -453,7 +461,11 @@ inline Matcher *m_APInt(const APInt *&c)  { Matcher *m = cv_m(MK_CONSTANT); m->a
 inline Matcher *m_Constant(Value &v)      { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
 inline Matcher *m_Constant(Value *&v)     { Matcher *m = cv_m(MK_CONSTANT); m->capp = &v; return m; }
 inline Matcher *m_ConstantInt(Value *&v)  { Matcher *m = cv_m(MK_CONSTANT); m->capp = &v; return m; }
-inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_SPECIFIC); m->specific = v; return m; }
+// m_Deferred re-matches a value bound EARLIER IN THE SAME PATTERN, so it must read the binding at
+// MATCH time. The matcher tree is fully constructed before `match()` runs, so snapshotting the
+// pointer here captured a null: `(A & B) ^ (A | B)` -- the canonical shape foldXorToXor exists
+// for -- dereferenced it and SEGFAULTED the harness. Store the binding's address instead.
+inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_DEFERRED); m->deferred = &v; return m; }
 inline Matcher *m_Specific(Value *v)      { Matcher *m = cv_m(MK_SPECIFIC); m->specific = v; return m; }
 inline Matcher *m_ImmConstant(Value &v)   { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
 inline Matcher *m_ImmConstant(Value *&v)  { Matcher *m = cv_m(MK_CONSTANT); m->capp = &v; return m; }
@@ -499,13 +511,16 @@ static bool cv_matchV(const Value &v, Matcher *m) {
       if (!v.is_const) return false;
       if (m->capp) { *m->capp = cv_keep(v); } else if (m->cap) { *m->cap = v; }
       return true;
-    case MK_SPECIFIC: return v.t == m->specific->t;       // the same value (by term)
+    case MK_SPECIFIC: return m->specific && v.t == m->specific->t;   // the same value (by term)
+    case MK_DEFERRED:                                    // whatever the earlier m_Value bound
+      return m->deferred && *m->deferred && v.t == (*m->deferred)->t;
     case MK_ZERO:     return v.t == "(_ bv0 32)";
     case MK_ONE:      return v.t == "(_ bv1 32)";
     case MK_ALLONES:  return v.t == "(_ bv4294967295 32)";
     case MK_SPECIFICINT: return v.t == ("(_ bv" + std::to_string(m->imm) + " 32)");
     case MK_ONEUSE:   return v.one_use && cv_matchV(v, m->a);   // single-use profitability guard
     case MK_COMBINEOR: return cv_matchV(v, m->a) || cv_matchV(v, m->b);  // either pattern
+    case MK_COMBINEAND: return cv_matchV(v, m->a) && cv_matchV(v, m->b);  // both patterns
     case MK_BINOP:
       if (v.opcode != m->opcode || !v.op0 || !v.op1) return false;
       if (cv_matchV(*v.op0, m->a) && cv_matchV(*v.op1, m->b)) return true;

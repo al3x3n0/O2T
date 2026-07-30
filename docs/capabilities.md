@@ -89,6 +89,20 @@ Two consequences worth knowing when reading verdicts:
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
   boundary declines rather than guesses.
 
+- **Symbolic execution of real pass C++:** three UNMODIFIED upstream LLVM 18 InstCombine folds
+  (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`) are verified by compiling their
+  byte-for-byte source against the symbolic shim and discharging every rewriting path. Corrupting any
+  of the three rewrites refutes with a concrete witness. Reach is **5 of 106** fold-shaped functions
+  compiling; unlike Track A's vocabulary wall, the missing surface here is *shared*, so each addition
+  helps every fold at once.
+- **A known solver bound, not a gap in the model:** `foldBoxMultiply` compiles and executes, but its
+  obligation — the schoolbook decomposition of a 32x32 multiply — was settled by neither z3 (>10 min)
+  nor bitwuzla (killed at ~2.5 h), while the identity itself checks out concretely over 200k random
+  pairs. It is recorded as a solver timeout, which counts as a NON-ANSWER and blocks SOUND. Three
+  flavours of non-answer are treated identically and none can read as a proof: an errored discharge,
+  a solver timeout, and a **crashed harness** (which used to be silently dropped, making a crash look
+  exactly like a fold that declines).
+
 ## What this means for *your* pass
 
 - If your pass does scalar/vector/memory peephole work or a counted-loop rewrite, expect real verdicts.

@@ -47,7 +47,59 @@ static Instruction *foldNotXor(BinaryOperator &I,
   return nullptr;
 }
 
-// ---- harness: I = ~((A & B) ^ (A | D)), the shape the FIRST canonicalization arm matches.
+
+static Instruction *foldXorToXor(BinaryOperator &I,
+                                 InstCombiner::BuilderTy &Builder) {
+  assert(I.getOpcode() == Instruction::Xor);
+  Value *Op0 = I.getOperand(0);
+  Value *Op1 = I.getOperand(1);
+  Value *A, *B;
+
+  // There are 4 commuted variants for each of the basic patterns.
+
+  // (A & B) ^ (A | B) -> A ^ B
+  // (A & B) ^ (B | A) -> A ^ B
+  // (A | B) ^ (A & B) -> A ^ B
+  // (A | B) ^ (B & A) -> A ^ B
+  if (match(&I, m_c_Xor(m_And(m_Value(A), m_Value(B)),
+                        m_c_Or(m_Deferred(A), m_Deferred(B)))))
+    return BinaryOperator::CreateXor(A, B);
+
+  // (A | ~B) ^ (~A | B) -> A ^ B
+  // (~B | A) ^ (~A | B) -> A ^ B
+  // (~A | B) ^ (A | ~B) -> A ^ B
+  // (B | ~A) ^ (A | ~B) -> A ^ B
+  if (match(&I, m_Xor(m_c_Or(m_Value(A), m_Not(m_Value(B))),
+                      m_c_Or(m_Not(m_Deferred(A)), m_Deferred(B)))))
+    return BinaryOperator::CreateXor(A, B);
+
+  // (A & ~B) ^ (~A & B) -> A ^ B
+  // (~B & A) ^ (~A & B) -> A ^ B
+  // (~A & B) ^ (A & ~B) -> A ^ B
+  // (B & ~A) ^ (A & ~B) -> A ^ B
+  if (match(&I, m_Xor(m_c_And(m_Value(A), m_Not(m_Value(B))),
+                      m_c_And(m_Not(m_Deferred(A)), m_Deferred(B)))))
+    return BinaryOperator::CreateXor(A, B);
+
+  // For the remaining cases we need to get rid of one of the operands.
+  if (!Op0->hasOneUse() && !Op1->hasOneUse())
+    return nullptr;
+
+  // (A | B) ^ ~(A & B) -> ~(A ^ B)
+  // (A | B) ^ ~(B & A) -> ~(A ^ B)
+  // (A & B) ^ ~(A | B) -> ~(A ^ B)
+  // (A & B) ^ ~(B | A) -> ~(A ^ B)
+  // Complexity sorting ensures the not will be on the right side.
+  if ((match(Op0, m_Or(m_Value(A), m_Value(B))) &&
+       match(Op1, m_Not(m_c_And(m_Specific(A), m_Specific(B))))) ||
+      (match(Op0, m_And(m_Value(A), m_Value(B))) &&
+       match(Op1, m_Not(m_c_Or(m_Specific(A), m_Specific(B))))))
+    return BinaryOperator::CreateNot(Builder.CreateXor(A, B));
+
+  return nullptr;
+}
+
+// ---- harnesses: I = ~((A & B) ^ (A | D)), the shape the FIRST canonicalization arm matches.
 // `A` is deliberately shared between the and/or so `hasCommonOperand` holds -- with a distinct
 // operand the fold declines, which is itself a path worth exploring.
 int main(int argc, char **argv) {
@@ -66,6 +118,15 @@ int main(int argc, char **argv) {
                         xr, cv_allones());
     input = "(bvxor (bvxor (bvand A B) (bvor A Y)) (_ bv4294967295 32))";
     out = foldNotXor(*I, Builder);
+  }
+  if (!strcmp(argv[1], "foldXorToXor")) {
+    // (A & B) ^ (A | B)  ->  A ^ B. This shape is what segfaulted while `m_Deferred` snapshotted
+    // its binding at matcher-construction time rather than reading it at match time.
+    Value *an  = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *orr = cv_node(OP_OR,  "(bvor A B)",  &A, &B);
+    Value *I2  = cv_node(OP_XOR, "(bvxor (bvand A B) (bvor A B))", an, orr);
+    input = "(bvxor (bvand A B) (bvor A B))";
+    out = foldXorToXor(*I2, Builder);
   }
   cv_emit(input, out);
   return 0;

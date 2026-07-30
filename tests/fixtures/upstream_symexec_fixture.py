@@ -45,6 +45,7 @@ SRC = VENDOR / "upstream_addsub_fold.cpp"
 FOLD = "combineAddSubWithShlAddSub"
 SRC2 = VENDOR / "upstream_andorxor_fold.cpp"
 FOLD2 = "foldNotXor"
+FOLD3 = "foldXorToXor"
 
 
 def _clang():
@@ -131,23 +132,82 @@ def main() -> int:
                                             "DECLINE -- that is the bug this pins", rr)
         assert not rr["ok"], rr
 
-    # 5) A non-answer is not soundness. Simulate a path whose discharge errored and require `ok`
+    # 4b) A THIRD unmodified fold, `foldXorToXor`, whose canonical shape `(A & B) ^ (A | B)` uses
+    #     `m_Deferred` to re-match an operand bound earlier in the SAME pattern.
+    r3 = R.verify_fold(z3, exe2, FOLD3)
+    assert r3["ok"] and r3["proved"] == r3["rewriting_paths"] >= 1, r3
+    bad3 = SRC2.read_text().replace("    return BinaryOperator::CreateXor(A, B);\n\n  // (A | ~B)",
+                                    "    return BinaryOperator::CreateXor(A, A);\n\n  // (A | ~B)", 1)
+    assert bad3 != SRC2.read_text(), "the corruption must actually apply"
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "c3.cpp"
+        p.write_text(bad3)
+        rb3 = R.verify_fold(z3, R.compile_harness(str(p), clang=clang), FOLD3)
+        assert rb3["refuted"] >= 1 and not rb3["ok"], rb3
+
+    #     ACID TEST, and the sharper one. `m_Deferred` must read its binding at MATCH time; the shim
+    #     snapshotted it when the matcher tree was BUILT, which is before anything is bound, so the
+    #     pattern dereferenced a null and SEGFAULTED. That was invisible twice over: a crashed run was
+    #     silently dropped, so the fold merely looked like it declined. Reverting the fix must now
+    #     produce a SURFACED crash that blocks SOUND, not a quiet "no rewriting paths".
+    hdr2 = (ROOT / "o2t" / "symexec" / "symbolic_llvm.h").read_text()
+    rev2 = hdr2.replace("inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_DEFERRED); "
+                        "m->deferred = &v; return m; }",
+                        "inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_SPECIFIC); "
+                        "m->specific = v; return m; }", 1)
+    assert rev2 != hdr2, "the m_Deferred match-time line must be present to revert"
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "symbolic_llvm.h").write_text(rev2)
+        src = Path(td) / "f.cpp"
+        src.write_text(SRC2.read_text())
+        out = Path(td) / "f"
+        import subprocess
+        cc = subprocess.run([clang, "-std=c++17", "-I", td, str(src), "-o", str(out)],
+                            capture_output=True, text=True)
+        assert cc.returncode == 0, cc.stderr[:400]
+        rr2 = R.verify_fold(z3, str(out), FOLD3)
+        assert rr2["crashes"], ("a crashed harness must be SURFACED, not silently dropped -- it "
+                                "used to look identical to a fold that declines", rr2)
+        assert not rr2["ok"], rr2
+
+    # 5) A SOLVER TIMEOUT is a non-answer too, and it must be BOUNDED. Real folds carry obligations a
+    #    bit-blasting solver cannot settle -- `foldBoxMultiply` reassociates a 32x32 multiply, and
+    #    with no bound z3 ran indefinitely and hung the whole run rather than reporting anything. The
+    #    obligation below is that multiply identity: TRUE (checked concretely over random inputs), so
+    #    a correct-but-slow solver is exactly the situation being modelled. Under a 1-second bound it
+    #    must come back `error`, never `proved`.
+    XLO, YLO = "(bvand X (_ bv65535 32))", "(bvand Y (_ bv65535 32))"
+    CS = ("(bvadd (bvmul (bvlshr Y (_ bv16 32)) X) "
+          "(bvmul (bvlshr X (_ bv16 32)) Y))")
+    hard = {"input": f"(bvadd (bvshl {CS} (_ bv16 32)) (bvmul {YLO} {XLO}))",
+            "output": "(bvmul X Y)", "decisions": [], "constraints": [],
+            "input_poison": "false", "output_poison": "false", "logic": "QF_BV"}
+    slow = R.discharge_path(z3, hard, timeout=1)
+    assert slow["status"] == "error", ("a solver timeout is a NON-ANSWER and must never be reported "
+                                       "as proved -- the obligation is true but out of reach", slow)
+    assert slow["rewrote"] and not (slow["status"] == "proved"), slow
+
+    # 6) A non-answer is not soundness. Simulate a path whose discharge errored and require `ok`
     #    to be False -- the shape of the bug this fixture was written alongside.
     faked = {"fold": FOLD, "rows": [{"rewrote": True, "status": "error"}]}
     rewriting = [x for x in faked["rows"] if x["rewrote"]]
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: TWO UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
-          f"from InstCombineAddSub.cpp, {FOLD2} from InstCombineAndOrXor.cpp) are verified by "
-          f"executing their REAL C++ against the symbolic shim -- {r['proved'] + r2['proved']} "
-          "rewriting path(s) proved a sound refinement by z3. Corrupting either rewrite refutes with "
+    print(f"upstream_symexec_fixture OK: THREE UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+          f"from InstCombineAddSub.cpp, {FOLD2} and {FOLD3} from InstCombineAndOrXor.cpp) are "
+          f"verified by executing their REAL C++ against the symbolic shim -- "
+          f"{r['proved'] + r2['proved'] + r3['proved']} "
+          "rewriting path(s) proved a sound refinement by z3. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "
           "a COPY of the matched node, so that test was always false and the fold silently never "
           "rewrote -- not unsound, but invisible non-modelling. Reverting the binding here makes it "
-          "go quiet again. And a rewriting path that neither proves nor refutes does not count as "
-          "sound, which it did until this was written")
+          "go quiet again. The third needed `m_Deferred` to read its binding at MATCH time rather "
+          "than when the matcher tree was built: it SEGFAULTED on its own canonical pattern, and a "
+          "crashed run was silently dropped, so the fold merely looked like it declined. Crashes are "
+          "surfaced now and block SOUND, as do errored discharges and solver timeouts -- three "
+          "flavours of non-answer that must never read as a proof")
     return 0
 
 

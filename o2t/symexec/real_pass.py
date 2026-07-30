@@ -42,22 +42,38 @@ def compile_harness(cpp_path, clang="clang++", out=None):
 
 
 def _run(exe, fold, choices):
+    """One concrete execution of the fold. Returns (record, crash_reason)."""
     r = subprocess.run([exe, fold, *[str(c) for c in choices]], capture_output=True, text=True)
-    return json.loads(r.stdout) if r.stdout.strip() else None
+    if r.returncode != 0:
+        # A harness that CRASHES is not a fold that declines. `m_Deferred` used to snapshot its
+        # binding at matcher-construction time instead of reading it at match time, so the canonical
+        # `(A & B) ^ (A | B)` pattern dereferenced a null and SEGFAULTED -- and because a crashed run
+        # was silently dropped, the fold simply looked like it never rewrote. Surface it instead.
+        why = f"exit {r.returncode}" + (f": {r.stderr.strip().splitlines()[-1]}" if r.stderr.strip() else "")
+        return None, why
+    if not r.stdout.strip():
+        return None, "no output"
+    try:
+        return json.loads(r.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"unparseable output: {exc}"
 
 
 def explore(exe, fold, max_queries=4):
-    """Enumerate the distinct control-flow paths of `fold` over all query-outcome assignments."""
-    paths, seen = [], set()
+    """Enumerate the fold's distinct control-flow paths, plus any executions that CRASHED."""
+    paths, seen, crashes = [], set(), []
     for combo in product((0, 1), repeat=max_queries):
-        rec = _run(exe, fold, combo)
+        rec, crash = _run(exe, fold, combo)
+        if crash is not None:
+            crashes.append({"choices": list(combo), "reason": crash})
+            continue
         if rec is None:
             continue
         key = (json.dumps(rec["decisions"], sort_keys=True), rec["output"])
         if key not in seen:
             seen.add(key)
             paths.append(rec)
-    return paths
+    return paths, crashes
 
 
 def _path_condition(decisions):
@@ -73,7 +89,7 @@ def _path_condition(decisions):
     return facts
 
 
-def discharge_path(z3_bin, path):
+def discharge_path(z3_bin, path, timeout=60):
     """Prove the rewrite on one path refines the input under the path's established facts."""
     if path["output"] is None:
         return {"rewrote": False, "status": "no-rewrite"}     # no rewrite -> trivially refines
@@ -96,24 +112,36 @@ def discharge_path(z3_bin, path):
                      *[f"(assert {f})" for f in facts],
                      f"(assert {neg})",
                      "(check-sat)", "(get-model)", ""])
-    out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True).stdout
+    # A solver timeout is MANDATORY, not a convenience. Some real folds carry obligations that are
+    # genuinely hard for a bit-blasting solver -- `foldBoxMultiply` reassociates a 32x32 multiply, and
+    # without a bound z3 runs indefinitely and hangs the whole run. `unknown` from a timeout is a
+    # NON-ANSWER: it maps to "error", which `verify_fold` refuses to count as sound. Never "assume it
+    # would have proved".
+    try:
+        out = subprocess.run([z3_bin, "-in", f"-T:{timeout}"], input=smt,
+                             capture_output=True, text=True, timeout=timeout + 30).stdout
+    except subprocess.TimeoutExpired:
+        out = ""
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
     status = "proved" if head == "unsat" else "refuted" if head == "sat" else "error"
-    return {"rewrote": True, "status": status, "facts": len(facts),
+    return {"rewrote": True, "status": status, "facts": len(facts), "solver_output": head,
             "witness": out if status == "refuted" else ""}
 
 
-def verify_fold(z3_bin, exe, fold):
+def verify_fold(z3_bin, exe, fold, timeout=60):
     """Symbolically execute `fold` and discharge every rewriting path."""
-    paths = explore(exe, fold)
+    paths, crashes = explore(exe, fold)
     rows = [{"decisions": [d["q"] + ("" if d["v"] else "!") for d in p["decisions"]],
-             **discharge_path(z3_bin, p)} for p in paths]
+             **discharge_path(z3_bin, p, timeout=timeout)} for p in paths]
     rewriting = [r for r in rows if r["rewrote"]]
     refuted = [r for r in rewriting if r["status"] == "refuted"]
     proved = [r for r in rewriting if r["status"] == "proved"]
     # SOUND requires every rewriting path to be PROVED, not merely "not refuted": a path whose
     # discharge errored or returned `unknown` is a non-answer, and counting it as sound reports a
     # fold verified when nothing was decided about it.
-    ok = bool(rewriting) and all(r["status"] == "proved" for r in rewriting)
+    # A crashed execution is a non-answer about a path that was never explored, so it blocks SOUND
+    # exactly as an errored discharge does.
+    ok = bool(rewriting) and not crashes and all(r["status"] == "proved" for r in rewriting)
     return {"fold": fold, "paths": len(paths), "rewriting_paths": len(rewriting),
-            "proved": len(proved), "refuted": len(refuted), "ok": ok, "rows": rows}
+            "proved": len(proved), "refuted": len(refuted), "crashes": crashes, "ok": ok,
+            "rows": rows}
