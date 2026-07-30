@@ -12,10 +12,20 @@ explored, and each rewriting path discharged as
 The other track recovers a fold's *pattern* from source and proves an obligation about it, which
 reaches 3 of 106 fold-shaped functions in real InstCombine files and, measured, does not improve with
 vocabulary: adding the 32 most-wanted constructs unblocks ZERO further functions, because real folds
-call pass-local helpers rather than fitting a matcher template. This path has the opposite shape --
-the missing surface is shared, so each addition helps every fold at once -- and what stood between the
-shim and real source was pointer/reference parity: upstream writes `Value *A; match(&I, m_Value(A))`,
-binding POINTERS, where the shim took references.
+call pass-local helpers rather than fitting a matcher template. What stood between the shim and real
+source was pointer/reference parity: upstream writes `Value *A; match(&I, m_Value(A))`, binding
+POINTERS, where the shim took references.
+
+This path was initially expected to have the opposite shape -- shared surface, so each addition helps
+every fold at once. MEASUREMENT REFUTED THAT. Three separate batches were tried and each unblocked
+ZERO further folds: matcher vocabulary, generic construction (`BinaryOperator::Create`, `CreateBinOp`,
+`cast`, `m_ICmp`, APInt predicates), and the `Intrinsic` surface -- the single largest blocker at 68
+occurrences. Error counts fall each time (the 9+-error bucket 76 -> 67) but nothing crosses to zero,
+because a fold typically needs items from SEVERAL categories at once. Of the undeclared identifiers
+across the 101 non-compiling folds, 55% are LLVM analysis/type infrastructure (`Intrinsic`, `SQ`,
+`ConstantExpr`, pass-member helpers), 33% matcher vocabulary, and only 12% pass-local helpers -- so
+compiling whole `.cpp` files would address the smallest share. Reach here is bounded by modelling
+LLVM's analysis infrastructure soundly, which is verification work rather than plumbing.
 
 Gated here:
   * the vendored upstream source still COMPILES against the shim. If this breaks, the shim has

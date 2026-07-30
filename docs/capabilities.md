@@ -98,7 +98,12 @@ Two consequences worth knowing when reading verdicts:
   arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and
   disabling commutative matching silences only the commuted variants (so they are coverage of the
   `m_c_*` path rather than repetition). Reach
-  is **5 of 106** fold-shaped functions compiling, **4 verified**; unlike Track A's vocabulary wall, the missing
+  is **5 of 106** fold-shaped functions compiling, **4 verified**. Growing that reach is bounded by
+  LLVM's *analysis infrastructure*, not by matcher vocabulary: three shim batches (matchers, generic
+  construction, and the `Intrinsic` surface -- the largest single blocker at 68 hits) each unblocked
+  ZERO further folds, because a fold needs items from several categories at once. Of the undeclared
+  identifiers across the 101 non-compiling folds, **55% are LLVM analysis/type infrastructure, 33%
+  matcher vocabulary, 12% pass-local helpers**; unlike Track A's vocabulary wall, the missing
   surface here is *shared*, so each addition helps every fold at once.
 - **"Compiles" is an upper bound on what is modelled.** Two of these folds were silently INERT when
   first added -- one bound copies so a pointer-identity test never held, one SEGFAULTED and the crash
