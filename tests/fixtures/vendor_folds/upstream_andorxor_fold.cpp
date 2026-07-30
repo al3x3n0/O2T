@@ -174,6 +174,96 @@ int main(int argc, char **argv) {
     input = "(bvor (bvand A B) (bvxor (bvor A B) (_ bv4294967295 32)))";
     out = foldOrToXor(*I3, Builder);
   }
+  if (!strcmp(argv[1], "foldXorToXor@2")) {
+    // (A | ~B) ^ (~A | B)  ->  A ^ B
+    Value *nb = cv_node(OP_XOR, "(bvxor B (_ bv4294967295 32))", &B, cv_allones());
+    Value *na = cv_node(OP_XOR, "(bvxor A (_ bv4294967295 32))", &A, cv_allones());
+    Value *o1 = cv_node(OP_OR, "(bvor A (bvxor B (_ bv4294967295 32)))", &A, nb);
+    Value *o2 = cv_node(OP_OR, "(bvor (bvxor A (_ bv4294967295 32)) B)", na, &B);
+    Value *II = cv_node(OP_XOR, "(bvxor (bvor A (bvxor B (_ bv4294967295 32))) (bvor (bvxor A (_ bv4294967295 32)) B))", o1, o2);
+    input = "(bvxor (bvor A (bvxor B (_ bv4294967295 32))) (bvor (bvxor A (_ bv4294967295 32)) B))";
+    out = foldXorToXor(*II, Builder);
+  }
+  if (!strcmp(argv[1], "foldXorToXor@3")) {
+    // (A & ~B) ^ (~A & B)  ->  A ^ B
+    Value *nb = cv_node(OP_XOR, "(bvxor B (_ bv4294967295 32))", &B, cv_allones());
+    Value *na = cv_node(OP_XOR, "(bvxor A (_ bv4294967295 32))", &A, cv_allones());
+    Value *a1 = cv_node(OP_AND, "(bvand A (bvxor B (_ bv4294967295 32)))", &A, nb);
+    Value *a2 = cv_node(OP_AND, "(bvand (bvxor A (_ bv4294967295 32)) B)", na, &B);
+    Value *II = cv_node(OP_XOR, "(bvxor (bvand A (bvxor B (_ bv4294967295 32))) (bvand (bvxor A (_ bv4294967295 32)) B))", a1, a2);
+    input = "(bvxor (bvand A (bvxor B (_ bv4294967295 32))) (bvand (bvxor A (_ bv4294967295 32)) B))";
+    out = foldXorToXor(*II, Builder);
+  }
+  if (!strcmp(argv[1], "foldXorToXor@4")) {
+    // (A | B) ^ ~(A & B)  ->  ~(A ^ B); reached only when an operand is one-use
+    Value *o = cv_node(OP_OR, "(bvor A B)", &A, &B);
+    o->one_use = true;
+    Value *an = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *nn = cv_node(OP_XOR, "(bvxor (bvand A B) (_ bv4294967295 32))", an, cv_allones());
+    Value *II = cv_node(OP_XOR, "(bvxor (bvor A B) (bvxor (bvand A B) (_ bv4294967295 32)))", o, nn);
+    input = "(bvxor (bvor A B) (bvxor (bvand A B) (_ bv4294967295 32)))";
+    out = foldXorToXor(*II, Builder);
+  }
+  if (!strcmp(argv[1], "foldOrToXor@2")) {
+    // (A ^ B) | ~(A | B)  ->  ~(A & B)
+    Value *x = cv_node(OP_XOR, "(bvxor A B)", &A, &B);
+    x->one_use = true;
+    Value *o = cv_node(OP_OR, "(bvor A B)", &A, &B);
+    Value *nn = cv_node(OP_XOR, "(bvxor (bvor A B) (_ bv4294967295 32))", o, cv_allones());
+    Value *II = cv_node(OP_OR, "(bvor (bvxor A B) (bvxor (bvor A B) (_ bv4294967295 32)))", x, nn);
+    input = "(bvor (bvxor A B) (bvxor (bvor A B) (_ bv4294967295 32)))";
+    out = foldOrToXor(*II, Builder);
+  }
+  if (!strcmp(argv[1], "foldOrToXor@3")) {
+    // (A & ~B) | (~A & B)  ->  A ^ B
+    Value *nb = cv_node(OP_XOR, "(bvxor B (_ bv4294967295 32))", &B, cv_allones());
+    Value *na = cv_node(OP_XOR, "(bvxor A (_ bv4294967295 32))", &A, cv_allones());
+    Value *a1 = cv_node(OP_AND, "(bvand A (bvxor B (_ bv4294967295 32)))", &A, nb);
+    Value *a2 = cv_node(OP_AND, "(bvand (bvxor A (_ bv4294967295 32)) B)", na, &B);
+    Value *II = cv_node(OP_OR, "(bvor (bvand A (bvxor B (_ bv4294967295 32))) (bvand (bvxor A (_ bv4294967295 32)) B))", a1, a2);
+    input = "(bvor (bvand A (bvxor B (_ bv4294967295 32))) (bvand (bvxor A (_ bv4294967295 32)) B))";
+    out = foldOrToXor(*II, Builder);
+  }
+  if (!strcmp(argv[1], "foldNotXor@2")) {
+    // ~((A | Y) ^ (A & B))  ->  (A & B) | ~(A | Y); the second canonicalization arm
+    Value *o = cv_node(OP_OR, "(bvor A Y)", &A, &Y);
+    Value *an = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *x = cv_node(OP_XOR, "(bvxor (bvor A Y) (bvand A B))", o, an);
+    x->one_use = true;
+    Value *II = cv_node(OP_XOR, "(bvxor (bvxor (bvor A Y) (bvand A B)) (_ bv4294967295 32))", x, cv_allones());
+    input = "(bvxor (bvxor (bvor A Y) (bvand A B)) (_ bv4294967295 32))";
+    out = foldNotXor(*II, Builder);
+  }
+  if (!strcmp(argv[1], "foldXorToXor#c2")) {
+    // COMMUTED variant upstream's own comment enumerates: AND(A,B) ^ OR(B,A). These reach the same arm through
+    // the m_c_* commutative matchers; ablating commutation silences them and leaves the
+    // canonical order matching, which is what makes them coverage rather than repetition.
+    Value *fc2 = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *sc2 = cv_node(OP_OR, "(bvor B A)", &B, &A);
+    Value *Ic2 = cv_node(OP_XOR, "(bvxor (bvand A B) (bvor B A))", fc2, sc2);
+    input = "(bvxor (bvand A B) (bvor B A))";
+    out = foldXorToXor(*Ic2, Builder);
+  }
+  if (!strcmp(argv[1], "foldXorToXor#c3")) {
+    // COMMUTED variant upstream's own comment enumerates: OR(A,B) ^ AND(A,B). These reach the same arm through
+    // the m_c_* commutative matchers; ablating commutation silences them and leaves the
+    // canonical order matching, which is what makes them coverage rather than repetition.
+    Value *fc3 = cv_node(OP_OR, "(bvor A B)", &A, &B);
+    Value *sc3 = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *Ic3 = cv_node(OP_XOR, "(bvxor (bvor A B) (bvand A B))", fc3, sc3);
+    input = "(bvxor (bvor A B) (bvand A B))";
+    out = foldXorToXor(*Ic3, Builder);
+  }
+  if (!strcmp(argv[1], "foldXorToXor#c4")) {
+    // COMMUTED variant upstream's own comment enumerates: OR(A,B) ^ AND(B,A). These reach the same arm through
+    // the m_c_* commutative matchers; ablating commutation silences them and leaves the
+    // canonical order matching, which is what makes them coverage rather than repetition.
+    Value *fc4 = cv_node(OP_OR, "(bvor A B)", &A, &B);
+    Value *sc4 = cv_node(OP_AND, "(bvand B A)", &B, &A);
+    Value *Ic4 = cv_node(OP_XOR, "(bvxor (bvor A B) (bvand B A))", fc4, sc4);
+    input = "(bvxor (bvor A B) (bvand B A))";
+    out = foldXorToXor(*Ic4, Builder);
+  }
   cv_emit(input, out);
   return 0;
 }

@@ -47,6 +47,14 @@ SRC2 = VENDOR / "upstream_andorxor_fold.cpp"
 FOLD2 = "foldNotXor"
 FOLD3 = "foldXorToXor"
 FOLD4 = "foldOrToXor"
+# Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
+# separate theorems reached by different patterns, and a copy-paste slip between them is the most
+# plausible real bug -- upstream's own comments list four commuted variants per arm.
+ARMS = ("foldNotXor", "foldNotXor@2",
+        "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",
+        "foldOrToXor", "foldOrToXor@2", "foldOrToXor@3",
+        # the commuted forms upstream enumerates, which reach the same arm via m_c_*
+        "foldXorToXor#c2", "foldXorToXor#c3", "foldXorToXor#c4")
 
 
 def _clang():
@@ -144,11 +152,56 @@ def main() -> int:
     #     here were silently inert when first added -- one binding copies, one crashing -- and both
     #     looked exactly like a fold that declines. "It compiles" is an upper bound on what is
     #     modelled; requiring a rewrite on some path is what makes the count mean something.
-    for name in (FOLD2, FOLD3, FOLD4):
+    arm_proved = 0
+    for name in ARMS:
         v = R.verify_fold(z3, exe2, name)
         assert v["rewriting_paths"] >= 1, (f"{name} compiles and runs but never rewrites -- it is "
                                            "silently unmodelled, not declining", v)
         assert v["ok"] and not v["crashes"], (name, v)
+        arm_proved += v["proved"]
+    assert arm_proved == len(ARMS), (arm_proved, len(ARMS))
+
+    #     ...and the arms are genuinely DISTINCT. Three of foldXorToXor's arms all produce `A ^ B`,
+    #     so a harness that silently fell through to an earlier arm would still prove a true theorem
+    #     while overstating coverage. ABLATE arm 1: its own harness must go quiet, and arms 2 and 3
+    #     must keep rewriting. Without this, "every arm" is an unverified claim about which code ran.
+    #     COMMUTATION is load-bearing, not incidental. Ablate the swapped-operand branch of the
+    #     binary matcher: the commuted variants must go quiet while the canonical order keeps
+    #     matching. Two matcher bugs already surfaced here by executing real source, so the
+    #     commutative path gets the same treatment rather than being assumed correct.
+    hdr3 = (ROOT / "o2t" / "symexec" / "symbolic_llvm.h").read_text()
+    nocomm = hdr3.replace("      return m->commutative && cv_matchV(*v.op1, m->a) && "
+                          "cv_matchV(*v.op0, m->b);  // swapped",
+                          "      return false;  // ablated", 1)
+    assert nocomm != hdr3, "the commutative branch must be present to ablate"
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "symbolic_llvm.h").write_text(nocomm)
+        sc = Path(td) / "f.cpp"
+        sc.write_text(SRC2.read_text())
+        ob = Path(td) / "f"
+        import subprocess as _sp
+        cc = _sp.run([clang, "-std=c++17", "-I", td, str(sc), "-o", str(ob)],
+                     capture_output=True, text=True)
+        assert cc.returncode == 0, cc.stderr[:400]
+        assert R.verify_fold(z3, str(ob), FOLD3)["rewriting_paths"] >= 1, \
+            "the CANONICAL operand order must still match without commutation"
+        for cv in ("foldXorToXor#c2", "foldXorToXor#c3", "foldXorToXor#c4"):
+            assert R.verify_fold(z3, str(ob), cv)["rewriting_paths"] == 0, \
+                (f"{cv} must depend on commutative matching", cv)
+
+    ablated = SRC2.read_text().replace("  if (match(&I, m_c_Xor(m_And(",
+                                       "  if (false && match(&I, m_c_Xor(m_And(", 1)
+    assert ablated != SRC2.read_text(), "the arm-1 ablation must apply"
+    with tempfile.TemporaryDirectory() as td:
+        pa = Path(td) / "ablated.cpp"
+        pa.write_text(ablated)
+        ea = R.compile_harness(str(pa), clang=clang)
+        assert ea is not None
+        assert R.verify_fold(z3, ea, FOLD3)["rewriting_paths"] == 0, \
+            "with arm 1 ablated its own harness must stop rewriting"
+        for other in ("foldXorToXor@2", "foldXorToXor@3"):
+            assert R.verify_fold(z3, ea, other)["rewriting_paths"] >= 1, \
+                (f"{other} must reach a DIFFERENT arm, not fall through to arm 1", other)
     bad3 = SRC2.read_text().replace("    return BinaryOperator::CreateXor(A, B);\n\n  // (A | ~B)",
                                     "    return BinaryOperator::CreateXor(A, A);\n\n  // (A | ~B)", 1)
     assert bad3 != SRC2.read_text(), "the corruption must actually apply"
@@ -222,8 +275,8 @@ def main() -> int:
           f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3} and {FOLD4} from InstCombineAndOrXor.cpp) "
           f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + r2['proved'] + r3['proved'] + r4['proved']} "
-          "rewriting path(s) proved a sound refinement by z3. Corrupting any rewrite refutes with "
+          f"{r['proved'] + arm_proved} "
+          "rewriting arm(s) proved a sound refinement by z3 -- EVERY arm of the three AndOrXor folds, not merely the first of each. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "
           "a COPY of the matched node, so that test was always false and the fold silently never "

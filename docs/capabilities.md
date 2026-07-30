@@ -92,8 +92,13 @@ Two consequences worth knowing when reading verdicts:
 - **Symbolic execution of real pass C++:** four UNMODIFIED upstream LLVM 18 InstCombine folds
   (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`) are verified by
   compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
-  path. Corrupting any of the four rewrites refutes with a concrete witness. Reach is **5 of 106**
-  fold-shaped functions compiling, **4 verified**; unlike Track A's vocabulary wall, the missing
+  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirteen rewriting arms**
+  are proved -- EVERY arm of the three AndOrXor folds, not merely the first of each, plus the commuted
+  operand orders upstream's own comments enumerate. Two ablations keep those claims honest: disabling
+  arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and
+  disabling commutative matching silences only the commuted variants (so they are coverage of the
+  `m_c_*` path rather than repetition). Reach
+  is **5 of 106** fold-shaped functions compiling, **4 verified**; unlike Track A's vocabulary wall, the missing
   surface here is *shared*, so each addition helps every fold at once.
 - **"Compiles" is an upper bound on what is modelled.** Two of these folds were silently INERT when
   first added -- one bound copies so a pointer-identity test never held, one SEGFAULTED and the crash
