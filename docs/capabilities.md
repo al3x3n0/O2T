@@ -105,6 +105,7 @@ Two consequences worth knowing when reading verdicts:
   identifiers across the 101 non-compiling folds, **55% are LLVM analysis/type infrastructure, 33%
   matcher vocabulary, 12% pass-local helpers**; unlike Track A's vocabulary wall, the missing
   surface here is *shared*, so each addition helps every fold at once.
+- **An external oracle on the symexec proofs.** The shim builds BOTH the input and the output term, so z3 alone cannot catch a systematically wrong encoding -- it would prove a wrong output equal to a matching wrong input. All 13 proved arms are rendered back to LLVM IR and **confirmed by reference Alive2**, which never sees the shim. A corrupted rewrite is refuted, so the oracle can fail. It checks the *encoding*, not `undef` behaviour: both sides model parameters as definite values.
 - **"Compiles" is an upper bound on what is modelled.** Two of these folds were silently INERT when
   first added -- one bound copies so a pointer-identity test never held, one SEGFAULTED and the crash
   was swallowed -- and both looked exactly like a fold that legitimately declines. Every vendored

@@ -26,18 +26,27 @@ _CORRECT = re.compile(r"(\d+)\s+correct transformations")
 _INCORRECT = re.compile(r"(\d+)\s+incorrect transformations")
 
 
-def _classify(output: str) -> str:
-    """alive-tv stdout -> proved | refuted | skip (failed-to-prove / parse error)."""
+def _classify(output: str) -> tuple[str, str]:
+    """alive-tv stdout -> (proved | refuted | skip, detail).
+
+    `skip` covers THREE different situations, and collapsing them loses information a caller needs:
+    alive-tv could not parse the input, or it parsed and could not decide (a timeout or a query too
+    hard for it), or it was never reached at all. A caller that treats `skip` as agreement is
+    treating a NON-ANSWER as confirmation -- and Alive2 times out more readily than one expects, e.g.
+    on `(A&B)^(A|B) -> A^B` when the arguments are not `noundef`, because undef semantics quantify
+    over every use of a multiply-used argument. The detail says which kind of silence it was.
+    """
     cm, im = _CORRECT.search(output), _INCORRECT.search(output)
     if cm is None and im is None:
-        return "skip"                                 # alive-tv could not parse / crashed
+        return "skip", "unparsed"                     # alive-tv could not parse / crashed
     incorrect = int(im.group(1)) if im else 0
     correct = int(cm.group(1)) if cm else 0
     if incorrect:
-        return "refuted"                              # target does NOT refine source
+        return "refuted", "incorrect"                 # target does NOT refine source
     if correct:
-        return "proved"
-    return "skip"                                     # 0 correct, 0 incorrect -> failed-to-prove
+        return "proved", "correct"
+    detail = "timeout" if "Timeout" in output else "failed-to-prove"
+    return "skip", detail                             # 0 correct, 0 incorrect
 
 
 def alive_refines(before_ll: str, after_ll: str, alive_bin: str = "alive-tv", timeout: int = 60) -> dict:
@@ -50,8 +59,9 @@ def alive_refines(before_ll: str, after_ll: str, alive_bin: str = "alive-tv", ti
             out = subprocess.run([alive_bin, str(bf), str(af)], capture_output=True, text=True,
                                  errors="replace", timeout=timeout)
         except (OSError, subprocess.TimeoutExpired):
-            return {"status": "skip", "reason": "alive-tv unavailable or timed out"}
-    return {"status": _classify(out.stdout + out.stderr)}
+            return {"status": "skip", "detail": "unavailable", "reason": "alive-tv unavailable or timed out"}
+    status, detail = _classify(out.stdout + out.stderr)
+    return {"status": status, "detail": detail}
 
 
 def differential(z3_bin: str, alive_bin: str, before_ll: str, after_ll: str, func: str,

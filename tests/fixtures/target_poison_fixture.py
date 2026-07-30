@@ -55,13 +55,18 @@ def main() -> int:
         return 0
     alive = shutil.which("alive-tv")
 
+    answered = []
+
     def confirm(before, after, expect):
-        """Cross-check the premise against Alive2. `skip` is accepted: alive-tv reports 0 correct /
-        0 incorrect for transforms it treats as no-ops, which is a non-answer rather than a
-        disagreement."""
+        """Cross-check the premise against Alive2. A `skip` is a NON-ANSWER, not agreement -- it
+        covers a parse failure, a timeout, and a query Alive2 could not decide alike. It is accepted
+        (a non-answer cannot contradict anything) but it is COUNTED, because a run in which every
+        confirmation skipped would mean this cross-check silently verified nothing."""
         if alive:
-            got = alive_refines(before, after, alive).get("status")
+            res = alive_refines(before, after, alive)
+            got = res.get("status")
             assert got in (expect, "skip"), ("Alive2 contradicts the premise of this case", expect, got)
+            answered.append(got != "skip")
 
     # 1) LANE MODEL: adding `exact` keeps every lane value identical and makes the target poison.
     vec_b = f"define {V} @f({V} %x, {V} %y) {{\n  %s = lshr {V} %x, %y\n  %r = mul {V} %s, %s\n  ret {V} %r\n}}\n"
@@ -105,6 +110,11 @@ def main() -> int:
     #    value-equality validator that would prove the same pair.
     disp = validate_transform_ex(z3, vec_b, vec_a, "f")
     assert disp["status"] == "unsupported", ("a target-poison decline must survive dispatch", disp)
+
+    # The oracle must have actually SPOKEN at least once. Without this, a systematic Alive2 timeout
+    # would turn every `confirm` above into a no-op while the fixture still reported success.
+    assert not alive or any(answered), \
+        "every Alive2 confirmation in this fixture was a non-answer -- the cross-check verified nothing"
 
     oracle = "confirmed against reference Alive2" if alive else "Alive2 absent (skipped)"
     print("target_poison_fixture OK: 'value-equal everywhere implies refinement' is FALSE when the "

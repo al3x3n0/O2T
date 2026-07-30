@@ -910,6 +910,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/upstream_symexec_fixture.py; else echo 'upstream_symexec_fixture: z3 or clang++ not found, skipped'; fi"
     )
+    # The symexec track's own proofs are circular unless something OUTSIDE the shim checks them:
+    # the shim builds both the input and the output term, so a wrong encoding proves itself. Each
+    # proved arm is rendered back to IR and confirmed by reference Alive2. Needs clang++, z3, alive-tv.
+    add_test(
+        NAME symexec_alive_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/symexec_alive_fixture.py; else echo 'symexec_alive_fixture: toolchain not found, skipped'; fi"
+    )
     # "Value-equal everywhere implies refinement" is FALSE when the TARGET can be poison -- poison is
     # not a value. The value-equality validators (memory, lane models) had no poison term at all, and
     # `poison_risk` only ever stopped them REFUTING; nothing stopped them PROVING a transform that
