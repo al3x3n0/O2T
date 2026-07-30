@@ -93,7 +93,7 @@ equivalent to the input — with a minimized concrete counterexample on failure.
 | Value-equality validators decline rather than prove when the TARGET can be poison | `target_poison_fixture` |
 | Three UNMODIFIED upstream InstCombine folds are verified by executing their real C++ (symbolic shim, per-path discharge) | `upstream_symexec_fixture` |
 | A crashed harness, an errored discharge and a solver timeout are non-answers that block SOUND | `upstream_symexec_fixture` |
-| Every proved symexec arm is independently confirmed by reference Alive2 (the shim builds both terms, so z3 alone cannot catch a wrong encoding) | `symexec_alive_fixture` |
+| Every proved symexec arm (16, across six upstream folds) is independently confirmed by reference Alive2 (the shim builds both terms, so z3 alone cannot catch a wrong encoding) | `symexec_alive_fixture` |
 | A guard decline cannot be overturned by the dispatcher routing to another validator | `dispatcher_guard_fixture` |
 | The fuzzer audits the API's decision surface, not just `opt`'s output distribution | `synth_target_fixture` |
 | Exhaustive poison-flag coverage (every `(op, flag)` refutes on introduce / proves on remove; completeness-enforced) | `flag_matrix_fixture` |

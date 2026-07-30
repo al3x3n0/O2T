@@ -135,6 +135,34 @@ static Instruction *foldOrToXor(BinaryOperator &I,
   return nullptr;
 }
 
+
+
+static Instruction *foldAndToXor(BinaryOperator &I,
+                                 InstCombiner::BuilderTy &Builder) {
+  assert(I.getOpcode() == Instruction::And);
+  Value *Op0 = I.getOperand(0);
+  Value *Op1 = I.getOperand(1);
+  Value *A, *B;
+
+  // Operand complexity canonicalization guarantees that the 'or' is Op0.
+  // (A | B) & ~(A & B) --> A ^ B
+  // (A | B) & ~(B & A) --> A ^ B
+  if (match(&I, m_BinOp(m_Or(m_Value(A), m_Value(B)),
+                        m_Not(m_c_And(m_Deferred(A), m_Deferred(B))))))
+    return BinaryOperator::CreateXor(A, B);
+
+  // (A | ~B) & (~A | B) --> ~(A ^ B)
+  // (A | ~B) & (B | ~A) --> ~(A ^ B)
+  // (~B | A) & (~A | B) --> ~(A ^ B)
+  // (~B | A) & (B | ~A) --> ~(A ^ B)
+  if (Op0->hasOneUse() || Op1->hasOneUse())
+    if (match(&I, m_BinOp(m_c_Or(m_Value(A), m_Not(m_Value(B))),
+                          m_c_Or(m_Not(m_Deferred(A)), m_Deferred(B)))))
+      return BinaryOperator::CreateNot(Builder.CreateXor(A, B));
+
+  return nullptr;
+}
+
 // ---- harnesses: I = ~((A & B) ^ (A | D)), the shape the FIRST canonicalization arm matches.
 // `A` is deliberately shared between the and/or so `hasCommonOperand` holds -- with a distinct
 // operand the fold declines, which is itself a path worth exploring.
@@ -263,6 +291,26 @@ int main(int argc, char **argv) {
     Value *Ic4 = cv_node(OP_XOR, "(bvxor (bvor A B) (bvand B A))", fc4, sc4);
     input = "(bvxor (bvor A B) (bvand B A))";
     out = foldXorToXor(*Ic4, Builder);
+  }
+  if (!strcmp(argv[1], "foldAndToXor")) {
+    // (A | B) & ~(A & B)  ->  A ^ B, matched through m_BinOp (any binary operator)
+    Value *o = cv_node(OP_OR, "(bvor A B)", &A, &B);
+    Value *an = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *nn = cv_node(OP_XOR, "(bvxor (bvand A B) (_ bv4294967295 32))", an, cv_allones());
+    Value *IA = cv_node(OP_AND, "(bvand (bvor A B) (bvxor (bvand A B) (_ bv4294967295 32)))", o, nn);
+    input = "(bvand (bvor A B) (bvxor (bvand A B) (_ bv4294967295 32)))";
+    out = foldAndToXor(*IA, Builder);
+  }
+  if (!strcmp(argv[1], "foldAndToXor@2")) {
+    // (A | ~B) & (~A | B)  ->  ~(A ^ B); the second arm, reached only when an operand is one-use
+    Value *nb = cv_node(OP_XOR, "(bvxor B (_ bv4294967295 32))", &B, cv_allones());
+    Value *na = cv_node(OP_XOR, "(bvxor A (_ bv4294967295 32))", &A, cv_allones());
+    Value *o1 = cv_node(OP_OR, "(bvor A (bvxor B (_ bv4294967295 32)))", &A, nb);
+    o1->one_use = true;
+    Value *o2 = cv_node(OP_OR, "(bvor (bvxor A (_ bv4294967295 32)) B)", na, &B);
+    Value *IB = cv_node(OP_AND, "(bvand (bvor A (bvxor B (_ bv4294967295 32))) (bvor (bvxor A (_ bv4294967295 32)) B))", o1, o2);
+    input = "(bvand (bvor A (bvxor B (_ bv4294967295 32))) (bvor (bvxor A (_ bv4294967295 32)) B))";
+    out = foldAndToXor(*IB, Builder);
   }
   cv_emit(input, out);
   return 0;

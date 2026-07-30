@@ -12,7 +12,7 @@ shim and knows what LLVM's operators actually mean. Agreement on all arms means 
 denote the instructions it claims.
 
 Gated here:
-  * every proved arm is CONFIRMED by Alive2 (13 of them, across four upstream folds);
+  * every proved arm is CONFIRMED by Alive2 (16 of them, across six upstream folds);
   * TEETH -- a corrupted rewrite is REFUTED by Alive2, so the oracle can fail;
   * a NON-ANSWER is not agreement. `alive_refines` reports "skip" for a timeout, and rendering these
     without `noundef` makes Alive2 quantify over every use of a multiply-used argument -- which times
@@ -41,10 +41,13 @@ from o2t.validate.alive_diff import alive_refines  # noqa: E402
 VENDOR = ROOT / "tests" / "fixtures" / "vendor_folds"
 ADDSUB = VENDOR / "upstream_addsub_fold.cpp"
 ANDORXOR = VENDOR / "upstream_andorxor_fold.cpp"
+MASKEDICMP = VENDOR / "upstream_maskedicmp_fold.cpp"
+MASKED_ARM = "foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed"
 ANDORXOR_ARMS = ("foldNotXor", "foldNotXor@2",
                  "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",
                  "foldOrToXor", "foldOrToXor@2", "foldOrToXor@3",
-                 "foldXorToXor#c2", "foldXorToXor#c3", "foldXorToXor#c4")
+                 "foldXorToXor#c2", "foldXorToXor#c3", "foldXorToXor#c4",
+                 "foldAndToXor", "foldAndToXor@2")
 
 
 def _clang():
@@ -70,7 +73,10 @@ def main() -> int:
     exe1 = R.compile_harness(str(ADDSUB), clang=clang)
     exe2 = R.compile_harness(str(ANDORXOR), clang=clang)
     assert exe1 and exe2, "the vendored upstream folds must compile against the shim"
-    arms = [(exe1, "combineAddSubWithShlAddSub")] + [(exe2, a) for a in ANDORXOR_ARMS]
+    exe3 = R.compile_harness(str(MASKEDICMP), clang=clang)
+    assert exe3, "the vendored masked-icmp fold must compile against the shim"
+    arms = ([(exe1, "combineAddSubWithShlAddSub")] + [(exe2, a) for a in ANDORXOR_ARMS] +
+            [(exe3, MASKED_ARM)])
 
     # 1) EVERY proved arm is independently confirmed.
     confirmed = 0

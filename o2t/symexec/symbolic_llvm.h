@@ -25,7 +25,7 @@
   std::abort();
 }
 
-enum CvOpcode { OP_OTHER, OP_ADD, OP_SUB, OP_MUL, OP_AND, OP_OR, OP_XOR,
+enum CvOpcode { OP_OTHER, OP_ICMP, OP_ADD, OP_SUB, OP_MUL, OP_AND, OP_OR, OP_XOR,
                 OP_SHL, OP_LSHR, OP_ASHR, OP_UDIV, OP_SDIV, OP_UREM, OP_SREM };
 
 enum CVPredicate { ICMP_EQ, ICMP_NE, ICMP_ULT, ICMP_ULE, ICMP_UGT, ICMP_UGE,
@@ -129,6 +129,12 @@ inline std::string cv_orp(const std::string &p, const std::string &q) {
 }
 
 // --- IRBuilder: each create-call returns the symbolic term of the built instruction ----------
+// forward declarations: IRBuilder and ConstantInt are defined before `Type`, and icmp needs both.
+struct Type;
+struct APInt;
+inline Type *cv_i1();
+inline std::string cv_icmp_term(CVPredicate p, const std::string &a, const std::string &b);
+
 struct IRBuilder {
   // upstream passes and receives `Value *`; these forward to the by-value forms below.
   Value *CreateAShr(Value *a, Value *b) { return cv_keep(CreateAShr(*a, *b)); }
@@ -171,6 +177,17 @@ struct IRBuilder {
   Value *CreateXor(Value *a, Value b)  { return cv_keep(CreateXor(*a, b)); }
   Value *CreateXor(Value a, Value *b)  { return cv_keep(CreateXor(a, *b)); }
 
+  // icmp yields a ONE-BIT term, so it composes with CreateSelect's `(= c (_ bv1 1))` test rather
+  // than being conflated with the i32 default -- comparing a 1-bit term to a 32-bit one is exactly
+  // the kind of silent mismatch this shim has to avoid.
+  Value *CreateICmp(CVPredicate p, Value *a, Value *b, const std::string & = "") {
+    Value *r = cv_keep(Value{cv_icmp_term(p, a->t, b->t)});
+    r->opcode = OP_ICMP; r->pred = p; r->op0 = a; r->op1 = b; r->ty = cv_i1();
+    return r;
+  }
+  Value *CreateIsNotNull(Value *a, const std::string & = "") {
+    return CreateICmp(::ICMP_NE, a, cv_keep(Value{"(_ bv0 32)"}));
+  }
   Value *CreateNot(Value *v, const std::string & = "") { return cv_keep(Value{"(bvnot " + v->t + ")"}); }
   Value CreateNot(Value v) { return {"(bvnot " + v.t + ")"}; }
   Value CreateAnd(Value a, Value b) { return {"(bvand " + a.t + " " + b.t + ")"}; }
@@ -229,6 +246,10 @@ struct IRBuilder {
 /* ConstantInt::get(...) -- the real LLVM constant factory; the result `isa<ConstantInt>`. */
 struct ConstantInt {
   static Value get(unsigned long v) { Value r = cv_bv(v); r.is_const = true; return r; }
+  static Value *get(Type *ty, const APInt &a);
+  static Value *get(Type *ty, unsigned long n);
+  static Value *getNullValue(Type *ty);
+  static Value *getAllOnesValue(Type *ty);
 };
 typedef Value BinaryOperator;                     /* a fold's `BinaryOperator &I` is a Value */
 
@@ -248,6 +269,8 @@ struct Type {
   Type *getScalarType() { return this; }
 };
 static Type CV_I32;
+static Type CV_I1{1};
+inline Type *cv_i1() { return &CV_I1; }
 inline Value *cv_allones() { return cv_keep(Value{"(_ bv4294967295 32)"}); }
 inline Type *Value::getType() { return ty ? ty : &CV_I32; }
 inline Value *Value::CreateAShr(Value *a, Value *b) { return cv_keep(Value{"(bvashr " + a->t + " " + b->t + ")"}); }
@@ -289,6 +312,23 @@ struct APInt {
   bool isAllOnes() const { return v == 0xFFFFFFFFul; }
   unsigned getBitWidth() const { return bits; }
   unsigned long getZExtValue() const { return v; }
+  // Mask arithmetic real folds do on CONSTANT operands. Host-side values, so this is exact integer
+  // arithmetic rather than an approximation -- but the WIDTH is carried, because `~C` and
+  // isPowerOf2 both depend on it and a 64-bit complement of a 32-bit mask is a different number.
+  static unsigned long _mask(unsigned n) { return n >= 64 ? ~0ul : ((1ul << n) - 1ul); }
+  APInt operator&(const APInt &o) const { APInt r = *this; r.v &= o.v; return r; }
+  APInt operator|(const APInt &o) const { APInt r = *this; r.v |= o.v; return r; }
+  APInt operator^(const APInt &o) const { APInt r = *this; r.v ^= o.v; return r; }
+  APInt &operator&=(const APInt &o) { v &= o.v; return *this; }
+  APInt &operator^=(const APInt &o) { v ^= o.v; return *this; }
+  APInt operator~() const { APInt r = *this; r.v = (~v) & _mask(bits); return r; }
+  bool operator==(const APInt &o) const { return v == o.v; }
+  bool operator!=(const APInt &o) const { return v != o.v; }
+  bool operator==(unsigned long n) const { return v == n; }
+  bool operator!=(unsigned long n) const { return v != n; }
+  bool isPowerOf2() const { return v != 0 && (v & (v - 1)) == 0; }
+  bool ult(const APInt &o) const { return v < o.v; }
+  bool isNegative() const { return bits && bits < 64 && ((v >> (bits - 1)) & 1); }
   // getMaxValue(n) is the all-ones value OF WIDTH n (2^n - 1), which is how folds build half-width
   // masks; getMinValue is 0. Widths >= 64 would overflow the host word, so they are refused rather
   // than silently truncated -- a wrong mask would silently weaken every obligation built from it.
@@ -299,6 +339,49 @@ struct APInt {
   static APInt getMinValue(unsigned n) { APInt a; a.bits = n; a.v = 0; return a; }
   static APInt getAllOnes(unsigned n) { return getMaxValue(n); }
 };
+
+// `m_APInt(C)` binds the matched constant's VALUE, and until a fold actually used it the binding
+// was never written -- the matcher recorded where to store and then stored nothing, leaving the
+// caller's `const APInt *` uninitialised. The first fold to dereference one segfaulted on all 16
+// paths. Constants live in an arena so the bound pointer stays valid for the fold's lifetime.
+static APInt CV_APARENA[64];
+static int CV_APPOS;
+inline const APInt *cv_apint_of(const Value &v) {
+  // the shim's only constant spelling is "(_ bvN W)"; anything else FAILS the match rather than
+  // being guessed at, since a wrong constant would silently change the obligation.
+  if (v.t.compare(0, 5, "(_ bv") != 0) return nullptr;
+  size_t sp = v.t.find(' ', 5);
+  if (sp == std::string::npos) return nullptr;
+  APInt *a = &CV_APARENA[(CV_APPOS++) % 64];
+  a->v = std::strtoul(v.t.c_str() + 5, nullptr, 10);
+  a->bits = std::strtoul(v.t.c_str() + sp + 1, nullptr, 10);
+  return a;
+}
+
+inline Value *ConstantInt::get(Type *ty, const APInt &a) {
+  unsigned w = ty ? ty->bits : 32;
+  Value *v = cv_keep(Value{"(_ bv" + std::to_string(a.v & APInt::_mask(w)) + " " + std::to_string(w) + ")"});
+  v->is_const = true; v->ty = ty; return v;
+}
+inline Value *ConstantInt::get(Type *ty, unsigned long n) {
+  APInt a; a.v = n; a.bits = ty ? ty->bits : 32; return get(ty, a);
+}
+inline Value *ConstantInt::getNullValue(Type *ty)    { return get(ty, 0ul); }
+inline Value *ConstantInt::getAllOnesValue(Type *ty) { return get(ty, APInt::_mask(ty ? ty->bits : 32)); }
+inline std::string cv_icmp_term(CVPredicate p, const std::string &a, const std::string &b) {
+  const char *op = nullptr;
+  switch (p) {
+    case ::ICMP_EQ:  return "(ite (= " + a + " " + b + ") (_ bv1 1) (_ bv0 1))";
+    case ::ICMP_NE:  return "(ite (= " + a + " " + b + ") (_ bv0 1) (_ bv1 1))";
+    case ::ICMP_ULT: op = "bvult"; break;   case ::ICMP_ULE: op = "bvule"; break;
+    case ::ICMP_UGT: op = "bvugt"; break;   case ::ICMP_UGE: op = "bvuge"; break;
+    case ::ICMP_SLT: op = "bvslt"; break;   case ::ICMP_SLE: op = "bvsle"; break;
+    case ::ICMP_SGT: op = "bvsgt"; break;   case ::ICMP_SGE: op = "bvsge"; break;
+    default: cv_unsupported("icmp predicate not modelled");   // never guess a comparison
+  }
+  return "(ite (" + std::string(op) + " " + a + " " + b + ") (_ bv1 1) (_ bv0 1))";
+}
+
 
 // The pass class an upstream fold is a member of. `Builder` is the shim's symbolic IRBuilder, so a
 // verbatim `Builder.CreateXor(...)` in real source builds a symbolic term exactly as the fold does.
@@ -416,7 +499,7 @@ inline Value cv_logBase2(Value /*C*/) {
 // a static pool so nested `m_*(...)` calls stay valid through the match.
 
 enum CvMKind { MK_VALUE, MK_SPECIFIC, MK_CONSTANT, MK_ZERO, MK_ONE, MK_ALLONES, MK_BINOP,
-               MK_COMBINEAND, MK_DEFERRED,
+               MK_COMBINEAND, MK_DEFERRED, MK_ANYBINOP,
                MK_SPECIFICINT, MK_ONEUSE, MK_COMBINEOR };
 struct Matcher {
   int kind, opcode;
@@ -444,6 +527,16 @@ inline Matcher *m_Zero()                 { return cv_m(MK_ZERO); }
 inline Matcher *m_One()                  { return cv_m(MK_ONE); }
 inline Matcher *m_AllOnes()              { return cv_m(MK_ALLONES); }
 inline Matcher *m_SpecificInt(unsigned long n) { Matcher *m = cv_m(MK_SPECIFICINT); m->imm = n; return m; }
+// m_BinOp(LHS, RHS) matches ANY binary operator whose operands match -- upstream uses it where the
+// opcode is already fixed by the caller (foldAndToXor asserts `I` is an `and`), so constraining the
+// opcode here would be stricter than the real matcher and would silently skip the arm. `icmp` is
+// deliberately NOT a BinaryOperator in LLVM and is excluded here for the same reason.
+inline Matcher *m_BinOp(Matcher *a, Matcher *b) {
+  Matcher *m = cv_m(MK_ANYBINOP); m->a = a; m->b = b; return m;
+}
+inline Matcher *m_c_BinOp(Matcher *a, Matcher *b) {
+  Matcher *m = cv_m(MK_ANYBINOP); m->a = a; m->b = b; m->commutative = true; return m;
+}
 inline Matcher *m_OneUse(Matcher *inner) { Matcher *m = cv_m(MK_ONEUSE); m->a = inner; return m; }
 // m_CombineAnd(P, Q): the value must satisfy BOTH sub-patterns -- upstream uses it to capture a
 // node (m_Value) while ALSO constraining its shape in the same position.
@@ -509,6 +602,11 @@ static bool cv_matchV(const Value &v, Matcher *m) {
       return true;
     case MK_CONSTANT:                                    // a ConstantInt
       if (!v.is_const) return false;
+      if (m->apint) {                                    // m_APInt: bind the VALUE, not just the node
+        const APInt *a = cv_apint_of(v);
+        if (!a) return false;                            // unrecognised constant spelling -> no match
+        *m->apint = a;
+      }
       if (m->capp) { *m->capp = cv_keep(v); } else if (m->cap) { *m->cap = v; }
       return true;
     case MK_SPECIFIC: return m->specific && v.t == m->specific->t;   // the same value (by term)
@@ -521,6 +619,10 @@ static bool cv_matchV(const Value &v, Matcher *m) {
     case MK_ONEUSE:   return v.one_use && cv_matchV(v, m->a);   // single-use profitability guard
     case MK_COMBINEOR: return cv_matchV(v, m->a) || cv_matchV(v, m->b);  // either pattern
     case MK_COMBINEAND: return cv_matchV(v, m->a) && cv_matchV(v, m->b);  // both patterns
+    case MK_ANYBINOP:                                    // any BinaryOperator, operands must match
+      if (v.opcode == OP_OTHER || v.opcode == OP_ICMP || !v.op0 || !v.op1) return false;
+      if (cv_matchV(*v.op0, m->a) && cv_matchV(*v.op1, m->b)) return true;
+      return m->commutative && cv_matchV(*v.op1, m->a) && cv_matchV(*v.op0, m->b);
     case MK_BINOP:
       if (v.opcode != m->opcode || !v.op0 || !v.op1) return false;
       if (cv_matchV(*v.op0, m->a) && cv_matchV(*v.op1, m->b)) return true;

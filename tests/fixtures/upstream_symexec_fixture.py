@@ -57,6 +57,11 @@ SRC2 = VENDOR / "upstream_andorxor_fold.cpp"
 FOLD2 = "foldNotXor"
 FOLD3 = "foldXorToXor"
 FOLD4 = "foldOrToXor"
+FOLD5 = "foldAndToXor"
+# The first fold here that reasons about ICMP and CONSTANT MASKS rather than pure boolean algebra:
+# it exercises the shim's i1 modelling, APInt mask arithmetic and ConstantInt.
+MASKEDICMP = VENDOR / "upstream_maskedicmp_fold.cpp"
+FOLD6 = "foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed"
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
 # separate theorems reached by different patterns, and a copy-paste slip between them is the most
 # plausible real bug -- upstream's own comments list four commuted variants per arm.
@@ -64,7 +69,9 @@ ARMS = ("foldNotXor", "foldNotXor@2",
         "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",
         "foldOrToXor", "foldOrToXor@2", "foldOrToXor@3",
         # the commuted forms upstream enumerates, which reach the same arm via m_c_*
-        "foldXorToXor#c2", "foldXorToXor#c3", "foldXorToXor#c4")
+        "foldXorToXor#c2", "foldXorToXor#c3", "foldXorToXor#c4",
+        # foldAndToXor, reached through m_BinOp (any binary operator)
+        "foldAndToXor", "foldAndToXor@2")
 
 
 def _clang():
@@ -257,6 +264,27 @@ def main() -> int:
                                 "used to look identical to a fold that declines", rr2)
         assert not rr2["ok"], rr2
 
+    # 4c) A SIXTH fold, of a different KIND: constant-mask reasoning over icmps, which is where the
+    #     analysis-infrastructure work begins. `m_APInt` had recorded where to store a matched
+    #     constant and then stored NOTHING, so the first fold to dereference one segfaulted on all
+    #     16 paths -- surfaced as crashes rather than as a quiet "declines", because that was fixed
+    #     earlier. The verified result is upstream's own worked example from the comment above the
+    #     arm: (icmp ne (A & 12), 0) & (icmp eq (A & 7), 1)  ->  (icmp eq (A & 15), 9).
+    exe6 = R.compile_harness(str(MASKEDICMP), clang=clang)
+    assert exe6 is not None, "the vendored masked-icmp fold must compile against the shim"
+    r6 = R.verify_fold(z3, exe6, FOLD6)
+    assert r6["ok"] and not r6["crashes"] and r6["proved"] == r6["rewriting_paths"] >= 1, r6
+
+    #     TEETH: perturb the folded constant and the same machinery must refute it.
+    bad6 = MASKEDICMP.read_text().replace("(*BCst & (*BCst ^ *DCst)) | ECst",
+                                          "(*BCst & (*BCst ^ *DCst)) | ECst | *DCst", 1)
+    if bad6 != MASKEDICMP.read_text():
+        with tempfile.TemporaryDirectory() as td:
+            p6 = Path(td) / "c6.cpp"
+            p6.write_text(bad6)
+            rb6 = R.verify_fold(z3, R.compile_harness(str(p6), clang=clang), FOLD6)
+            assert rb6["refuted"] >= 1 and not rb6["ok"], rb6
+
     # 5) A SOLVER TIMEOUT is a non-answer too, and it must be BOUNDED. Real folds carry obligations a
     #    bit-blasting solver cannot settle -- `foldBoxMultiply` reassociates a 32x32 multiply, and
     #    with no bound z3 ran indefinitely and hung the whole run rather than reporting anything. The
@@ -281,11 +309,12 @@ def main() -> int:
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: FOUR UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
-          f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3} and {FOLD4} from InstCombineAndOrXor.cpp) "
+    print(f"upstream_symexec_fixture OK: SIX UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+          f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3}, {FOLD4} and {FOLD5} from "
+          f"InstCombineAndOrXor.cpp) "
           f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + arm_proved} "
+          f"{r['proved'] + arm_proved + r6['proved']} "
           "rewriting arm(s) proved a sound refinement by z3 -- EVERY arm of the three AndOrXor folds, not merely the first of each. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "

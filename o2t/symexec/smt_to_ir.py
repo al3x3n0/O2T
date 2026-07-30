@@ -51,9 +51,20 @@ def parse_term(term: str):
     return node
 
 
+_CMP = {"=": "eq", "bvult": "ult", "bvule": "ule", "bvugt": "ugt", "bvuge": "uge",
+        "bvslt": "slt", "bvsle": "sle", "bvsgt": "sgt", "bvsge": "sge"}
+
+
 class _Emitter:
-    def __init__(self, width: int):
-        self.width = width
+    """Emits IR and tracks each value's WIDTH.
+
+    Width is not bookkeeping: once icmp is modelled, terms mix i1 and i32, and an emitter that
+    assumed one width would render `and i1 %c1, %c2` as an i32 `and` -- valid-looking IR denoting a
+    different program, which is precisely the class of error this renderer exists to detect.
+    """
+
+    def __init__(self, default_width: int):
+        self.default_width = default_width
         self.lines: list[str] = []
         self.n = 0
         self.vars: set[str] = set()
@@ -62,40 +73,59 @@ class _Emitter:
         self.n += 1
         return f"%t{self.n}"
 
-    def emit(self, node) -> str:
-        """Emit instructions for `node`; return the operand string naming its value."""
-        ty = f"i{self.width}"
+    def emit(self, node) -> tuple[str, int]:
+        """Emit instructions for `node`; return (operand, width)."""
         if isinstance(node, str):
-            if node.startswith("#b"):                      # i1 literal
-                return str(int(node[2:], 2))
+            if node.startswith("#b"):
+                return str(int(node[2:], 2)), 1
             self.vars.add(node)
-            return f"%{node}"
+            return f"%{node}", self.default_width
         if not node:
             raise UntranslatableTerm("empty term")
         head = node[0]
-        # (_ bvN W) -- a bit-vector constant
         if head == "_" and len(node) == 3 and str(node[1]).startswith("bv"):
-            return str(int(str(node[1])[2:]))
+            return str(int(str(node[1])[2:])), int(node[2])          # (_ bvN W)
         if head in _BIN and len(node) == 3:
-            a, b = self.emit(node[1]), self.emit(node[2])
+            (a, wa), (b, wb) = self.emit(node[1]), self.emit(node[2])
+            if wa != wb:
+                raise UntranslatableTerm(f"width mismatch in {head}: i{wa} vs i{wb}")
             r = self._fresh()
-            self.lines.append(f"  {r} = {_BIN[head]} {ty} {a}, {b}")
-            return r
-        if head == "bvnot" and len(node) == 2:             # ~x  ==  xor x, -1
-            a = self.emit(node[1])
+            self.lines.append(f"  {r} = {_BIN[head]} i{wa} {a}, {b}")
+            return r, wa
+        if head in _CMP and len(node) == 3:
+            (a, wa), (b, wb) = self.emit(node[1]), self.emit(node[2])
+            if wa != wb:
+                raise UntranslatableTerm(f"width mismatch in {head}: i{wa} vs i{wb}")
             r = self._fresh()
-            self.lines.append(f"  {r} = xor {ty} {a}, -1")
-            return r
-        if head == "bvneg" and len(node) == 2:             # -x  ==  sub 0, x
-            a = self.emit(node[1])
+            self.lines.append(f"  {r} = icmp {_CMP[head]} i{wa} {a}, {b}")
+            return r, 1                                              # a comparison yields i1
+        if head == "bvnot" and len(node) == 2:
+            a, w = self.emit(node[1])
             r = self._fresh()
-            self.lines.append(f"  {r} = sub {ty} 0, {a}")
-            return r
+            self.lines.append(f"  {r} = xor i{w} {a}, -1")
+            return r, w
+        if head == "bvneg" and len(node) == 2:
+            a, w = self.emit(node[1])
+            r = self._fresh()
+            self.lines.append(f"  {r} = sub i{w} 0, {a}")
+            return r, w
+        if head == "not" and len(node) == 2:                         # SMT Bool negation
+            a, w = self.emit(node[1])
+            if w != 1:
+                raise UntranslatableTerm("`not` applied to a non-i1 term")
+            r = self._fresh()
+            self.lines.append(f"  {r} = xor i1 {a}, true")
+            return r, 1
         if head == "ite" and len(node) == 4:
-            c, t, f = self.emit(node[1]), self.emit(node[2]), self.emit(node[3])
+            c, wc = self.emit(node[1])
+            (x, wx), (y, wy) = self.emit(node[2]), self.emit(node[3])
+            if wc != 1:
+                raise UntranslatableTerm(f"select condition is i{wc}, not i1")
+            if wx != wy:
+                raise UntranslatableTerm(f"select arms differ: i{wx} vs i{wy}")
             r = self._fresh()
-            self.lines.append(f"  {r} = select i1 {c}, {ty} {t}, {ty} {f}")
-            return r
+            self.lines.append(f"  {r} = select i1 {c}, i{wx} {x}, i{wx} {y}")
+            return r, wx
         raise UntranslatableTerm(f"unmodelled term head {head!r}")
 
 
@@ -103,10 +133,13 @@ def render_pair(src_term: str, tgt_term: str, width: int = 32, fname: str = "f")
     """Both terms as IR functions over the SAME parameter list, ready for alive-tv.
 
     The shared signature matters: Alive2 compares src and tgt argument-for-argument, so a parameter
-    appearing in only one of them must still be declared in both.
+    appearing in only one of them must still be declared in both. The RETURN type comes from the
+    terms themselves -- an icmp-rooted fold returns i1, not i32.
     """
     a, b = _Emitter(width), _Emitter(width)
-    ra, rb = a.emit(parse_term(src_term)), b.emit(parse_term(tgt_term))
+    (ra, wa), (rb, wb) = a.emit(parse_term(src_term)), b.emit(parse_term(tgt_term))
+    if wa != wb:
+        raise UntranslatableTerm(f"src returns i{wa} but tgt returns i{wb}")
     params = sorted(a.vars | b.vars)
     ty = f"i{width}"
     # `noundef` is NOT a convenience here, it is what the shim actually models: a symbolic Value is
@@ -119,10 +152,11 @@ def render_pair(src_term: str, tgt_term: str, width: int = 32, fname: str = "f")
     # unsoundness, because neither side models undef. It checks the ENCODING -- that the shim's SMT
     # terms mean what LLVM's operators mean -- which is the circle worth breaking.
     sig = ", ".join(f"{ty} noundef %{p}" for p in params)
+    rty = f"i{wa}"
 
     def fn(em, ret):
         body = "\n".join(em.lines)
-        return (f"define {ty} @{fname}({sig}) {{\n" + (body + "\n" if body else "") +
-                f"  ret {ty} {ret}\n}}\n")
+        return (f"define {rty} @{fname}({sig}) {{\n" + (body + "\n" if body else "") +
+                f"  ret {rty} {ret}\n}}\n")
 
     return fn(a, ra), fn(b, rb)

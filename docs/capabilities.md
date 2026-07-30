@@ -89,23 +89,26 @@ Two consequences worth knowing when reading verdicts:
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
   boundary declines rather than guesses.
 
-- **Symbolic execution of real pass C++:** four UNMODIFIED upstream LLVM 18 InstCombine folds
-  (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`) are verified by
+- **Symbolic execution of real pass C++:** six UNMODIFIED upstream LLVM 18 InstCombine folds
+  (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`, `foldAndToXor`,
+  `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`) are verified by
   compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
-  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirteen rewriting arms**
+  path. Corrupting any of the four rewrites refutes with a concrete witness. **Sixteen rewriting arms**
   are proved -- EVERY arm of the three AndOrXor folds, not merely the first of each, plus the commuted
   operand orders upstream's own comments enumerate. Two ablations keep those claims honest: disabling
   arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and
   disabling commutative matching silences only the commuted variants (so they are coverage of the
   `m_c_*` path rather than repetition). Reach
-  is **5 of 106** fold-shaped functions compiling, **4 verified**. Growing that reach is bounded by
-  LLVM's *analysis infrastructure*, not by matcher vocabulary: three shim batches (matchers, generic
+  is **7 of 106** fold-shaped functions compiling, **6 verified**. Growing that reach means modelling LLVM's *analysis
+  infrastructure* -- the first instalment (icmp/i1, APInt mask arithmetic, `ConstantInt`) bought
+  the masked-icmp fold, which reasons about constant masks rather than pure boolean algebra. It is
+  not matcher vocabulary: three shim batches (matchers, generic
   construction, and the `Intrinsic` surface -- the largest single blocker at 68 hits) each unblocked
   ZERO further folds, because a fold needs items from several categories at once. Of the undeclared
   identifiers across the 101 non-compiling folds, **55% are LLVM analysis/type infrastructure, 33%
   matcher vocabulary, 12% pass-local helpers**; unlike Track A's vocabulary wall, the missing
   surface here is *shared*, so each addition helps every fold at once.
-- **An external oracle on the symexec proofs.** The shim builds BOTH the input and the output term, so z3 alone cannot catch a systematically wrong encoding -- it would prove a wrong output equal to a matching wrong input. All 13 proved arms are rendered back to LLVM IR and **confirmed by reference Alive2**, which never sees the shim. A corrupted rewrite is refuted, so the oracle can fail. It checks the *encoding*, not `undef` behaviour: both sides model parameters as definite values.
+- **An external oracle on the symexec proofs.** The shim builds BOTH the input and the output term, so z3 alone cannot catch a systematically wrong encoding -- it would prove a wrong output equal to a matching wrong input. All 16 proved arms are rendered back to LLVM IR and **confirmed by reference Alive2**, which never sees the shim. A corrupted rewrite is refuted, so the oracle can fail. It checks the *encoding*, not `undef` behaviour: both sides model parameters as definite values.
 - **"Compiles" is an upper bound on what is modelled.** Two of these folds were silently INERT when
   first added -- one bound copies so a pointer-identity test never held, one SEGFAULTED and the crash
   was swallowed -- and both looked exactly like a fold that legitimately declines. Every vendored
