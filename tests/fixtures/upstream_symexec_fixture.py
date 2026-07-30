@@ -46,6 +46,7 @@ FOLD = "combineAddSubWithShlAddSub"
 SRC2 = VENDOR / "upstream_andorxor_fold.cpp"
 FOLD2 = "foldNotXor"
 FOLD3 = "foldXorToXor"
+FOLD4 = "foldOrToXor"
 
 
 def _clang():
@@ -135,7 +136,19 @@ def main() -> int:
     # 4b) A THIRD unmodified fold, `foldXorToXor`, whose canonical shape `(A & B) ^ (A | B)` uses
     #     `m_Deferred` to re-match an operand bound earlier in the SAME pattern.
     r3 = R.verify_fold(z3, exe2, FOLD3)
+    r4 = R.verify_fold(z3, exe2, FOLD4)
+    assert r4["ok"] and r4["proved"] == r4["rewriting_paths"] >= 1, r4
     assert r3["ok"] and r3["proved"] == r3["rewriting_paths"] >= 1, r3
+
+    #     EVERY vendored fold must actually REWRITE, not merely compile and run. Two of the folds
+    #     here were silently inert when first added -- one binding copies, one crashing -- and both
+    #     looked exactly like a fold that declines. "It compiles" is an upper bound on what is
+    #     modelled; requiring a rewrite on some path is what makes the count mean something.
+    for name in (FOLD2, FOLD3, FOLD4):
+        v = R.verify_fold(z3, exe2, name)
+        assert v["rewriting_paths"] >= 1, (f"{name} compiles and runs but never rewrites -- it is "
+                                           "silently unmodelled, not declining", v)
+        assert v["ok"] and not v["crashes"], (name, v)
     bad3 = SRC2.read_text().replace("    return BinaryOperator::CreateXor(A, B);\n\n  // (A | ~B)",
                                     "    return BinaryOperator::CreateXor(A, A);\n\n  // (A | ~B)", 1)
     assert bad3 != SRC2.read_text(), "the corruption must actually apply"
@@ -144,6 +157,17 @@ def main() -> int:
         p.write_text(bad3)
         rb3 = R.verify_fold(z3, R.compile_harness(str(p), clang=clang), FOLD3)
         assert rb3["refuted"] >= 1 and not rb3["ok"], rb3
+
+    #     TEETH for the fourth: `~(A ^ B)` and `~(A & B)` are the two arms' results; swapping the
+    #     first arm's to the second's is a plausible copy-paste slip and must refute.
+    bad4 = SRC2.read_text().replace("      return BinaryOperator::CreateNot(Builder.CreateXor(A, B));",
+                                    "      return BinaryOperator::CreateNot(Builder.CreateAnd(A, B));", 1)
+    assert bad4 != SRC2.read_text(), "the corruption must actually apply"
+    with tempfile.TemporaryDirectory() as td:
+        p4 = Path(td) / "c4.cpp"
+        p4.write_text(bad4)
+        rb4 = R.verify_fold(z3, R.compile_harness(str(p4), clang=clang), FOLD4)
+        assert rb4["refuted"] >= 1 and not rb4["ok"], rb4
 
     #     ACID TEST, and the sharper one. `m_Deferred` must read its binding at MATCH time; the shim
     #     snapshotted it when the matcher tree was BUILT, which is before anything is bound, so the
@@ -194,10 +218,11 @@ def main() -> int:
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: THREE UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
-          f"from InstCombineAddSub.cpp, {FOLD2} and {FOLD3} from InstCombineAndOrXor.cpp) are "
+    print(f"upstream_symexec_fixture OK: FOUR UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+          f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3} and {FOLD4} from InstCombineAndOrXor.cpp) "
+          f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + r2['proved'] + r3['proved']} "
+          f"{r['proved'] + r2['proved'] + r3['proved'] + r4['proved']} "
           "rewriting path(s) proved a sound refinement by z3. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "

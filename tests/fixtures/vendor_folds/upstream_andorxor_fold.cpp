@@ -99,6 +99,42 @@ static Instruction *foldXorToXor(BinaryOperator &I,
   return nullptr;
 }
 
+
+
+static Instruction *foldOrToXor(BinaryOperator &I,
+                                InstCombiner::BuilderTy &Builder) {
+  assert(I.getOpcode() == Instruction::Or);
+  Value *Op0 = I.getOperand(0);
+  Value *Op1 = I.getOperand(1);
+  Value *A, *B;
+
+  // Operand complexity canonicalization guarantees that the 'and' is Op0.
+  // (A & B) | ~(A | B) --> ~(A ^ B)
+  // (A & B) | ~(B | A) --> ~(A ^ B)
+  if (Op0->hasOneUse() || Op1->hasOneUse())
+    if (match(Op0, m_And(m_Value(A), m_Value(B))) &&
+        match(Op1, m_Not(m_c_Or(m_Specific(A), m_Specific(B)))))
+      return BinaryOperator::CreateNot(Builder.CreateXor(A, B));
+
+  // Operand complexity canonicalization guarantees that the 'xor' is Op0.
+  // (A ^ B) | ~(A | B) --> ~(A & B)
+  // (A ^ B) | ~(B | A) --> ~(A & B)
+  if (Op0->hasOneUse() || Op1->hasOneUse())
+    if (match(Op0, m_Xor(m_Value(A), m_Value(B))) &&
+        match(Op1, m_Not(m_c_Or(m_Specific(A), m_Specific(B)))))
+      return BinaryOperator::CreateNot(Builder.CreateAnd(A, B));
+
+  // (A & ~B) | (~A & B) --> A ^ B
+  // (A & ~B) | (B & ~A) --> A ^ B
+  // (~B & A) | (~A & B) --> A ^ B
+  // (~B & A) | (B & ~A) --> A ^ B
+  if (match(Op0, m_c_And(m_Value(A), m_Not(m_Value(B)))) &&
+      match(Op1, m_c_And(m_Not(m_Specific(A)), m_Specific(B))))
+    return BinaryOperator::CreateXor(A, B);
+
+  return nullptr;
+}
+
 // ---- harnesses: I = ~((A & B) ^ (A | D)), the shape the FIRST canonicalization arm matches.
 // `A` is deliberately shared between the and/or so `hasCommonOperand` holds -- with a distinct
 // operand the fold declines, which is itself a path worth exploring.
@@ -127,6 +163,16 @@ int main(int argc, char **argv) {
     Value *I2  = cv_node(OP_XOR, "(bvxor (bvand A B) (bvor A B))", an, orr);
     input = "(bvxor (bvand A B) (bvor A B))";
     out = foldXorToXor(*I2, Builder);
+  }
+  if (!strcmp(argv[1], "foldOrToXor")) {
+    // (A & B) | ~(A | B)  ->  ~(A ^ B). Both sides are XNOR, reached by different routes.
+    Value *an3  = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    an3->one_use = true;
+    Value *or3  = cv_node(OP_OR,  "(bvor A B)",  &A, &B);
+    Value *not3 = cv_node(OP_XOR, "(bvxor (bvor A B) (_ bv4294967295 32))", or3, cv_allones());
+    Value *I3   = cv_node(OP_OR, "(bvor (bvand A B) (bvxor (bvor A B) (_ bv4294967295 32)))", an3, not3);
+    input = "(bvor (bvand A B) (bvxor (bvor A B) (_ bv4294967295 32)))";
+    out = foldOrToXor(*I3, Builder);
   }
   cv_emit(input, out);
   return 0;

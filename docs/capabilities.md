@@ -89,12 +89,16 @@ Two consequences worth knowing when reading verdicts:
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
   boundary declines rather than guesses.
 
-- **Symbolic execution of real pass C++:** three UNMODIFIED upstream LLVM 18 InstCombine folds
-  (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`) are verified by compiling their
-  byte-for-byte source against the symbolic shim and discharging every rewriting path. Corrupting any
-  of the three rewrites refutes with a concrete witness. Reach is **5 of 106** fold-shaped functions
-  compiling; unlike Track A's vocabulary wall, the missing surface here is *shared*, so each addition
-  helps every fold at once.
+- **Symbolic execution of real pass C++:** four UNMODIFIED upstream LLVM 18 InstCombine folds
+  (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`) are verified by
+  compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
+  path. Corrupting any of the four rewrites refutes with a concrete witness. Reach is **5 of 106**
+  fold-shaped functions compiling, **4 verified**; unlike Track A's vocabulary wall, the missing
+  surface here is *shared*, so each addition helps every fold at once.
+- **"Compiles" is an upper bound on what is modelled.** Two of these folds were silently INERT when
+  first added -- one bound copies so a pointer-identity test never held, one SEGFAULTED and the crash
+  was swallowed -- and both looked exactly like a fold that legitimately declines. Every vendored
+  fold is therefore required to actually rewrite on some path, not merely to compile and run.
 - **A known solver bound, not a gap in the model:** `foldBoxMultiply` compiles and executes, but its
   obligation — the schoolbook decomposition of a 32x32 multiply — was settled by neither z3 (>10 min)
   nor bitwuzla (killed at ~2.5 h), while the identity itself checks out concretely over 200k random
