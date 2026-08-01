@@ -68,6 +68,10 @@ FOLD7 = "foldSelectICmpLshrAshr"
 # The first fold whose rewrite CHANGES WIDTH: `sext (X != 0)`.
 ZEROORONES = VENDOR / "upstream_select_zeroorones_fold.cpp"
 FOLD8 = "foldSelectZeroOrOnes"
+# A bit-test rewritten as a masked compare; the @shift arm is the first REAL fold to exercise
+# `m_SpecificInt_ICMP` (a constraint on a constant, not an icmp instruction).
+ICMPANDAND = VENDOR / "upstream_select_icmpandand_fold.cpp"
+FOLD9_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
 # separate theorems reached by different patterns, and a copy-paste slip between them is the most
 # plausible real bug -- upstream's own comments list four commuted variants per arm.
@@ -336,6 +340,30 @@ def main() -> int:
         rb8 = R.verify_fold(z3, R.compile_harness(str(p8), clang=clang), FOLD8)
         assert rb8["refuted"] >= 1 and not rb8["ok"], ("zext where sext is required must refute", rb8)
 
+    # 4f) A NINTH fold, both arms. This closes the last compiles-but-unverified gap except
+    #     foldBoxMultiply, which is a documented SOLVER bound rather than a modelling one:
+    #        ((X & Y) == 0) ? (X & 1) : 1         ->  zext((X & (Y | 1)) != 0)
+    #        ((X & Y) == 0) ? ((X >> Z) & 1) : 1  ->  zext((X & (Y | (1 << Z))) != 0)
+    exe9 = R.compile_harness(str(ICMPANDAND), clang=clang)
+    assert exe9 is not None, "the vendored icmp-and-and fold must compile against the shim"
+    nine = 0
+    for arm in FOLD9_ARMS:
+        v9 = R.verify_fold(z3, exe9, arm)
+        assert v9["ok"] and not v9["crashes"] and v9["proved"] == v9["rewriting_paths"] >= 1, (arm, v9)
+        nine += v9["proved"]
+
+    #     TEETH: widen the mask to the full `Y | -1` and the equivalence breaks.
+    bad9 = ICMPANDAND.read_text().replace("Value *FullMask = Builder.CreateOr(Y, MaskB);",
+                                          "Value *FullMask = Builder.CreateOr(Y, Builder.CreateNot(One));", 1)
+    assert bad9 != ICMPANDAND.read_text(), "the mask corruption must apply"
+    with tempfile.TemporaryDirectory() as td:
+        p9 = Path(td) / "c9.cpp"
+        p9.write_text(bad9)
+        e9 = R.compile_harness(str(p9), clang=clang)
+        assert e9 is not None, "the corrupted variant should still compile"
+        rb9 = R.verify_fold(z3, e9, FOLD9_ARMS[0])
+        assert rb9["refuted"] >= 1 and not rb9["ok"], ("a widened mask must be refuted", rb9)
+
     # 5) A SOLVER TIMEOUT is a non-answer too, and it must be BOUNDED. Real folds carry obligations a
     #    bit-blasting solver cannot settle -- `foldBoxMultiply` reassociates a 32x32 multiply, and
     #    with no bound z3 ran indefinitely and hung the whole run rather than reporting anything. The
@@ -360,12 +388,12 @@ def main() -> int:
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: EIGHT UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+    print(f"upstream_symexec_fixture OK: NINE UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
           f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3}, {FOLD4} and {FOLD5} from "
           f"InstCombineAndOrXor.cpp) "
           f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved']} "
+          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved'] + nine} "
           "rewriting arm(s) proved a sound refinement by z3 -- EVERY arm of the three AndOrXor folds, not merely the first of each. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "

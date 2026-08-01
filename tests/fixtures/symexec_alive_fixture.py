@@ -12,7 +12,7 @@ shim and knows what LLVM's operators actually mean. Agreement on all arms means 
 denote the instructions it claims.
 
 Gated here:
-  * every proved arm is CONFIRMED by Alive2 (18 of them, across eight upstream folds);
+  * every proved arm is CONFIRMED by Alive2 (20 of them, across nine upstream folds);
   * NOTE the scope: this renders the VALUE terms, so it checks the value encoding. Poison-flag
     correctness (e.g. propagating `exact` only when both sources had it) is checked by z3 through
     the refinement obligation instead -- Alive2 sees identical values there and would agree either
@@ -51,6 +51,8 @@ SELECTSHIFT = VENDOR / "upstream_select_lshrashr_fold.cpp"
 SELECTSHIFT_ARM = "foldSelectICmpLshrAshr"
 ZEROORONES = VENDOR / "upstream_select_zeroorones_fold.cpp"
 ZEROORONES_ARM = "foldSelectZeroOrOnes"
+ICMPANDAND = VENDOR / "upstream_select_icmpandand_fold.cpp"
+ICMPANDAND_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
 ANDORXOR_ARMS = ("foldNotXor", "foldNotXor@2",
                  "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",
                  "foldOrToXor", "foldOrToXor@2", "foldOrToXor@3",
@@ -87,7 +89,8 @@ def main() -> int:
     assert exe4, "the vendored select/shift fold must compile against the shim"
     arms = ([(exe1, "combineAddSubWithShlAddSub")] + [(exe2, a) for a in ANDORXOR_ARMS] +
             [(exe3, MASKED_ARM), (exe4, SELECTSHIFT_ARM),
-             (R.compile_harness(str(ZEROORONES), clang=clang), ZEROORONES_ARM)])
+             (R.compile_harness(str(ZEROORONES), clang=clang), ZEROORONES_ARM)] +
+            [(R.compile_harness(str(ICMPANDAND), clang=clang), a) for a in ICMPANDAND_ARMS])
 
     # 1) EVERY proved arm is independently confirmed.
     confirmed = 0
