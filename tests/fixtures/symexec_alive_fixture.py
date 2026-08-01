@@ -12,7 +12,11 @@ shim and knows what LLVM's operators actually mean. Agreement on all arms means 
 denote the instructions it claims.
 
 Gated here:
-  * every proved arm is CONFIRMED by Alive2 (16 of them, across six upstream folds);
+  * every proved arm is CONFIRMED by Alive2 (18 of them, across eight upstream folds);
+  * NOTE the scope: this renders the VALUE terms, so it checks the value encoding. Poison-flag
+    correctness (e.g. propagating `exact` only when both sources had it) is checked by z3 through
+    the refinement obligation instead -- Alive2 sees identical values there and would agree either
+    way;
   * TEETH -- a corrupted rewrite is REFUTED by Alive2, so the oracle can fail;
   * a NON-ANSWER is not agreement. `alive_refines` reports "skip" for a timeout, and rendering these
     without `noundef` makes Alive2 quantify over every use of a multiply-used argument -- which times
@@ -43,6 +47,10 @@ ADDSUB = VENDOR / "upstream_addsub_fold.cpp"
 ANDORXOR = VENDOR / "upstream_andorxor_fold.cpp"
 MASKEDICMP = VENDOR / "upstream_maskedicmp_fold.cpp"
 MASKED_ARM = "foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed"
+SELECTSHIFT = VENDOR / "upstream_select_lshrashr_fold.cpp"
+SELECTSHIFT_ARM = "foldSelectICmpLshrAshr"
+ZEROORONES = VENDOR / "upstream_select_zeroorones_fold.cpp"
+ZEROORONES_ARM = "foldSelectZeroOrOnes"
 ANDORXOR_ARMS = ("foldNotXor", "foldNotXor@2",
                  "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",
                  "foldOrToXor", "foldOrToXor@2", "foldOrToXor@3",
@@ -75,8 +83,11 @@ def main() -> int:
     assert exe1 and exe2, "the vendored upstream folds must compile against the shim"
     exe3 = R.compile_harness(str(MASKEDICMP), clang=clang)
     assert exe3, "the vendored masked-icmp fold must compile against the shim"
+    exe4 = R.compile_harness(str(SELECTSHIFT), clang=clang)
+    assert exe4, "the vendored select/shift fold must compile against the shim"
     arms = ([(exe1, "combineAddSubWithShlAddSub")] + [(exe2, a) for a in ANDORXOR_ARMS] +
-            [(exe3, MASKED_ARM)])
+            [(exe3, MASKED_ARM), (exe4, SELECTSHIFT_ARM),
+             (R.compile_harness(str(ZEROORONES), clang=clang), ZEROORONES_ARM)])
 
     # 1) EVERY proved arm is independently confirmed.
     confirmed = 0

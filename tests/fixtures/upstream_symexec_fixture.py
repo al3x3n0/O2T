@@ -62,6 +62,12 @@ FOLD5 = "foldAndToXor"
 # it exercises the shim's i1 modelling, APInt mask arithmetic and ConstantInt.
 MASKEDICMP = VENDOR / "upstream_maskedicmp_fold.cpp"
 FOLD6 = "foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed"
+# The first fold whose correctness turns on POISON rather than only on values.
+SELECTSHIFT = VENDOR / "upstream_select_lshrashr_fold.cpp"
+FOLD7 = "foldSelectICmpLshrAshr"
+# The first fold whose rewrite CHANGES WIDTH: `sext (X != 0)`.
+ZEROORONES = VENDOR / "upstream_select_zeroorones_fold.cpp"
+FOLD8 = "foldSelectZeroOrOnes"
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
 # separate theorems reached by different patterns, and a copy-paste slip between them is the most
 # plausible real bug -- upstream's own comments list four commuted variants per arm.
@@ -285,6 +291,51 @@ def main() -> int:
             rb6 = R.verify_fold(z3, R.compile_harness(str(p6), clang=clang), FOLD6)
             assert rb6["refuted"] >= 1 and not rb6["ok"], rb6
 
+    # 4d) A SEVENTH fold, and the first whose soundness is about POISON rather than values:
+    #        (X >s -1) ? (lshr X, Y) : (ashr X, Y)  ->  ashr X, Y
+    #     The values agree because lshr and ashr coincide when the sign bit is clear. The delicate
+    #     part is the flag: upstream propagates `exact` onto the result ONLY IF BOTH source shifts
+    #     had it.
+    exe7 = R.compile_harness(str(SELECTSHIFT), clang=clang)
+    assert exe7 is not None, "the vendored select/shift fold must compile against the shim"
+    r7 = R.verify_fold(z3, exe7, FOLD7)
+    assert r7["ok"] and not r7["crashes"] and r7["proved"] == r7["rewriting_paths"] >= 1, r7
+
+    #     POISON TEETH: force the flag on unconditionally. The values are still identical everywhere,
+    #     so a value-only checker would see nothing wrong -- the target is simply POISON wherever a
+    #     non-zero bit is shifted out and the source is perfectly defined. It must refute, with a
+    #     witness.
+    bad7 = SELECTSHIFT.read_text().replace(
+        "bool IsExact = Ashr->isExact() && cast<Instruction>(TrueVal)->isExact();",
+        "bool IsExact = true;", 1)
+    assert bad7 != SELECTSHIFT.read_text(), "the exact-flag corruption must apply"
+    with tempfile.TemporaryDirectory() as td:
+        p7 = Path(td) / "c7.cpp"
+        p7.write_text(bad7)
+        rb7 = R.verify_fold(z3, R.compile_harness(str(p7), clang=clang), FOLD7)
+        assert rb7["refuted"] >= 1 and not rb7["ok"], ("propagating `exact` unconditionally "
+                                                       "introduces poison and must be refuted", rb7)
+        assert next(x for x in rb7["rows"] if x["status"] == "refuted").get("witness")
+
+    # 4e) An EIGHTH fold, and the first whose rewrite changes WIDTH:
+    #        (X u< 2) ? -X : -1  ->  sext (X != 0)
+    #     `sext i1 %c to i32` denotes something quite different from %c, so width is load-bearing
+    #     rather than bookkeeping -- every value carries a type and the two cannot be conflated.
+    exe8 = R.compile_harness(str(ZEROORONES), clang=clang)
+    assert exe8 is not None, "the vendored zero-or-ones fold must compile against the shim"
+    r8 = R.verify_fold(z3, exe8, FOLD8)
+    assert r8["ok"] and not r8["crashes"] and r8["proved"] == r8["rewriting_paths"] >= 1, r8
+
+    #     TEETH: zext instead of sext gives 0/1 where the fold must give 0/-1.
+    bad8 = ZEROORONES.read_text().replace("return new SExtInst(Builder.CreateIsNotNull(X), TVal->getType());",
+                                          "return new ZExtInst(Builder.CreateIsNotNull(X), TVal->getType());", 1)
+    assert bad8 != ZEROORONES.read_text(), "the sext->zext corruption must apply"
+    with tempfile.TemporaryDirectory() as td:
+        p8 = Path(td) / "c8.cpp"
+        p8.write_text(bad8)
+        rb8 = R.verify_fold(z3, R.compile_harness(str(p8), clang=clang), FOLD8)
+        assert rb8["refuted"] >= 1 and not rb8["ok"], ("zext where sext is required must refute", rb8)
+
     # 5) A SOLVER TIMEOUT is a non-answer too, and it must be BOUNDED. Real folds carry obligations a
     #    bit-blasting solver cannot settle -- `foldBoxMultiply` reassociates a 32x32 multiply, and
     #    with no bound z3 ran indefinitely and hung the whole run rather than reporting anything. The
@@ -297,7 +348,7 @@ def main() -> int:
     hard = {"input": f"(bvadd (bvshl {CS} (_ bv16 32)) (bvmul {YLO} {XLO}))",
             "output": "(bvmul X Y)", "decisions": [], "constraints": [],
             "input_poison": "false", "output_poison": "false", "logic": "QF_BV"}
-    slow = R.discharge_path(z3, hard, timeout=1)
+    slow = R.discharge_path(z3, hard, rlimit=200_000)   # a deliberately tiny work budget
     assert slow["status"] == "error", ("a solver timeout is a NON-ANSWER and must never be reported "
                                        "as proved -- the obligation is true but out of reach", slow)
     assert slow["rewrote"] and not (slow["status"] == "proved"), slow
@@ -309,12 +360,12 @@ def main() -> int:
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: SIX UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+    print(f"upstream_symexec_fixture OK: EIGHT UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
           f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3}, {FOLD4} and {FOLD5} from "
           f"InstCombineAndOrXor.cpp) "
           f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + arm_proved + r6['proved']} "
+          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved']} "
           "rewriting arm(s) proved a sound refinement by z3 -- EVERY arm of the three AndOrXor folds, not merely the first of each. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "

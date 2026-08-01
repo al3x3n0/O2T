@@ -67,6 +67,12 @@ struct Value {
   std::string name;
 
   Value *getOperand(unsigned i) { return i == 0 ? op0 : op1; }
+  Value *getOperand(unsigned i) const { return i == 0 ? op0 : op1; }
+  // `exact` on a shift asserts no non-zero bits are shifted out. It is carried per value because a
+  // fold may only propagate it when EVERY source shift had it -- dropping that condition would let
+  // the rewrite introduce poison the source never had.
+  bool exact = false;
+  bool isExact() const { return exact; }
   int getOpcode() const { return opcode; }
   bool hasOneUse() const { return one_use; }
   bool hasNUses(unsigned n) const { return one_use && n == 1; }
@@ -133,11 +139,25 @@ inline std::string cv_orp(const std::string &p, const std::string &q) {
 struct Type;
 struct APInt;
 inline Type *cv_i1();
+inline std::string cv_ext_term(const Value &v, unsigned to_bits, bool is_signed);
 inline std::string cv_icmp_term(CVPredicate p, const std::string &a, const std::string &b);
 
+// upstream signatures name the base class; the shim has a single builder type.
 struct IRBuilder {
   // upstream passes and receives `Value *`; these forward to the by-value forms below.
   Value *CreateAShr(Value *a, Value *b) { return cv_keep(CreateAShr(*a, *b)); }
+  // upstream: CreateAShr(LHS, RHS, Name, isExact). `exact` asserts nothing non-zero was shifted
+  // out, i.e. (result << Y) == X; when the flag is set without that holding, the value is poison.
+  Value *CreateAShr(Value *a, Value *b, const std::string &, bool isExact) {
+    Value *r = cv_keep(Value{"(bvashr " + a->t + " " + b->t + ")"});
+    r->opcode = OP_ASHR; r->op0 = a; r->op1 = b; r->exact = isExact;
+    r->poison = cv_orp(a->poison, b->poison);
+    if (isExact) {
+      std::string back = "(bvshl (bvashr " + a->t + " " + b->t + ") " + b->t + ")";
+      r->poison = cv_orp(r->poison, "(not (= " + back + " " + a->t + "))");
+    }
+    return r;
+  }
   Value *CreateAShr(Value *a, Value b)  { return cv_keep(CreateAShr(*a, b)); }
   Value *CreateAShr(Value a, Value *b)  { return cv_keep(CreateAShr(a, *b)); }
   Value *CreateAdd(Value *a, Value *b) { return cv_keep(CreateAdd(*a, *b)); }
@@ -244,6 +264,8 @@ struct IRBuilder {
   }
 };
 /* ConstantInt::get(...) -- the real LLVM constant factory; the result `isa<ConstantInt>`. */
+struct SExtInst : Value { SExtInst(Value *v, Type *ty, const std::string & = ""); };
+struct ZExtInst : Value { ZExtInst(Value *v, Type *ty, const std::string & = ""); };
 struct ConstantInt {
   static Value get(unsigned long v) { Value r = cv_bv(v); r.is_const = true; return r; }
   static Value *get(Type *ty, const APInt &a);
@@ -251,7 +273,8 @@ struct ConstantInt {
   static Value *getNullValue(Type *ty);
   static Value *getAllOnesValue(Type *ty);
 };
-typedef Value BinaryOperator;                     /* a fold's `BinaryOperator &I` is a Value */
+typedef Value BinaryOperator;
+typedef IRBuilder IRBuilderBase;                     /* a fold's `BinaryOperator &I` is a Value */
 
 // --- enough of the PASS CLASS and instruction hierarchy that UNMODIFIED upstream fold definitions
 // --- parse against this shim. Measured over LLVM 18's InstCombine sources: 89 of 106 fold-shaped
@@ -271,6 +294,26 @@ struct Type {
 static Type CV_I32;
 static Type CV_I1{1};
 inline Type *cv_i1() { return &CV_I1; }
+inline SExtInst::SExtInst(Value *v, Type *ty, const std::string &) {
+  t = cv_ext_term(*v, ty ? ty->bits : 32, /*is_signed=*/true);
+  this->ty = ty; poison = v->poison; op0 = v;
+}
+inline ZExtInst::ZExtInst(Value *v, Type *ty, const std::string &) {
+  t = cv_ext_term(*v, ty ? ty->bits : 32, /*is_signed=*/false);
+  this->ty = ty; poison = v->poison; op0 = v;
+}
+// Width-changing casts. These are NOT views: `sext i1 %c to i32` is a different value from %c, so
+// the term widens and the recorded type changes with it. A cast to a NARROWER type would be a
+// truncation and is refused rather than silently ignored.
+inline std::string cv_ext_term(const Value &v, unsigned to_bits, bool is_signed) {
+  unsigned from = v.ty ? v.ty->bits : 32;
+  if (to_bits == from) return v.t;
+  if (to_bits < from) cv_unsupported("sext/zext to a NARROWER type is a truncation");
+  return "((_ " + std::string(is_signed ? "sign_extend " : "zero_extend ") +
+         std::to_string(to_bits - from) + ") " + v.t + ")";
+}
+
+// Width-changing casts: declared here, defined once `Type` is complete.
 inline Value *cv_allones() { return cv_keep(Value{"(_ bv4294967295 32)"}); }
 inline Type *Value::getType() { return ty ? ty : &CV_I32; }
 inline Value *Value::CreateAShr(Value *a, Value *b) { return cv_keep(Value{"(bvashr " + a->t + " " + b->t + ")"}); }
@@ -292,21 +335,61 @@ inline Value *Value::CreateXor(Value *a, Value *b) { return cv_keep(Value{"(bvxo
 namespace CVOpcodes {
   enum BinaryOps { Add = 1, Sub, Mul, And, Or, Xor, Shl, LShr, AShr, UDiv, SDiv, URem, SRem };
 }
+// Predicate algebra, spelled out per predicate. The previous shim returned the argument unchanged
+// from getSwappedPredicate and collapsed everything non-equality to ICMP_EQ in
+// getInversePredicate -- both compile, read plausibly, and denote the wrong comparison. They were
+// only harmless while no fold called them; modelling icmp makes them reachable.
+inline CVPredicate cv_swap_pred(CVPredicate p) {
+  switch (p) {
+    case ICMP_EQ: case ICMP_NE: return p;              // symmetric
+    case ICMP_ULT: return ICMP_UGT;  case ICMP_UGT: return ICMP_ULT;
+    case ICMP_ULE: return ICMP_UGE;  case ICMP_UGE: return ICMP_ULE;
+    case ICMP_SLT: return ICMP_SGT;  case ICMP_SGT: return ICMP_SLT;
+    case ICMP_SLE: return ICMP_SGE;  case ICMP_SGE: return ICMP_SLE;
+  }
+  cv_unsupported("getSwappedPredicate on an unmodelled predicate");
+}
+inline CVPredicate cv_inverse_pred(CVPredicate p) {
+  switch (p) {
+    case ICMP_EQ:  return ICMP_NE;   case ICMP_NE:  return ICMP_EQ;
+    case ICMP_ULT: return ICMP_UGE;  case ICMP_UGE: return ICMP_ULT;
+    case ICMP_ULE: return ICMP_UGT;  case ICMP_UGT: return ICMP_ULE;
+    case ICMP_SLT: return ICMP_SGE;  case ICMP_SGE: return ICMP_SLT;
+    case ICMP_SLE: return ICMP_SGT;  case ICMP_SGT: return ICMP_SLE;
+  }
+  cv_unsupported("getInversePredicate on an unmodelled predicate");
+}
 struct CmpInst {
   typedef CVPredicate Predicate;
   static bool isEquality(Predicate p) { return p == ICMP_EQ || p == ICMP_NE; }
-  static Predicate getInversePredicate(Predicate p) { return p == ICMP_EQ ? ICMP_NE : ICMP_EQ; }
-  static Predicate getSwappedPredicate(Predicate p) { return p; }
+  static Predicate getInversePredicate(Predicate p) { return cv_inverse_pred(p); }
+  static Predicate getSwappedPredicate(Predicate p) { return cv_swap_pred(p); }
+  static const CVPredicate ICMP_EQ = ::ICMP_EQ, ICMP_NE = ::ICMP_NE,
+                           ICMP_ULT = ::ICMP_ULT, ICMP_ULE = ::ICMP_ULE,
+                           ICMP_UGT = ::ICMP_UGT, ICMP_UGE = ::ICMP_UGE,
+                           ICMP_SLT = ::ICMP_SLT, ICMP_SLE = ::ICMP_SLE,
+                           ICMP_SGT = ::ICMP_SGT, ICMP_SGE = ::ICMP_SGE;
 };
 typedef Value ICmpInst;
+// `cast<T>(V)` is the CALLER asserting the class -- upstream only writes it where the class is
+// already established, so an identity view is faithful. `dyn_cast<T>` is deliberately NOT extended
+// to these classes: every instruction class here is a typedef of `Value`, so nothing can tell them
+// apart, and a dyn_cast that always succeeds would send the executor down branches the real pass
+// would never take. Folds needing it stay blocked rather than being modelled wrongly.
+template <class T> T *cast(Value *v) { return v; }
+template <class T> const T *cast(const Value *v) { return v; }
+template <class T> T &cast(Value &v) { return v; }
+typedef Value FreezeInst;
+typedef Value IntrinsicInst;
 typedef Value FCmpInst;
 typedef Value SelectInst;
-typedef Value ZExtInst;
 typedef Value CallInst;
 struct Function {};
 typedef Value Constant;
 struct APInt {
   unsigned long v = 0, bits = 32;
+  APInt() = default;
+  APInt(unsigned w, unsigned long val) : v(val & _mask(w)), bits(w) {}
   bool isZero() const { return v == 0; }
   bool isOne() const { return v == 1; }
   bool isAllOnes() const { return v == 0xFFFFFFFFul; }
@@ -499,11 +582,12 @@ inline Value cv_logBase2(Value /*C*/) {
 // a static pool so nested `m_*(...)` calls stay valid through the match.
 
 enum CvMKind { MK_VALUE, MK_SPECIFIC, MK_CONSTANT, MK_ZERO, MK_ONE, MK_ALLONES, MK_BINOP,
-               MK_COMBINEAND, MK_DEFERRED, MK_ANYBINOP,
+               MK_COMBINEAND, MK_DEFERRED, MK_ANYBINOP, MK_ICMP, MK_CONSTCMP,
                MK_SPECIFICINT, MK_ONEUSE, MK_COMBINEOR };
 struct Matcher {
   int kind, opcode;
   Value *cap = nullptr;                          // MK_VALUE / MK_CONSTANT: where to store
+  CVPredicate *pred_out = nullptr;               // MK_ICMP: where to store the predicate
   Value **deferred = nullptr;                    // MK_DEFERRED: the BINDING to re-read at match time
   // UNMODIFIED upstream folds declare `Value *A, *B;` and write `m_Value(A)`, i.e. they bind a
   // POINTER, while folds authored against this shim bind a reference. Supporting both is what lets
@@ -511,6 +595,8 @@ struct Matcher {
   Value **capp = nullptr;
   const Value *specific;                         // MK_SPECIFIC: the value to compare against
   unsigned long imm;                             // MK_SPECIFICINT: the constant to match
+  unsigned imm_bits = 32;                        // MK_CONSTCMP: width of the threshold
+  CVPredicate pred = ICMP_EQ;                    // MK_CONSTCMP: the predicate to satisfy
   const APInt **apint = nullptr;                 // MK_CONSTANT via m_APInt: where to store
   bool commutative = false;                       // MK_BINOP: try both operand orders (m_c_*)
   Matcher *a, *b;                                // MK_BINOP / MK_ONEUSE / MK_COMBINEOR: sub-matcher(s)
@@ -519,6 +605,7 @@ static Matcher CV_MPOOL[128];
 static int CV_MPOS;
 static Matcher *cv_m(int kind) { Matcher *m = &CV_MPOOL[CV_MPOS++]; *m = Matcher{}; m->kind = kind; return m; }
 
+inline Matcher *m_Value()                { return cv_m(MK_VALUE); }   // matches anything, binds nothing
 inline Matcher *m_Value(Value &v)        { Matcher *m = cv_m(MK_VALUE); m->cap = &v; return m; }
 inline Matcher *m_Value(Value *&v)       { Matcher *m = cv_m(MK_VALUE); m->capp = &v; return m; }
 inline Matcher *m_ConstantInt(Value &v)  { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
@@ -531,6 +618,20 @@ inline Matcher *m_SpecificInt(unsigned long n) { Matcher *m = cv_m(MK_SPECIFICIN
 // opcode is already fixed by the caller (foldAndToXor asserts `I` is an `and`), so constraining the
 // opcode here would be stricter than the real matcher and would silently skip the arm. `icmp` is
 // deliberately NOT a BinaryOperator in LLVM and is excluded here for the same reason.
+// m_ICmp(Pred, L, R) matches an icmp and BINDS its predicate. Only meaningful now that icmp is a
+// modelled node with a predicate on it.
+// m_SpecificInt_ICMP(Pred, Threshold) matches a CONSTANT operand C for which `C Pred Threshold`
+// holds -- it is a constraint on the constant, not an icmp instruction to match.
+inline Matcher *m_SpecificInt_ICMP(CVPredicate p, const APInt &threshold) {
+  Matcher *m = cv_m(MK_CONSTCMP); m->pred = p; m->imm = threshold.v; m->imm_bits = threshold.bits;
+  return m;
+}
+inline Matcher *m_ICmp(CVPredicate &p, Matcher *a, Matcher *b) {
+  Matcher *m = cv_m(MK_ICMP); m->a = a; m->b = b; m->pred_out = &p; return m;
+}
+inline Matcher *m_c_ICmp(CVPredicate &p, Matcher *a, Matcher *b) {
+  Matcher *m = cv_m(MK_ICMP); m->a = a; m->b = b; m->pred_out = &p; m->commutative = true; return m;
+}
 inline Matcher *m_BinOp(Matcher *a, Matcher *b) {
   Matcher *m = cv_m(MK_ANYBINOP); m->a = a; m->b = b; return m;
 }
@@ -558,6 +659,12 @@ inline Matcher *m_ConstantInt(Value *&v)  { Matcher *m = cv_m(MK_CONSTANT); m->c
 // MATCH time. The matcher tree is fully constructed before `match()` runs, so snapshotting the
 // pointer here captured a null: `(A & B) ^ (A | B)` -- the canonical shape foldXorToXor exists
 // for -- dereferenced it and SEGFAULTED the harness. Store the binding's address instead.
+// `AllowUndef` variants also match constants containing undef lanes. This shim does not model
+// undef, so they are treated as the STRICT form: a constant with undef in it simply fails to match.
+// That is narrower than upstream (an arm may go unexplored) and never wider, so it cannot admit a
+// path upstream would not take.
+inline Matcher *m_APIntAllowUndef(const APInt *&c) { return m_APInt(c); }
+inline Matcher *m_SpecificIntAllowUndef(unsigned long n) { return m_SpecificInt(n); }
 inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_DEFERRED); m->deferred = &v; return m; }
 inline Matcher *m_Specific(Value *v)      { Matcher *m = cv_m(MK_SPECIFIC); m->specific = v; return m; }
 inline Matcher *m_ImmConstant(Value &v)   { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }
@@ -619,6 +726,33 @@ static bool cv_matchV(const Value &v, Matcher *m) {
     case MK_ONEUSE:   return v.one_use && cv_matchV(v, m->a);   // single-use profitability guard
     case MK_COMBINEOR: return cv_matchV(v, m->a) || cv_matchV(v, m->b);  // either pattern
     case MK_COMBINEAND: return cv_matchV(v, m->a) && cv_matchV(v, m->b);  // both patterns
+    case MK_CONSTCMP: {                                  // a constant C with `C Pred Threshold`
+      if (!v.is_const) return false;
+      const APInt *c = cv_apint_of(v);
+      if (!c) return false;
+      unsigned long C = c->v, T = m->imm;
+      long sc = (long)(int)C, st = (long)(int)T;         // 32-bit signed views for the S-predicates
+      switch (m->pred) {
+        case ICMP_EQ:  return C == T;   case ICMP_NE:  return C != T;
+        case ICMP_ULT: return C <  T;   case ICMP_ULE: return C <= T;
+        case ICMP_UGT: return C >  T;   case ICMP_UGE: return C >= T;
+        case ICMP_SLT: return sc <  st; case ICMP_SLE: return sc <= st;
+        case ICMP_SGT: return sc >  st; case ICMP_SGE: return sc >= st;
+        default: cv_unsupported("m_SpecificInt_ICMP with an unmodelled predicate");
+      }
+    }
+    case MK_ICMP:                                        // an icmp; binds its predicate
+      if (v.opcode != OP_ICMP || !v.op0 || !v.op1) return false;
+      if (cv_matchV(*v.op0, m->a) && cv_matchV(*v.op1, m->b)) {
+        if (m->pred_out) *m->pred_out = v.pred;
+        return true;
+      }
+      if (m->commutative && cv_matchV(*v.op1, m->a) && cv_matchV(*v.op0, m->b)) {
+        // operands matched SWAPPED, so the predicate the caller should see is the swapped one
+        if (m->pred_out) *m->pred_out = cv_swap_pred(v.pred);
+        return true;
+      }
+      return false;
     case MK_ANYBINOP:                                    // any BinaryOperator, operands must match
       if (v.opcode == OP_OTHER || v.opcode == OP_ICMP || !v.op0 || !v.op1) return false;
       if (cv_matchV(*v.op0, m->a) && cv_matchV(*v.op1, m->b)) return true;
@@ -651,6 +785,16 @@ inline bool cv_query(const char *name, Value v) {
   return c != 0;
 }
 inline bool isKnownToBeAPowerOfTwo(Value P)  { return cv_query("power-of-two", P); }
+// The upstream 4-argument form. `OrZero` ADMITS ZERO, which is a strictly weaker fact, so it is
+// recorded as its own query -- grounding it as strict power-of-two would assume the value is
+// non-zero when the caller established no such thing. The remaining arguments (depth, context
+// instruction) do not change WHAT is established, only how hard LLVM looks for it.
+inline bool isKnownToBeAPowerOfTwo(Value *P, bool OrZero, unsigned = 0, const Value * = nullptr) {
+  return cv_query(OrZero ? "power-of-two-or-zero" : "power-of-two", *P);
+}
+inline bool isKnownToBeAPowerOfTwo(Value P, bool OrZero, unsigned = 0, const Value * = nullptr) {
+  return cv_query(OrZero ? "power-of-two-or-zero" : "power-of-two", P);
+}
 inline bool isKnownNonZero(Value X)          { return cv_query("nonzero", X); }
 inline bool isKnownNonNegative(Value X)      { return cv_query("nonneg", X); }
 inline bool isKnownNegative(Value X)         { return cv_query("negative", X); }

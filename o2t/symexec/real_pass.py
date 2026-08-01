@@ -28,6 +28,11 @@ HEADER_DIR = ROOT / "o2t" / "symexec"
 # analysis query name -> the value-fact it establishes about its argument (when it returns true).
 _QUERY_FACT = {
     "power-of-two": {"op": "power-of-two"},
+    # `isKnownToBeAPowerOfTwo(V, /*OrZero=*/true)` establishes a STRICTLY WEAKER fact: the value may
+    # be zero. Grounding it as the plain query would assert non-zero, i.e. assume more than the
+    # caller proved. Leaving it unmapped would be sound but weaker still (the fact is dropped, so the
+    # obligation must hold for all inputs), which would silently fail folds that need it.
+    "power-of-two-or-zero": {"op": "power-of-two", "or_zero": True},
     "nonzero": {"op": "not-eq", "value": 0},
     "nonneg": {"op": "cmp", "predicate": "sge", "value": 0},
     "negative": {"op": "cmp", "predicate": "slt", "value": 0},
@@ -35,7 +40,12 @@ _QUERY_FACT = {
 
 
 def compile_harness(cpp_path, clang="clang++", out=None):
-    out = out or (Path("/tmp") / (Path(cpp_path).stem + "_symexec"))
+    # The binary goes NEXT TO THE SOURCE, not into a fixed /tmp path keyed on the stem. Callers
+    # already write their source into a private temp dir; the old default sent every one of them to
+    # the same `/tmp/<stem>_symexec`, so two concurrent runs -- two fixtures, `ctest -j`, or a
+    # developer probing while the suite runs -- would truncate a binary another process was
+    # executing. That surfaced as a harness "crash", i.e. a fold that mysteriously stopped rewriting.
+    out = out or (Path(cpp_path).with_suffix("").as_posix() + "_symexec")
     r = subprocess.run([clang, "-std=c++17", "-I", str(HEADER_DIR), str(cpp_path), "-o", str(out)],
                        capture_output=True, text=True)
     return str(out) if r.returncode == 0 else None
@@ -89,7 +99,7 @@ def _path_condition(decisions):
     return facts
 
 
-def discharge_path(z3_bin, path, timeout=60):
+def discharge_path(z3_bin, path, rlimit=200_000_000, wall=600):
     """Prove the rewrite on one path refines the input under the path's established facts."""
     if path["output"] is None:
         return {"rewrote": False, "status": "no-rewrite"}     # no rewrite -> trivially refines
@@ -108,7 +118,9 @@ def discharge_path(z3_bin, path, timeout=60):
     out_poison = path.get("output_poison", "false")
     neg = (f"(and (not {in_poison}) (or (not (= {path['output']} {path['input']})) {out_poison}))")
     logic = path.get("logic", "QF_BV")               # FP/fast-math folds raise this to QF_FPBV
-    smt = "\n".join([f"(set-logic {logic})", *decls,
+    # `(set-option :rlimit N)` is z3's DETERMINISTIC work budget -- unlike a wall-clock bound it
+    # gives the same verdict on a loaded machine as on an idle one, which is what a gate needs.
+    smt = "\n".join([f"(set-option :rlimit {rlimit})", f"(set-logic {logic})", *decls,
                      *[f"(assert {f})" for f in facts],
                      f"(assert {neg})",
                      "(check-sat)", "(get-model)", ""])
@@ -117,9 +129,15 @@ def discharge_path(z3_bin, path, timeout=60):
     # without a bound z3 runs indefinitely and hangs the whole run. `unknown` from a timeout is a
     # NON-ANSWER: it maps to "error", which `verify_fold` refuses to count as sound. Never "assume it
     # would have proved".
+    # The bound is a DETERMINISTIC resource limit, not a stopwatch. z3's `-T:` is wall-clock, so a
+    # loaded machine turns a query that needs ~9s of CPU (`bvsdiv` vs `bvudiv` is one) into a
+    # "timeout" -> `error` -> a fold that silently stops being refuted. Gate results must not depend
+    # on what else the machine is doing. `rlimit` counts solver work instead, so the verdict is
+    # reproducible; the wall-clock arguments remain only as a backstop against a genuine hang, which
+    # is what this bound was introduced for (`foldBoxMultiply` ran unbounded for hours).
     try:
-        out = subprocess.run([z3_bin, "-in", f"-T:{timeout}"], input=smt,
-                             capture_output=True, text=True, timeout=timeout + 30).stdout
+        out = subprocess.run([z3_bin, "-in", f"-T:{wall}"], input=smt,
+                             capture_output=True, text=True, timeout=wall + 30).stdout
     except subprocess.TimeoutExpired:
         out = ""
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
@@ -128,11 +146,11 @@ def discharge_path(z3_bin, path, timeout=60):
             "witness": out if status == "refuted" else ""}
 
 
-def verify_fold(z3_bin, exe, fold, timeout=60):
+def verify_fold(z3_bin, exe, fold, rlimit=200_000_000, wall=600):
     """Symbolically execute `fold` and discharge every rewriting path."""
     paths, crashes = explore(exe, fold)
     rows = [{"decisions": [d["q"] + ("" if d["v"] else "!") for d in p["decisions"]],
-             **discharge_path(z3_bin, p, timeout=timeout)} for p in paths]
+             **discharge_path(z3_bin, p, rlimit=rlimit, wall=wall)} for p in paths]
     rewriting = [r for r in rows if r["rewrote"]]
     refuted = [r for r in rewriting if r["status"] == "refuted"]
     proved = [r for r in rewriting if r["status"] == "proved"]

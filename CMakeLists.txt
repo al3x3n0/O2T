@@ -919,6 +919,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1 && command -v alive-tv >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/symexec_alive_fixture.py; else echo 'symexec_alive_fixture: toolchain not found, skipped'; fi"
     )
+    # The shim's predicate algebra is a pure function with an exact specification, so it is PROVED
+    # against that specification per predicate rather than read. It was wrong in 16 of 20 cases while
+    # nothing could call it. Needs clang++ and z3.
+    add_test(
+        NAME predicate_algebra_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/predicate_algebra_fixture.py; else echo 'predicate_algebra_fixture: toolchain not found, skipped'; fi"
+    )
     # "Value-equal everywhere implies refinement" is FALSE when the TARGET can be poison -- poison is
     # not a value. The value-equality validators (memory, lane models) had no poison term at all, and
     # `poison_risk` only ever stopped them REFUTING; nothing stopped them PROVING a transform that

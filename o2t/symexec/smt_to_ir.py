@@ -83,6 +83,16 @@ class _Emitter:
         if not node:
             raise UntranslatableTerm("empty term")
         head = node[0]
+        # ((_ sign_extend N) x) / ((_ zero_extend N) x) -- the head is itself a list
+        if isinstance(head, list) and len(head) == 3 and head[0] == "_" and len(node) == 2:
+            kind = head[1]
+            if kind not in ("sign_extend", "zero_extend"):
+                raise UntranslatableTerm(f"unmodelled indexed operator {kind!r}")
+            a, w = self.emit(node[1])
+            to = w + int(head[2])
+            r = self._fresh()
+            self.lines.append(f"  {r} = {'sext' if kind == 'sign_extend' else 'zext'} i{w} {a} to i{to}")
+            return r, to
         if head == "_" and len(node) == 3 and str(node[1]).startswith("bv"):
             return str(int(str(node[1])[2:])), int(node[2])          # (_ bvN W)
         if head in _BIN and len(node) == 3:
