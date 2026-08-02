@@ -87,8 +87,15 @@ def explore(exe, fold, max_queries=4):
 
 
 def _path_condition(decisions):
-    """The conjunction of facts the taken branches established (the queries that returned true)."""
-    facts = []
+    """(facts the taken branches established, queries that established nothing groundable).
+
+    A query that returned true but has no grounding contributes NO constraint, so the path is
+    discharged over a LARGER input space than the branch actually admits. That cannot produce a false
+    proof -- proving under fewer assumptions is strictly stronger -- but it can produce a SPURIOUS
+    REFUTATION, whose counterexample the dropped fact would have excluded. So the ungrounded names
+    are returned rather than silently ignored, and the caller decides.
+    """
+    facts, ungrounded = [], []
     for d in decisions:
         if d["v"] != 1:
             continue
@@ -96,7 +103,9 @@ def _path_condition(decisions):
         smt = scalar_assumption_smt(fact, d["arg"]) if fact else None
         if smt:
             facts.append(smt)
-    return facts
+        else:
+            ungrounded.append(d["q"])
+    return facts, ungrounded
 
 
 def discharge_path(z3_bin, path, rlimit=200_000_000, wall=600):
@@ -105,7 +114,8 @@ def discharge_path(z3_bin, path, rlimit=200_000_000, wall=600):
         return {"rewrote": False, "status": "no-rewrite"}     # no rewrite -> trivially refines
     # facts the branches established, plus defining constraints for APInt-derived values (e.g. the
     # exponent K of logBase2(C)) and established facts (e.g. no-signed-overflow).
-    facts = _path_condition(path["decisions"]) + list(path.get("constraints", []))
+    facts, ungrounded = _path_condition(path["decisions"])
+    facts = facts + list(path.get("constraints", []))
     # default i32 vars, plus any extra declarations the fold needed (i1 operands / Bool operand-poison
     # flags for poison-contagion folds).
     decls = [f"(declare-const {s} (_ BitVec 32))"
@@ -142,7 +152,15 @@ def discharge_path(z3_bin, path, rlimit=200_000_000, wall=600):
         out = ""
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
     status = "proved" if head == "unsat" else "refuted" if head == "sat" else "error"
+    # A refutation reached WITHOUT a fact the branch established is not trustworthy: the witness may
+    # be an input the missing assumption rules out. A proof is unaffected -- it holds over a superset
+    # of the admissible inputs -- so only refutations are downgraded.
+    if ungrounded and status == "refuted":
+        return {"rewrote": True, "status": "error", "facts": len(facts), "solver_output": head,
+                "ungrounded": sorted(set(ungrounded)), "witness": "",
+                "reason": "refuted without grounding for " + ", ".join(sorted(set(ungrounded)))}
     return {"rewrote": True, "status": status, "facts": len(facts), "solver_output": head,
+            "ungrounded": sorted(set(ungrounded)),
             "witness": out if status == "refuted" else ""}
 
 

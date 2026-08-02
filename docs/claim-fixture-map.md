@@ -95,6 +95,7 @@ equivalent to the input — with a minimized concrete counterexample on failure.
 | A crashed harness, an errored discharge and a solver timeout are non-answers that block SOUND | `upstream_symexec_fixture` |
 | Every proved symexec arm (16, across six upstream folds) is independently confirmed by reference Alive2 (the shim builds both terms, so z3 alone cannot catch a wrong encoding) | `symexec_alive_fixture` |
 | The shim's icmp predicate algebra (swapped/inverse) matches its specification for every predicate | `predicate_algebra_fixture` |
+| Every analysis query the shim records is grounded; an ungrounded one downgrades a refutation rather than vanishing | `query_grounding_fixture` |
 | A guard decline cannot be overturned by the dispatcher routing to another validator | `dispatcher_guard_fixture` |
 | The fuzzer audits the API's decision surface, not just `opt`'s output distribution | `synth_target_fixture` |
 | Exhaustive poison-flag coverage (every `(op, flag)` refutes on introduce / proves on remove; completeness-enforced) | `flag_matrix_fixture` |

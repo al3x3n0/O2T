@@ -798,7 +798,17 @@ inline bool isKnownToBeAPowerOfTwo(Value P, bool OrZero, unsigned = 0, const Val
 inline bool isKnownNonZero(Value X)          { return cv_query("nonzero", X); }
 inline bool isKnownNonNegative(Value X)      { return cv_query("nonneg", X); }
 inline bool isKnownNegative(Value X)         { return cv_query("negative", X); }
-inline bool MaskedValueIsZero(Value X)       { return cv_query("masked-zero", X); }
+/* MaskedValueIsZero(V, Mask) -- when true, (V & Mask) == 0. It takes the MASK, and the fact is
+ * emitted directly as a constraint (like haveNoCommonBitsSet) because a two-operand fact cannot be
+ * expressed by cv_query, which records a single term. The previous one-argument form dropped the
+ * mask entirely AND recorded a query name nothing could ground, so the assumption silently vanished
+ * from the path condition -- which does not permit a false PROOF (proving under fewer assumptions is
+ * stronger) but does permit a spurious REFUTATION, on a counterexample the dropped fact excludes. */
+inline bool MaskedValueIsZero(Value X, Value Mask) {
+  int c = cv_next_choice();
+  if (c) cv_constraint("(= (bvand " + X.t + " " + Mask.t + ") (_ bv0 32))");
+  return c;
+}
 
 // --- emit the explored path as JSON: input term, output term (or null), decisions -------------
 static std::string CV_INPUT_POISON = "false";    // the input's poison condition (default: never)

@@ -928,6 +928,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/predicate_algebra_fixture.py; else echo 'predicate_algebra_fixture: toolchain not found, skipped'; fi"
     )
+    # Every analysis fact the shim can establish must be GROUNDED in the discharger, or its absence
+    # must be visible: a recorded-but-ungrounded query silently widens the input space, which cannot
+    # cause a false proof but can cause a spurious refutation. Needs z3 (clang++ for the mask half).
+    add_test(
+        NAME query_grounding_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/query_grounding_fixture.py; else echo 'query_grounding_fixture: z3 not found, skipped'; fi"
+    )
     # "Value-equal everywhere implies refinement" is FALSE when the TARGET can be poison -- poison is
     # not a value. The value-equality validators (memory, lane models) had no poison term at all, and
     # `poison_risk` only ever stopped them REFUTING; nothing stopped them PROVING a transform that
