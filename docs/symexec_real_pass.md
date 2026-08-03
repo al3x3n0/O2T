@@ -24,6 +24,7 @@ caught from the genuine branch, not a pattern guess.
 | --- | --- |
 | `o2t/symexec/symbolic_llvm.h` | A "symbolic LLVM" **shim** (~330 lines). `Value` is an SMT term; `IRBuilder` build-calls return terms; `PatternMatch` matchers are real (recursive); analysis queries (`isKnownToBeAPowerOfTwo`, `isMustAlias`, …) are **choice points**. A real fold's C++ is written/compiled against this. |
 | `o2t/symexec/real_pass.py` | The **driver** (~116 lines). Compiles a harness, `explore()`s its paths (enumerate query-outcome assignments), and `discharge_path()`s the **refinement obligation** to z3. |
+| `tools/cv-symexec-reach-sweep.py` | The **reach measurement**: for each fold-shaped function in a real InstCombine `.cpp`, synthesize a TU against the shim and record whether it compiles and what blocked it. Reports `blocked_only_by` (folds a single category could unblock), because blocker FREQUENCY has been measured not to predict reach. Gated hermetically by `symexec_reach_sweep_fixture`. |
 | `o2t/symexec/klee_driver.py` (+ `klee_fold.c`) | Optional **KLEE** backend: replaces `{0,1}^k` enumeration with true symbolic branching (forks on feasible guards *and* input opcode). Graceful skip when KLEE absent; enumeration is the fallback. |
 | `o2t/symexec/modelcheck.py` (+ `modelcheck_llvm.h`) | Optional **CBMC/ESBMC** backend: compiles a model-checker-friendly fold harness with nondet bitvector inputs and query outcomes, then asserts the same poison-aware refinement property. Graceful skip when no model checker is installed. |
 | `o2t/symexec/modelcheck_intents.py` | Source-audit bridge: lowers validated scalar and CFG formal intent records to model-checker harnesses so deep audits can cross-check mined real-source rewrites. |
@@ -247,6 +248,17 @@ resolved `ctx['clang']` is a C driver and can't link libc++).
 - The drop-in fold space (more flags, more peephole classes) is essentially saturated: each new one
   follows the same one-fold + one-query recipe. The genuinely-new frontiers are **architectural**:
   full provenance, unbounded inputs, and richer in-pass control flow.
+- **Reach is 11 of 379 fold-shaped functions compiling, 10 verified** (measured by the sweep above over
+  all 15 LLVM 18 InstCombine files). Measured pass-wide, NO blocker category unblocks a fold on its
+  own: `KnownBits` appears in 55 blocker slots and is the sole blocker of nothing, and a composite
+  batch of every `Create*` builder plus flag readers, casts, bit-counting and constant statics
+  unblocks two folds. The remainder is a long thin tail of 34 folds each wanting its own handful of
+  names. Plan from `blocked_only_by`, never from the frequency table.
+- The shim's UNFLAGGED builders (`CreateOr`, `CreateAnd`, ...) do not propagate operand poison; only
+  the explicitly poison-aware ones do. Harmless while every fold is given definite operands, which is
+  the case today -- but it is why `foldAndOrOfICmpsOfAndWithPow2`'s `IsLogical` arm is left
+  unexplored rather than verified: that arm exists to insert a `freeze` against RHS poison, and the
+  model could not see the thing the freeze is for.
 
 See also: `docs/o2t-design.md` (the broader methods), `docs/real_instcombine_coverage.md` (matcher
 vocabulary vs. real InstCombine). Project memory: `o2t-symexec-real-pass`, `o2t-mission`.

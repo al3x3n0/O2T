@@ -34,3 +34,7 @@ examples/*.ll
 .claude/
 .idea/
 .vscode/
+
+# Compiled symexec harnesses: `compile_harness` builds these next to their source on demand.
+# They are per-machine Mach-O/ELF binaries and were committed by accident once already.
+*_symexec

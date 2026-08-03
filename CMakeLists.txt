@@ -910,6 +910,17 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/upstream_symexec_fixture.py; else echo 'upstream_symexec_fixture: z3 or clang++ not found, skipped'; fi"
     )
+    # The reach measurement the symexec track is steered by ("N of M fold-shaped functions compile
+    # against the shim") is a checked-in tool, not a number someone once ran. The sweep itself needs
+    # real LLVM source; gated here is everything that does not -- the extractor, the classifier, and
+    # the accounting rule that a fold whose errors name nothing is a SHAPE mismatch rather than a
+    # fold with nothing missing. Needs clang++.
+    add_test(
+        NAME symexec_reach_sweep_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/symexec_reach_sweep_fixture.py; else echo 'symexec_reach_sweep_fixture: clang++ not found, skipped'; fi"
+    )
     # The symexec track's own proofs are circular unless something OUTSIDE the shim checks them:
     # the shim builds both the input and the output term, so a wrong encoding proves itself. Each
     # proved arm is rendered back to IR and confirmed by reference Alive2. Needs clang++, z3, alive-tv.

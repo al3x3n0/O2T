@@ -89,25 +89,42 @@ Two consequences worth knowing when reading verdicts:
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
   boundary declines rather than guesses.
 
-- **Symbolic execution of real pass C++:** nine UNMODIFIED upstream LLVM 18 InstCombine folds
+- **Symbolic execution of real pass C++:** ten UNMODIFIED upstream LLVM 18 InstCombine folds
   (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`, `foldAndToXor`,
-  `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`, `foldSelectICmpLshrAshr`, `foldSelectZeroOrOnes`, `foldSelectICmpAndAnd`) are verified by
+  `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`, `foldSelectICmpLshrAshr`, `foldSelectZeroOrOnes`, `foldSelectICmpAndAnd`, `foldAndOrOfICmpsOfAndWithPow2`) are verified by
   compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
-  path. Corrupting any of the four rewrites refutes with a concrete witness. **Twenty rewriting arms**
+  path. Corrupting any of the four rewrites refutes with a concrete witness. **Twenty-two rewriting arms**
   are proved -- EVERY arm of the three AndOrXor folds, not merely the first of each, plus the commuted
   operand orders upstream's own comments enumerate. Two ablations keep those claims honest: disabling
   arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and
   disabling commutative matching silences only the commuted variants (so they are coverage of the
   `m_c_*` path rather than repetition). Reach
-  is **10 of 106** fold-shaped functions compiling, **9 verified** -- the one gap is `foldBoxMultiply`, a documented SOLVER bound rather than a modelling one. Growing that reach means modelling LLVM's *analysis
-  infrastructure* -- the first instalment (icmp/i1, APInt mask arithmetic, `ConstantInt`) bought
-  the masked-icmp fold, which reasons about constant masks rather than pure boolean algebra. It is
-  not matcher vocabulary: three shim batches (matchers, generic
-  construction, and the `Intrinsic` surface -- the largest single blocker at 68 hits) each unblocked
-  ZERO further folds, because a fold needs items from several categories at once. Of the undeclared
-  identifiers across the 101 non-compiling folds, **55% are LLVM analysis/type infrastructure, 33%
-  matcher vocabulary, 12% pass-local helpers**; unlike Track A's vocabulary wall, the missing
-  surface here is *shared*, so each addition helps every fold at once.
+  is **11 of 379** fold-shaped functions compiling, **10 verified** -- the one gap is `foldBoxMultiply`,
+  a documented SOLVER bound rather than a modelling one. That denominator is now a REPRODUCIBLE
+  measurement (`tools/cv-symexec-reach-sweep.py`, gated by `symexec_reach_sweep_fixture`) over all 15
+  InstCombine files, replacing a hand-run figure quoted from a session nobody could re-derive.
+
+  **The sweep refutes the way this reach was being planned, including in an earlier version of this
+  paragraph.** It is not matcher vocabulary -- three shim batches (matchers, generic construction, and
+  the `Intrinsic` surface, the largest single blocker at 68 hits) each unblocked ZERO further folds.
+  But neither is the missing surface *shared*: measured across the whole pass, **no category unblocks
+  a fold on its own**. `KnownBits` appears in 55 blocker slots and is the SOLE blocker of nothing; a
+  composite batch of every `Create*` builder, the instruction flag readers, `dyn_cast`/`isa`, the
+  bit-counting helpers and the constant statics unblocks **two** folds. What remains is a long thin
+  tail -- 34 folds each wanting its own handful of names. So the actionable measure is not blocker
+  frequency but how many folds a category blocks ALONE, which is what the sweep reports and why a
+  frequency table is a trap here. The folds actually within reach are counted individually: three
+  blocked purely by shim API *shape* (no missing names at all), and one each by a single APInt
+  accessor, one intrinsic type, and one matcher family.
+- **What `freeze` YIELDS is modelled, not decided.** The shim modelled `freeze` as the operand's own
+  term with the poison cleared, which says freeze(poison) equals whatever the operand happened to be
+  -- stronger than the semantics, which leave the choice arbitrary. Measured by ablation: under that
+  model `select C,X,Y -> freeze Y` given `X == Y` PROVES, and it is a miscompile (with C selecting X
+  and Y poison the source returns a definite value; a select does not propagate its unselected arm's
+  poison). Freeze is now a fresh unconstrained value selected exactly where the operand is poison, so
+  that refutes with a witness; the legitimate freeze fold proves under both models, so the correction
+  costs no reach. It survived being executed because every freeze in the harness was correct for ANY
+  frozen value -- running the code was not enough, an obligation had to DEPEND on the answer.
 - **Poison, not just values.** `foldSelectICmpLshrAshr` (`(X >s -1) ? lshr X,Y : ashr X,Y -> ashr X,Y`) is sound only because upstream propagates `exact` onto the result when BOTH source shifts had it. Forcing the flag on unconditionally leaves every value identical and is still REFUTED with a witness, because the target is poison where the source is defined -- a value-only checker sees nothing wrong.
 - **Analysis facts are grounded, and a missing grounding is visible.** Each analysis query a fold asks (`isKnownToBeAPowerOfTwo`, `MaskedValueIsZero`) is a trust edge to LLVM's own analysis. A query the shim recorded but the discharger could not ground used to contribute nothing, silently widening the input space -- which cannot cause a false proof (proving under fewer assumptions is stronger) but can cause a SPURIOUS REFUTATION. Such a query now downgrades a refutation to a non-answer and leaves proofs alone, and the two sets are checked for drift.
 - **Pure helpers are proved, not trusted.** The shim's icmp predicate algebra (`getSwappedPredicate`, `getInversePredicate`) is checked against its specification by z3 for every modelled predicate. It was wrong in **16 of 20** cases -- returning its argument unchanged, and collapsing every non-equality predicate to `ICMP_EQ` -- and nothing noticed because no fold could reach it until icmp was modelled.
