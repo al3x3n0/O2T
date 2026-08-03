@@ -12,7 +12,10 @@ shim and knows what LLVM's operators actually mean. Agreement on all arms means 
 denote the instructions it claims.
 
 Gated here:
-  * every proved arm is CONFIRMED by Alive2 (20 of them, across nine upstream folds);
+  * every proved arm is CONFIRMED by Alive2 (22 of them, across ten upstream folds);
+  * a FACT-DEPENDENT arm is confirmed under the facts its own branches established,
+    rendered as `llvm.assume` -- and REFUTED without them, so the facts are shown to be
+    load-bearing in the oracle and not decoration;
   * NOTE the scope: this renders the VALUE terms, so it checks the value encoding. Poison-flag
     correctness (e.g. propagating `exact` only when both sources had it) is checked by z3 through
     the refinement obligation instead -- Alive2 sees identical values there and would agree either
@@ -53,6 +56,8 @@ ZEROORONES = VENDOR / "upstream_select_zeroorones_fold.cpp"
 ZEROORONES_ARM = "foldSelectZeroOrOnes"
 ICMPANDAND = VENDOR / "upstream_select_icmpandand_fold.cpp"
 ICMPANDAND_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
+POW2 = VENDOR / "upstream_icmps_and_pow2_fold.cpp"
+POW2_ARMS = ("pow2_and", "pow2_or")
 ANDORXOR_ARMS = ("foldNotXor", "foldNotXor@2",
                  "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",
                  "foldOrToXor", "foldOrToXor@2", "foldOrToXor@3",
@@ -68,9 +73,14 @@ def _clang():
     return None
 
 
-def _terms(exe, fold):
-    """The input/output SMT terms of one concrete execution."""
-    out = subprocess.run([exe, fold, "0", "0", "0", "0"], capture_output=True, text=True).stdout
+def _terms(exe, fold, choices=("0", "0", "0", "0")):
+    """The input/output SMT terms of one concrete execution.
+
+    `choices` selects the path: a fold whose rewrite is GUARDED by analysis queries does not rewrite
+    at all on the all-false path, so the arms that need a fact must be run on the path that
+    establishes it.
+    """
+    out = subprocess.run([exe, fold, *choices], capture_output=True, text=True).stdout
     return json.loads(out) if out.strip() else None
 
 
@@ -104,6 +114,29 @@ def main() -> int:
                                     fold, status)
         confirmed += 1
     assert confirmed == len(arms), (confirmed, len(arms))
+
+    # 1b) A FACT-DEPENDENT fold is confirmed WITH ITS FACTS, and only with them. Every arm above is
+    #     valid unconditionally, so rendering its bare value terms asks Alive2 the same question z3
+    #     was asked. `foldAndOrOfICmpsOfAndWithPow2` is the first that is NOT: its rewrite is false
+    #     unless both masks are powers of two, a fact that comes from `isKnownToBeAPowerOfTwo` and
+    #     not from the pattern. So the facts the path established travel into the IR as `llvm.assume`
+    #     -- and the check has two sides, because an assumption that changed nothing would confirm
+    #     nothing: WITH the facts Alive2 proves both arms, WITHOUT them it REFUTES them.
+    exe5 = R.compile_harness(str(POW2), clang=clang)
+    assert exe5, "the vendored power-of-two icmp fold must compile against the shim"
+    for fold in POW2_ARMS:
+        rec = _terms(exe5, fold, choices=("1", "1", "1", "1"))
+        assert rec and rec["output"], (f"{fold} must rewrite on the path where both facts hold", rec)
+        facts, ungrounded = R._path_condition(rec["decisions"])
+        assert len(facts) == 2 and not ungrounded, (fold, facts, ungrounded)
+        src, tgt = render_pair(rec["input"], rec["output"], assumptions=facts)
+        assert alive_refines(src, tgt, alive).get("status") == "proved", \
+            (f"Alive2 does not confirm {fold} under the facts its own branches established", fold)
+        bare_src, bare_tgt = render_pair(rec["input"], rec["output"])
+        assert alive_refines(bare_src, bare_tgt, alive).get("status") == "refuted", \
+            (f"{fold} must be REFUTED without its facts -- if it holds unconditionally then the "
+             "assumptions are decoration and this cross-check proves nothing about them", fold)
+        confirmed += 1
 
     # 2) TEETH. The oracle must be able to FAIL: corrupt a rewrite and require a refutation.
     bad = ANDORXOR.read_text().replace("return BinaryOperator::CreateOr(X, NotY);",

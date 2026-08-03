@@ -77,7 +77,12 @@ class _Emitter:
         """Emit instructions for `node`; return (operand, width)."""
         if isinstance(node, str):
             if node.startswith("#b"):
-                return str(int(node[2:], 2)), 1
+                return str(int(node[2:], 2)), len(node) - 2
+            # `#xNN` -- how the fact encoders spell constants (four bits per digit). The WIDTH is the
+            # literal's own, not the emitter's default: reading `#x00` as i32 would silently compare
+            # an i8 mask against a 32-bit zero.
+            if node.startswith("#x"):
+                return str(int(node[2:], 16)), 4 * (len(node) - 2)
             self.vars.add(node)
             return f"%{node}", self.default_width
         if not node:
@@ -95,6 +100,28 @@ class _Emitter:
             return r, to
         if head == "_" and len(node) == 3 and str(node[1]).startswith("bv"):
             return str(int(str(node[1])[2:])), int(node[2])          # (_ bvN W)
+        # BOOLEAN connectives, as the fact encoders spell them: `(and (not (= B 0)) ...)`. In IR these
+        # are i1 operations, and the operands MUST already be i1 -- a wider operand here would mean a
+        # Bool term was built out of a bitvector, which is a mis-encoding to report rather than
+        # something to coerce into place.
+        if head in ("and", "or") and len(node) >= 3:
+            args = [self.emit(x) for x in node[1:]]
+            for _, w in args:
+                if w != 1:
+                    raise UntranslatableTerm(f"boolean {head} over an i{w} operand")
+            cur = args[0][0]
+            for a, _ in args[1:]:
+                r = self._fresh()
+                self.lines.append(f"  {r} = {head} i1 {cur}, {a}")
+                cur = r
+            return cur, 1
+        if head == "not" and len(node) == 2:
+            a, w = self.emit(node[1])
+            if w != 1:
+                raise UntranslatableTerm(f"boolean not over an i{w} operand")
+            r = self._fresh()
+            self.lines.append(f"  {r} = xor i1 {a}, true")
+            return r, 1
         if head in _BIN and len(node) == 3:
             (a, wa), (b, wb) = self.emit(node[1]), self.emit(node[2])
             if wa != wb:
@@ -139,14 +166,29 @@ class _Emitter:
         raise UntranslatableTerm(f"unmodelled term head {head!r}")
 
 
-def render_pair(src_term: str, tgt_term: str, width: int = 32, fname: str = "f"):
+def render_pair(src_term: str, tgt_term: str, width: int = 32, fname: str = "f", assumptions=()):
     """Both terms as IR functions over the SAME parameter list, ready for alive-tv.
 
     The shared signature matters: Alive2 compares src and tgt argument-for-argument, so a parameter
     appearing in only one of them must still be declared in both. The RETURN type comes from the
     terms themselves -- an icmp-rooted fold returns i1, not i32.
+
+    `assumptions` are the facts the fold's own branches established -- what `isKnownToBeAPowerOfTwo`
+    returned, and the like. A fold whose validity rests on an analysis fact is NOT valid without it,
+    so rendering the bare value terms would ask Alive2 a question whose honest answer is "refuted"
+    and would look like the shim's encoding is wrong. They are emitted as `llvm.assume` into BOTH
+    functions, which is how Alive2 is told the same thing z3 was told: the source is only claimed to
+    be equivalent where the facts hold. Emitting them into the source alone would be the same
+    mistake in the other direction -- Alive2 requires the target to be defined wherever the source
+    is, and an assume constrains the function it appears in.
     """
     a, b = _Emitter(width), _Emitter(width)
+    for fact in assumptions:
+        for em in (a, b):
+            fv, fw = em.emit(parse_term(fact))
+            if fw != 1:
+                raise UntranslatableTerm(f"an assumption must be a predicate, got i{fw}")
+            em.lines.append(f"  call void @llvm.assume(i1 {fv})")
     (ra, wa), (rb, wb) = a.emit(parse_term(src_term)), b.emit(parse_term(tgt_term))
     if wa != wb:
         raise UntranslatableTerm(f"src returns i{wa} but tgt returns i{wb}")
@@ -164,9 +206,11 @@ def render_pair(src_term: str, tgt_term: str, width: int = 32, fname: str = "f")
     sig = ", ".join(f"{ty} noundef %{p}" for p in params)
     rty = f"i{wa}"
 
+    decl = "declare void @llvm.assume(i1 noundef)\n" if assumptions else ""
+
     def fn(em, ret):
         body = "\n".join(em.lines)
-        return (f"define {rty} @{fname}({sig}) {{\n" + (body + "\n" if body else "") +
+        return (decl + f"define {rty} @{fname}({sig}) {{\n" + (body + "\n" if body else "") +
                 f"  ret {rty} {ret}\n}}\n")
 
     return fn(a, ra), fn(b, rb)

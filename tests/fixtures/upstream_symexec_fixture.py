@@ -71,6 +71,8 @@ FOLD8 = "foldSelectZeroOrOnes"
 # A bit-test rewritten as a masked compare; the @shift arm is the first REAL fold to exercise
 # `m_SpecificInt_ICMP` (a constraint on a constant, not an icmp instruction).
 ICMPANDAND = VENDOR / "upstream_select_icmpandand_fold.cpp"
+POW2 = VENDOR / "upstream_icmps_and_pow2_fold.cpp"
+FOLD10_ARMS = ("pow2_and", "pow2_or")
 FOLD9_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
 # separate theorems reached by different patterns, and a copy-paste slip between them is the most
@@ -364,6 +366,44 @@ def main() -> int:
         rb9 = R.verify_fold(z3, e9, FOLD9_ARMS[0])
         assert rb9["refuted"] >= 1 and not rb9["ok"], ("a widened mask must be refuted", rb9)
 
+    # 4g) A TENTH fold, and the first whose soundness rests ENTIRELY on what an ANALYSIS returned
+    #     rather than on what the pattern matched:
+    #        ((X & P1) != 0) & ((X & P2) != 0)  ->  (X & (P1|P2)) == (P1|P2)
+    #        ((X & P1) == 0) | ((X & P2) == 0)  ->  (X & (P1|P2)) != (P1|P2)
+    #     Both are false for general masks and true for POWERS OF TWO -- a one-bit mask makes "some
+    #     bit set" and "every bit set" the same statement. Nothing in the matched shape says so; the
+    #     two `isKnownToBeAPowerOfTwo` calls do. So this is the arm that exercises query grounding
+    #     end to end: each query's fact is emitted into the path condition and the obligation is
+    #     discharged over exactly those facts, with none left ungrounded.
+    exe10 = R.compile_harness(str(POW2), clang=clang)
+    assert exe10 is not None, "the vendored power-of-two icmp fold must compile against the shim"
+    ten = 0
+    for arm in FOLD10_ARMS:
+        v10 = R.verify_fold(z3, exe10, arm)
+        assert v10["ok"] and not v10["crashes"] and v10["proved"] == v10["rewriting_paths"] >= 1, (arm, v10)
+        row = next(x for x in v10["rows"] if x["rewrote"])
+        assert row["facts"] == 2 and not row["ungrounded"], \
+            ("the rewrite must be discharged under BOTH established facts, with neither ungrounded "
+             "-- a dropped fact here would widen the input space and could refute a correct fold", arm, row)
+        ten += v10["proved"]
+
+    #     TEETH, and the sharpest kind available: corrupt only the STRENGTH OF A FACT, leaving the
+    #     rewrite untouched. `OrZero` admits a zero mask, and with P1 = 0 the source's first compare
+    #     is false while the target can still be true. The fold's code is otherwise identical, so
+    #     nothing but the grounding of that one query can catch it.
+    bad10 = POW2.read_text().replace("isKnownToBeAPowerOfTwo(L2, false, 0, CxtI)",
+                                     "isKnownToBeAPowerOfTwo(L2, true, 0, CxtI)", 1)
+    assert bad10 != POW2.read_text(), "the OrZero corruption must apply"
+    with tempfile.TemporaryDirectory() as td:
+        p10 = Path(td) / "c10.cpp"
+        p10.write_text(bad10)
+        e10 = R.compile_harness(str(p10), clang=clang)
+        assert e10 is not None, "the corrupted variant should still compile"
+        rb10 = R.verify_fold(z3, e10, FOLD10_ARMS[0])
+        assert rb10["refuted"] >= 1 and not rb10["ok"], \
+            ("weakening a power-of-two query to admit zero must be refuted", rb10)
+        assert next(x for x in rb10["rows"] if x["status"] == "refuted").get("witness")
+
     # 5) A SOLVER TIMEOUT is a non-answer too, and it must be BOUNDED. Real folds carry obligations a
     #    bit-blasting solver cannot settle -- `foldBoxMultiply` reassociates a 32x32 multiply, and
     #    with no bound z3 ran indefinitely and hung the whole run rather than reporting anything. The
@@ -388,12 +428,12 @@ def main() -> int:
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: NINE UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+    print(f"upstream_symexec_fixture OK: TEN UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
           f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3}, {FOLD4} and {FOLD5} from "
           f"InstCombineAndOrXor.cpp) "
           f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved'] + nine} "
+          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved'] + nine + ten} "
           "rewriting arm(s) proved a sound refinement by z3 -- EVERY arm of the three AndOrXor folds, not merely the first of each. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "
