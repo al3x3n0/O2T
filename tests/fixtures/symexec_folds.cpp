@@ -233,6 +233,23 @@ static Value foldSelectTrueOr(Value C, Value Y, IRBuilder &B, bool freeze) {
   return B.CreateOrPoisoning(C, freeze ? B.CreateFreeze(Y) : Y);
 }
 
+// select C, X, Y  ->  freeze Y, under an established fact that X and Y have the SAME VALUE.
+//
+// This fold exists to make freeze's model load-bearing, because every other use of freeze here is
+// correct no matter what freeze yields. It is value-identical: the fact says X == Y, so the select
+// returns that one value on both arms. It is nonetheless UNSOUND, and only through the one thing the
+// values cannot show -- when C selects X while Y is POISON, the source returns a definite value (a
+// select does not propagate its unselected arm's poison) and the target returns whatever freeze
+// chose, which the semantics leave arbitrary.
+//
+// So it separates the two possible models exactly: freeze modelled as "the operand's own term,
+// defined" makes the target equal X on that region and PROVES a miscompile; freeze modelled as an
+// arbitrary chosen value REFUTES it, with a witness where the choice differs.
+static Value foldSelectToFrozenArm(Value C, Value X, Value Y, IRBuilder &B) {
+  cv_constraint("(= " + X.t + " " + Y.t + ")");        // the fact the rewrite is justified by
+  return B.CreateFreeze(Y);
+}
+
 // fadd X, Y  ->  fadd nnan X, Y   -- setting the fast-math nnan flag. The FP analogue of nsw: sound
 // only when the sum cannot be NaN; otherwise the flag introduces poison the source did not have
 // (e.g. +inf + -inf is a defined NaN in the source, poison under nnan).
@@ -402,8 +419,12 @@ int main(int argc, char **argv) {
   }
   else if (!strncmp(f, "select_to_or", 12)) {        // select C,true,Y -> or C,Y  (poison contagion)
     bool freeze = !strcmp(f, "select_to_or_freeze");
-    Value C{"S"}; C.poison = "Sp";                    // i1 selector, may itself be poison
-    Value W{"W"}; W.poison = "Wp";                    // i1 operand, may itself be poison
+    // i1 selector and operand, either of which may itself be poison. The TYPE is set, not left to
+    // the shim's i32 default: these are 1-bit terms, and anything the shim builds from them at the
+    // wrong width (a freeze's arbitrary value, an extension) is a sort error at best and a silent
+    // mis-model at worst.
+    Value C{"S"}; C.poison = "Sp"; C.ty = cv_i1();
+    Value W{"W"}; W.poison = "Wp"; W.ty = cv_i1();
     cv_decl("(declare-const S (_ BitVec 1))");
     cv_decl("(declare-const W (_ BitVec 1))");
     cv_decl("(declare-const Sp Bool)");
@@ -412,6 +433,19 @@ int main(int argc, char **argv) {
     // select poison: poison if the condition is poison, or the SELECTED arm is (true is never poison).
     CV_INPUT_POISON = "(or Sp (and (= S #b0) Wp))";
     out = foldSelectTrueOr(C, W, B, freeze);
+  }
+  else if (!strcmp(f, "select_to_frozen_arm")) {     // select C,X,Y -> freeze Y, given X == Y
+    Value C{"S"}; C.ty = cv_i1();                     // the selector is definite here...
+    Value X{"X"};                                     // ...and X is definite, so the SOURCE is defined
+    Value Y{"Y"}; Y.poison = "Yp";                    // ...but the unselected arm may be poison
+    cv_decl("(declare-const S (_ BitVec 1))");
+    cv_decl("(declare-const Yp Bool)");
+    input = "(ite (= S #b1) X Y)";                    // select C, X, Y  on i32
+    // A select does NOT propagate the unselected arm's poison: with C true the source is X, defined,
+    // however poison Y is. That region is precisely where the target's arbitrary frozen value is
+    // free to differ, and precisely where a model that equates freeze(Y) with Y would see nothing.
+    CV_INPUT_POISON = "(and (= S #b0) Yp)";
+    out = foldSelectToFrozenArm(C, X, Y, B);
   }
   else if (!strncmp(f, "fadd_nnan", 9)) {            // fadd X,Y -> fadd nnan X,Y  (FP fast-math flag)
     bool guarded = !strcmp(f, "fadd_nnan_guarded");

@@ -140,6 +140,10 @@ struct Type;
 struct APInt;
 inline Type *cv_i1();
 inline std::string cv_ext_term(const Value &v, unsigned to_bits, bool is_signed);
+// a value's bit width (Type is defined below, so this is resolved after it)
+inline unsigned cv_width(const Value &v);
+inline void cv_decl(const std::string &smt);     // extra SMT declarations (defined below)
+static int CV_FRZ;                               // names the arbitrary value each freeze may choose
 inline std::string cv_icmp_term(CVPredicate p, const std::string &a, const std::string &b);
 
 // upstream signatures name the base class; the shim has a single builder type.
@@ -253,9 +257,30 @@ struct IRBuilder {
   Value CreateOrPoisoning(Value a, Value b) {
     Value r; r.t = "(bvor " + a.t + " " + b.t + ")"; r.poison = cv_orp(a.poison, b.poison); return r;
   }
-  // `freeze` stops poison propagation: the result is ALWAYS defined (poison -> an arbitrary fixed
-  // value). The standard way to make a speculation poison-safe.
-  Value CreateFreeze(Value a) { Value r; r.t = a.t; r.poison = "false"; return r; }
+  // `freeze` stops poison propagation: the result is ALWAYS defined. But WHAT it yields where the
+  // operand is poison is an ARBITRARY value the implementation chooses -- not the poison operand's
+  // term. This used to be modelled as `r.t = a.t` with the poison cleared, which says freeze(poison)
+  // equals whatever term `a` happened to carry. That is strictly stronger than the semantics allow,
+  // and stronger in the dangerous direction: a rewrite whose correctness depends on the frozen value
+  // being a's value would be PROVED here and be wrong in LLVM. It survived because the one fold that
+  // built a freeze (the select->or poison fold) is correct for ANY frozen value, so its obligation
+  // never consulted the choice -- the shim's standing hazard, code that compiles, runs, and has
+  // never been asked the question it gets wrong.
+  //
+  // The sound model NAMES the choice: a fresh unconstrained value, selected exactly where the
+  // operand is poison. Where the operand is provably defined the two models coincide, and the fresh
+  // constant is skipped rather than declared, so poison-free folds keep their old obligation
+  // verbatim. Track B reached the same encoding for the same reason (scalar_ir's `fresh` list).
+  Value CreateFreeze(Value a) {
+    Value r;
+    r.poison = "false";
+    if (a.poison == "false") { r.t = a.t; return r; }        // nothing to choose
+    std::string f = "FRZ" + std::to_string(CV_FRZ++);
+    cv_decl("(declare-const " + f + " (_ BitVec " + std::to_string(cv_width(a)) + "))");
+    r.t = "(ite " + a.poison + " " + f + " " + a.t + ")";
+    return r;
+  }
+  Value *CreateFreeze(Value *a) { return cv_keep(CreateFreeze(*a)); }
   // fast-math `fadd nnan X, Y`: the nnan flag asserts the result is never NaN; it is poison when the
   // sum actually IS NaN (e.g. +inf + -inf). The FP analogue of nsw -- a flag the pass must justify.
   Value CreateFAddNNan(Value x, Value y) {
@@ -294,6 +319,7 @@ struct Type {
 static Type CV_I32;
 static Type CV_I1{1};
 inline Type *cv_i1() { return &CV_I1; }
+inline unsigned cv_width(const Value &v) { return v.ty ? v.ty->bits : 32; }
 inline SExtInst::SExtInst(Value *v, Type *ty, const std::string &) {
   t = cv_ext_term(*v, ty ? ty->bits : 32, /*is_signed=*/true);
   this->ty = ty; poison = v->poison; op0 = v;

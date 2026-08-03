@@ -122,6 +122,20 @@ def main() -> int:
     sf = R.verify_fold(z3, exe, "select_to_or_freeze")
     assert sf["ok"] and sf["proved"] == 1 and sf["refuted"] == 0, sf
 
+    #     ...and WHAT FREEZE YIELDS is itself modelled, not assumed. `select C,X,Y -> freeze Y` under
+    #     an established X == Y is value-identical and still unsound: with C selecting X and Y poison,
+    #     the source returns a definite value (a select does not propagate its unselected arm's
+    #     poison) and the target returns freeze's arbitrary choice. Modelling freeze as "the operand's
+    #     own term, defined" PROVED this miscompile -- measured by ablation, not asserted -- because
+    #     it silently decides the choice in the rewrite's favour. Naming the choice as a fresh value
+    #     refutes it, with a witness in which the choice differs; the sound freeze fold above proves
+    #     under BOTH models, so the correction costs no reach. Every other freeze in this harness is
+    #     correct for any frozen value, which is how the wrong model survived being executed.
+    fz = R.verify_fold(z3, exe, "select_to_frozen_arm")
+    assert not fz["ok"] and fz["refuted"] == 1 and fz["proved"] == 0, fz
+    fzrw = next(r for r in fz["rows"] if r["rewrote"])
+    assert fzrw["status"] == "refuted" and "FRZ" in fzrw["witness"], fzrw
+
     # 3g) FLOATING-POINT / fast-math: the refinement check is not bitvector-only. `fadd X,Y ->
     #     fadd nnan X,Y` is the FP analogue of nsw -- the nnan flag is poison when the sum is NaN
     #     (e.g. +inf + -inf, a DEFINED value in the source). Discharged in the FP theory (QF_FPBV):
