@@ -43,9 +43,18 @@ VENDOR = ROOT / "tests" / "fixtures" / "vendor_folds" / "instcombine_real_folds.
 
 
 def _clang():
+    """A clang that can BOTH dump an AST and see the LLVM headers -- both, or it is no use here.
+
+    Selecting on `available()` alone picks the first clang that parses, which on a mac is Apple's
+    /usr/bin/clang: it dumps ASTs perfectly and ships no `llvm/IR/PatternMatch.h`, so the vendored
+    source cannot compile in its real context. The half then died on an assertion instead of taking
+    the skip this fixture's own docstring promises -- a gate failure that says nothing about O2T.
+    The requirement is a property of the candidate, so it belongs in the selection, not in a check
+    after the choice is already made.
+    """
     for cand in ("clang", "/opt/homebrew/opt/llvm@18/bin/clang", "clang-18"):
         path = shutil.which(cand) or (cand if Path(cand).exists() else None)
-        if path and ct.available(path):
+        if path and ct.available(path) and ct.llvm_include_dir(path):
             return path
     return None
 
@@ -82,7 +91,7 @@ def main() -> int:
 
     clang = _clang()
     if clang is None:
-        print("recovery_mode_fixture OK (AST half skipped: no clang 18): the default refuses to run "
+        print("recovery_mode_fixture OK (AST half skipped: no clang with the LLVM headers): the default refuses to run "
               "without a compile context, the two modes are mutually exclusive, and fragment mode is "
               "recorded in the report as test-only")
         return 0
