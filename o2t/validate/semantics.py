@@ -329,9 +329,20 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
             if vp == "false" and undef_free:
                 env[dst] = (v, w, "false", vu)
                 return
-            raise Unsupported("freeze in the source over a value that may be poison or undef (its "
-                              "nondeterministic choice is universal, which this encoding cannot "
-                              "express; declare the operand `noundef` if it is definite)")
+            # Otherwise the choice is real, and it is UNIVERSAL: the target must differ from EVERY
+            # value the source freeze could have picked. That is expressible once the caller is
+            # willing to quantify -- it records the variable as source-side and binds it in a
+            # `forall` around the whole refutation. A caller that cannot (no `fresh` list) still
+            # declines, so nothing that used to be quantifier-free silently becomes quantified.
+            if ctx.get("fresh") is None:
+                raise Unsupported("freeze in the source over a value that may be poison or undef "
+                                  "(its nondeterministic choice is universal, and this caller does "
+                                  "not quantify)")
+            fresh = ctx["fresh"]
+            name = f"frz{len(fresh)}_{ctx.get('side', 'source')}"
+            fresh.append((name, w))
+            env[dst] = (f"(ite {vp} {name} {v})", w, "false", vu)
+            return
         fresh = ctx["fresh"]
         name = f"frz{len(fresh)}_{ctx['side']}"
         fresh.append((name, w))

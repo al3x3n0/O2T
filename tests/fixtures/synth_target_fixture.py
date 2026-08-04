@@ -80,15 +80,23 @@ def main() -> int:
     assert contradicted == 0, (f"{contradicted} synthesized transforms O2T proved and Alive2 refutes "
                                "-- a FALSE PROOF on the API's decision surface")
 
-    # 2) THE ACID TEST. Disable the undeclared-`noundef` guard -- the exact bug that escaped every
-    #    opt-driven campaign -- and require this shape to SEE it. Without this, a green campaign would
-    #    mean only that the fuzzer never asked the question.
-    saved = si._noundef_params
+    # 2) THE ACID TEST. Disable the protection against the undeclared-`noundef` assumption -- the
+    #    exact bug that escaped every opt-driven campaign -- and require this shape to SEE it. Without
+    #    this, a green campaign would mean only that the fuzzer never asked the question.
+    #
+    #    TWO independent mechanisms now cover that class and BOTH have to be disabled for the shape to
+    #    surface it, which is itself the point: the undef-risk guard declines when the target's result
+    #    depends on a possibly-undef parameter the source's does not, and, separately, a parameter
+    #    without `noundef` carries a poison flag, so a target returning one is poison where a definite
+    #    source is not. Disabling only the guard leaves the poison flag refuting the same transforms,
+    #    and the campaign stays clean for a real reason rather than a blind one.
+    saved, saved_flag = si._noundef_params, si.param_poison_flag
     try:
         si._noundef_params = lambda ll, fn: set(si._params(ll, fn))   # pretend every arg is noundef
+        si.param_poison_flag = lambda name: "false"                   # ...and that none can be poison
         _, blind_hits = _campaign(fz, z3, alive, n=60, seed=5)
     finally:
-        si._noundef_params = saved
+        si._noundef_params, si.param_poison_flag = saved, saved_flag
     assert blind_hits > 0, ("the synthesized-target shape must REACH the noundef class: with the "
                             "guard disabled it has to surface false proofs, or it is not auditing "
                             "the assumption at all")

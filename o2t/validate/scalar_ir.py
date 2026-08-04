@@ -77,14 +77,15 @@ def _noundef_params(ll_text, func):
 
 
 def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
-              side="source", fresh=None):
+              side="source", fresh=None, param_poison=False):
     """Translate a function to (params, ret_term, ret_width, ret_poison, ret_ub) over LLVM's OWN
     parse. Validated function-by-function against the text reader it replaces over LLVM 18's
     InstCombine tests: 500 identical SMT, 465 identical declines, 0 differences, 0 regressions, and 58
     functions the text reader declined only because of a trailing `; comment`, an `immarg` attribute
     or a `zeroinitializer` -- valid IR its regexes could not match."""
     module = ir.parse(_module if _module is not None else ll_text)
-    return _translate_parsed(module, func, extra_ops, bindings, _depth, side, fresh)
+    return _translate_parsed(module, func, extra_ops, bindings, _depth, side, fresh,
+                             param_poison)
 
 
 def _bool_of(term, width):
@@ -185,8 +186,21 @@ def _mentions(name, *terms):
     return any(pat.search(t) for t in terms if t)
 
 
-def _smt(decls, goal, get_model=False):
-    lines = ["(set-logic QF_BV)", *decls, f"(assert {goal})", "(check-sat)"]
+def _smt(decls, goal, get_model=False, forall=()):
+    """One SMT-LIB2 query. `forall` binds SOURCE-side nondeterministic choices.
+
+    The refutation asked here is `exists input, exists target-choice, forall source-choice. ...`, and
+    the polarity is not cosmetic: a TARGET choice is existential (a free constant the solver picks to
+    expose the miscompile) while a SOURCE choice is universal (the target must differ from EVERY
+    value the source could have produced). Binding a source choice as a free constant instead would
+    let the solver CHOOSE the source's value to make the two differ, which manufactures false
+    REFUTATIONS. Quantifying costs the quantifier-free logic -- `BV` is still decidable, and an
+    `unknown` from the solver is reported as such rather than guessed at."""
+    logic = "BV" if forall else "QF_BV"
+    if forall:
+        binders = " ".join(f"({n} (_ BitVec {w}))" for n, w in forall)
+        goal = f"(forall ({binders}) {goal})"
+    lines = [f"(set-logic {logic})", *decls, f"(assert {goal})", "(check-sat)"]
     if get_model:
         lines.append("(get-model)")
     return "\n".join(lines) + "\n"
@@ -231,8 +245,10 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     `cross_check` replays the decided query through a second, independently implemented solver."""
     fresh: list = []                                   # nondeterministic choices (freeze), declared below
     try:
-        p0, r0, w0, sp, su = translate(src_text, func, extra_ops, side="source", fresh=fresh)
-        p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops, side="target", fresh=fresh)
+        p0, r0, w0, sp, su = translate(src_text, func, extra_ops, side="source", fresh=fresh,
+                                       param_poison=True)
+        p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops, side="target", fresh=fresh,
+                                       param_poison=True)
     except Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     except ir.IrParseError as exc:
@@ -269,15 +285,24 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
                           f"{', '.join(risky)} the source result does not (add `noundef` to declare "
                           f"them defined; an undef argument may read differently at each use)"}
 
+    # A nondeterministic choice is declared FREE (existential) when the target makes it, and BOUND by
+    # a universal quantifier when the source does -- see `_smt`. The side is recorded in the name at
+    # the point the choice is created.
+    src_fresh = [(n, w) for n, w in fresh if n.endswith("_source")]
+    tgt_fresh = [(n, w) for n, w in fresh if not n.endswith("_source")]
     decls = [f"(declare-const {name} (_ BitVec {w}))" for name, w in sorted(p0.items())]
-    decls += [f"(declare-const {name} (_ BitVec {w}))" for name, w in fresh]
+    decls += [f"(declare-const {name} (_ BitVec {w}))" for name, w in tgt_fresh]
+    # ...and one boolean per parameter that may arrive POISON. Shared by both sides, because it
+    # describes the INPUT rather than a choice either side makes.
+    decls += [f"(declare-const {param_poison_flag(n)} Bool)"
+              for n in sorted(set(p0) - _noundef_params(src_text, func))]
     # Alive2 refinement refutation: an input where the source is defined (no UB, value not poison)
     # but the target misbehaves -- it is UB, becomes poison, or returns a different value. (A pass
     # that only DROPS a flag / removes UB cannot satisfy this, so it still proves.)
     refute = smt_and([f"(not {su})",
                       smt_or([tu, smt_and([f"(not {sp})",
                                            smt_or([tp, f"(not (= {r0} {r1}))"])])])])
-    smt = _smt(decls, refute, get_model=True)
+    smt = _smt(decls, refute, get_model=True, forall=src_fresh)
     try:
         head, out = _query(z3_bin, smt, timeout)
     except subprocess.TimeoutExpired:
@@ -291,9 +316,11 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
 
     if check_vacuity and head == "unsat":
         # Is the source defined on ANY input? sat => the proof is about real behaviour.
+        # existential in this probe: "is the source defined for SOME input and SOME choice"
         defined = smt_and([f"(not {su})", f"(not {sp})"])
+        vdecls = decls + [f"(declare-const {n} (_ BitVec {w}))" for n, w in src_fresh]
         try:
-            dhead, _ = _query(z3_bin, _smt(decls, defined), timeout)
+            dhead, _ = _query(z3_bin, _smt(vdecls, defined), timeout)
         except subprocess.TimeoutExpired:
             dhead = "timeout"
         verdict["vacuous"] = {"sat": False, "unsat": True}.get(dhead)   # None: inconclusive probe
@@ -520,15 +547,31 @@ def _undef_free(fn):
     return free
 
 
+def param_poison_flag(name):
+    """The SMT boolean naming whether the argument bound to `name` was passed POISON.
+
+    Deterministic, because both sides must use the SAME flag: an argument's poison-ness is a property
+    of the INPUT, not a nondeterministic choice either side gets to make, so source and target see one
+    flag and the solver picks it once per counterexample."""
+    return f"pois_{name}"
+
+
 def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
-                      side="source", fresh=None):
+                      side="source", fresh=None, param_poison=False):
     """`translate` over a real parse. `module` is an `ir_model.Module`."""
     fn = module.function(func)
     if fn is None or fn.is_declaration:
         raise sem.Unsupported(f"function {func} not found")
     params = fn.int_params
+    # A parameter without `noundef` may be passed POISON as well as `undef`, and modelling it as
+    # definitely-not-poison flatters the TARGET: it can return that parameter, look defined, and be
+    # poison in reality. Reference Alive2 refutes `freeze %x -> %x` for exactly this reason, and its
+    # witness is `%x = poison`, not an undef one. Opt-in so that only the validator that also
+    # DECLARES the flags emits them; every other caller keeps the previous model verbatim.
+    nou = {p.name for p in fn.params if p.noundef} if param_poison else set(params)
     env = dict(bindings) if bindings is not None else \
-        {name: (name, w, "false", "false") for name, w in params.items()}
+        {name: (name, w, "false" if name in nou else param_poison_flag(name), "false")
+         for name, w in params.items()}
     ctx = {"module": module, "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh,
            "undef_free": _undef_free(fn)}
 

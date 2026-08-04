@@ -92,18 +92,23 @@ def main() -> int:
               fn("  %b = add nsw i32 %x, %y\n  %z = freeze i32 %b\n  ret i32 %z"), "refuted")
     assert v.get("witness"), ("a refutation must ship a witness", v)
 
-    # 5) A SOURCE-side freeze declines -- the universal choice is not expressible in QF_BV.
+    # 5) REMOVING a source-side freeze is now DECIDED, and refuted. The source's freeze makes the
+    #    result definite; the target returns the `nsw` add itself, which is poison on overflow -- so
+    #    the target is poison exactly where the source is defined. This used to decline: the source's
+    #    choice is UNIVERSAL (the target must differ from every value the freeze could have picked),
+    #    which QF_BV cannot state. It is now bound by a `forall` around the refutation, and `check`
+    #    confirms the verdict against Alive2 rather than against this comment.
     d = check("source freeze of poison", fn(poison + "  %z = freeze i32 %a\n  ret i32 %z"),
-              fn(poison + "  ret i32 %a"), "unsupported")
-    assert "freeze" in d["reason"], d
+              fn(poison + "  ret i32 %a"), "refuted")
+    assert d.get("witness"), ("a refutation must ship a witness", d)
 
-    # 6) ...and it declines even for a parameter, where the identity shortcut LOOKS safe. This is the
-    #    undef gap made explicit: Alive2 REFUTES this transform (an argument may be undef, so the
-    #    target's `%x` is not one fixed value while the source's frozen `%z` is). Declining is the
-    #    sound answer for a model without undef; proving it would be a false proof.
+    # 6) ...including over a PARAMETER, where the identity shortcut looks safe and is not. An
+    #    argument without `noundef` may arrive POISON -- that is Alive2's own witness for this
+    #    transform, `%x = poison`, and not an undef one -- so the target returning `%x` is poison
+    #    where the source's frozen `%z` is definite. Modelling a parameter as definitely-not-poison
+    #    is what used to hide it; each such parameter now carries a poison flag shared by both sides.
     rm_before, rm_after = fn("  %z = freeze i32 %x\n  ret i32 %z"), fn("  ret i32 %x")
-    d = si.validate_transform(z3, rm_before, rm_after, "f", timeout=30)
-    assert d["status"] == "unsupported", ("removing a freeze must decline, not prove", d)
+    check("remove a freeze over a parameter", rm_before, rm_after, "refuted")
     if alive:
         av = alive_refines(rm_before, rm_after, alive).get("status")
         assert av == "refuted", ("Alive2 should refute freeze-removal (undef argument)", av)
