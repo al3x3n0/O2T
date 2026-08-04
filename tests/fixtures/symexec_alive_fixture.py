@@ -68,6 +68,8 @@ EQICMP = VENDOR / "upstream_icmpeq_and_icmp_fold.cpp"
 # here, and poison-flag correctness is z3's job through the refinement obligation.
 EQICMP_ARMS = ("eqicmp_or", "eqicmp_and")
 POW2 = VENDOR / "upstream_icmps_and_pow2_fold.cpp"
+# NOT the logical arm, for the same reason as EQICMP above: its target holds the value freeze chose,
+# selected on a poison flag, which has no counterpart in IR. z3 decides it; Alive2 cannot be shown it.
 POW2_ARMS = ("pow2_and", "pow2_or")
 ANDORXOR_ARMS = ("foldNotXor", "foldNotXor@2",
                  "foldXorToXor", "foldXorToXor@2", "foldXorToXor@3", "foldXorToXor@4",

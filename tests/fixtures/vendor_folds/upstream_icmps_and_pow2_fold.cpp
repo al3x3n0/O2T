@@ -21,10 +21,12 @@
 // member of `InstCombinerImpl`, which the shim's pass object does not declare, so the definition is
 // attached to a derived class. Every byte of the parameter list and body is upstream's.
 //
-// NOT CLAIMED HERE: the `IsLogical` arm. The modelling reason for that has since been removed --
-// the unflagged builders now carry operand poison, and the logical arm of
-// foldAndOrOfICmpEqConstantAndICmp is verified on exactly that basis. This arm is simply not
-// exercised yet; there is no longer an obstacle to it, only unwritten harness.
+// The `IsLogical` arm IS claimed, and it is the one that makes the freeze load-bearing. `a && b` is
+// `select a, b, false`, which does not evaluate b, so b's mask may be poison where the whole
+// expression is not; the rewrite folds that mask into a plain `or`, and upstream freezes it first.
+// Upstream's own code proves; deleting only that one call refutes, with a witness in which the mask
+// is poison. This arm was unverifiable until the shim's unflagged builders started carrying operand
+// poison -- before that, the unfrozen version proved too.
 //
 // Reproduce the vendoring with:
 //   curl -fsSLO https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-18.1.8/llvm/lib/Transforms/InstCombine/InstCombineAndOrXor.cpp
@@ -88,9 +90,31 @@ int main(int argc, char **argv) {
   Value *out = nullptr;
   const char *f = argv[1];
 
+  // THE LOGICAL FORM, which is the arm the `freeze` in this fold exists for. `a && b` is
+  // `select a, b, false`: when a is false the result is false whatever b is, INCLUDING poison. The
+  // rewrite folds b's mask into a plain `or`, where poison WOULD propagate, so upstream freezes it
+  // first. Run both ways -- upstream's code, and the same rewrite with that one call deleted.
+  bool logical = !strcmp(f, "pow2_and_logical");
+  bool logical_nofreeze = !strcmp(f, "pow2_and_logical_nofreeze");
+  if (logical || logical_nofreeze) {
+    C.poison = "Cp";                                  // the mask the logical `and` may not evaluate
+    cv_decl("(declare-const Cp Bool)");
+    Value *zero = ConstantInt::get(&CV_I32, 0ul);
+    Value *ab = cv_node(OP_AND, "(bvand A B)", &A, &B);
+    Value *ac = cv_node(OP_AND, "(bvand A C)", &A, &C);
+    ac->poison = C.poison;                            // an `and` is poison when an operand is
+    Value *LHS = P.Builder.CreateICmp(::ICMP_NE, ab, zero);
+    Value *RHS = P.Builder.CreateICmp(::ICMP_NE, ac, zero);
+    input = "(ite (= " + LHS->t + " #b1) " + RHS->t + " #b0)";       // select LHS, RHS, false
+    // a logical `and` is poison if its condition is, or if the arm it actually SELECTS is
+    CV_INPUT_POISON = "(and (= " + LHS->t + " #b1) " + RHS->poison + ")";
+    out = P.foldAndOrOfICmpsOfAndWithPow2(LHS, RHS, nullptr, /*IsAnd=*/true,
+                                          /*IsLogical=*/logical);
+  }
+
   // `and`: ((A & B) != 0) & ((A & C) != 0)  ->  (A & (B|C)) == (B|C)
   // `or` : ((A & B) == 0) | ((A & C) == 0)  ->  (A & (B|C)) != (B|C)
-  bool is_and = !strncmp(f, "pow2_and", 8);
+  bool is_and = !strncmp(f, "pow2_and", 8) && !logical && !logical_nofreeze;
   bool is_or = !strncmp(f, "pow2_or", 7);
   if (is_and || is_or) {
     CVPredicate p = is_and ? ::ICMP_NE : ::ICMP_EQ;

@@ -314,11 +314,14 @@ struct IRBuilder {
     Value r; r.t = "(bvudiv " + x.t + " " + y.t + ")";
     r.poison = "(not (= (bvurem " + x.t + " " + y.t + ") (_ bv0 32)))"; return r;
   }
-  // poison-CONTAGION `or`: the result is poison if EITHER operand is (unlike the flag ops, the
-  // poison comes from the inputs, not a flag). Used to expose the select->or poison unsoundness.
-  Value CreateOrPoisoning(Value a, Value b) {
-    Value r; r.t = "(bvor " + a.t + " " + b.t + ")"; r.poison = cv_orp(a.poison, b.poison); return r;
-  }
+  // poison-CONTAGION `or`: the result is poison if EITHER operand is. This is now EXACTLY what the
+  // ordinary `CreateOr` does, and the collapse is the point rather than an oversight -- the two
+  // used to differ, and that difference WAS a false proof: the same unsound rewrite refuted when
+  // built with this spelling and proved when built with the ordinary one, which is what real folds
+  // call. The name is kept because two harness arms build the identical rewrite through the two
+  // spellings and both must refute, which is what stops the ordinary builder from quietly losing
+  // poison again. One implementation, so they cannot drift apart.
+  Value CreateOrPoisoning(Value a, Value b) { return CreateOr(a, b); }
   // `freeze` stops poison propagation: the result is ALWAYS defined. But WHAT it yields where the
   // operand is poison is an ARBITRARY value the implementation chooses -- not the poison operand's
   // term. This used to be modelled as `r.t = a.t` with the poison cleared, which says freeze(poison)

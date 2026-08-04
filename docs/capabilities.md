@@ -93,7 +93,7 @@ Two consequences worth knowing when reading verdicts:
   (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`, `foldAndToXor`,
   `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`, `foldSelectICmpLshrAshr`, `foldSelectZeroOrOnes`, `foldSelectICmpAndAnd`, `foldAndOrOfICmpsOfAndWithPow2`, `foldICmpAddOpConst`, `foldSetClearBits`, `foldAndOrOfICmpEqConstantAndICmp`) are verified by
   compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
-  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirty-four rewriting arms**
+  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirty-five rewriting arms**
   are proved -- EVERY arm of the three AndOrXor folds, not merely the first of each, plus the commuted
   operand orders upstream's own comments enumerate. Two ablations keep those claims honest: disabling
   arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and

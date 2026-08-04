@@ -81,7 +81,7 @@ SETCLEAR = VENDOR / "upstream_setclearbits_fold.cpp"
 SETCLEAR_ARMS = ("setclear_clear_first", "setclear_set_first")
 EQICMP = VENDOR / "upstream_icmpeq_and_icmp_fold.cpp"
 EQICMP_ARMS = ("eqicmp_or", "eqicmp_and", "eqicmp_logical_or")
-FOLD10_ARMS = ("pow2_and", "pow2_or")
+FOLD10_ARMS = ("pow2_and", "pow2_or", "pow2_and_logical")
 FOLD9_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
 # separate theorems reached by different patterns, and a copy-paste slip between them is the most
@@ -396,6 +396,14 @@ def main() -> int:
             ("the rewrite must be discharged under BOTH established facts, with neither ungrounded "
              "-- a dropped fact here would widen the input space and could refute a correct fold", arm, row)
         ten += v10["proved"]
+
+    #     ...and its LOGICAL arm, where the freeze earns its keep: `a && b` does not evaluate b, so
+    #     b's mask may be poison where the whole expression is not. Deleting only the freeze call
+    #     refutes, with a witness in which that mask is poison.
+    nofz = R.verify_fold(z3, exe10, "pow2_and_logical_nofreeze")
+    assert nofz["refuted"] == 1 and not nofz["ok"], \
+        ("folding a possibly-poison mask in without freezing it must be refuted", nofz)
+    assert next(x for x in nofz["rows"] if x["status"] == "refuted").get("witness")
 
     #     TEETH, and the sharpest kind available: corrupt only the STRENGTH OF A FACT, leaving the
     #     rewrite untouched. `OrZero` admits a zero mask, and with P1 = 0 the source's first compare
