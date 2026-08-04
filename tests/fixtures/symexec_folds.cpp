@@ -233,6 +233,15 @@ static Value foldSelectTrueOr(Value C, Value Y, IRBuilder &B, bool freeze) {
   return B.CreateOrPoisoning(C, freeze ? B.CreateFreeze(Y) : Y);
 }
 
+// The SAME unsound rewrite, built with the ORDINARY `or` builder a real fold would reach for. The
+// two differ in nothing a value model can see; they differ in whether the built `or` is poison when
+// an operand is. `CreateOrPoisoning` says it is, and the rewrite is refuted. If the ordinary builder
+// says it is not, the identical miscompile is PROVED -- so this arm measures whether the shim's
+// unflagged builders dropping operand poison is a live false-proof vector or a harmless gap.
+static Value foldSelectTrueOrPlain(Value C, Value Y, IRBuilder &B) {
+  return *B.CreateOr(&C, &Y);
+}
+
 // select C, X, Y  ->  freeze Y, under an established fact that X and Y have the SAME VALUE.
 //
 // This fold exists to make freeze's model load-bearing, because every other use of freeze here is
@@ -432,7 +441,8 @@ int main(int argc, char **argv) {
     input = "(ite (= S #b1) #b1 W)";                  // select C, true, Y  on i1
     // select poison: poison if the condition is poison, or the SELECTED arm is (true is never poison).
     CV_INPUT_POISON = "(or Sp (and (= S #b0) Wp))";
-    out = foldSelectTrueOr(C, W, B, freeze);
+    out = !strcmp(f, "select_to_or_plain") ? foldSelectTrueOrPlain(C, W, B)
+                                            : foldSelectTrueOr(C, W, B, freeze);
   }
   else if (!strcmp(f, "select_to_frozen_arm")) {     // select C,X,Y -> freeze Y, given X == Y
     Value C{"S"}; C.ty = cv_i1();                     // the selector is definite here...

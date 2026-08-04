@@ -21,12 +21,10 @@
 // member of `InstCombinerImpl`, which the shim's pass object does not declare, so the definition is
 // attached to a derived class. Every byte of the parameter list and body is upstream's.
 //
-// NOT CLAIMED HERE: the `IsLogical` arm. Upstream inserts a `freeze` there precisely because a
-// logical and/or does not propagate its RHS's poison, and while freeze itself is now modelled
-// faithfully, the shim's unflagged builders (`CreateOr`, `CreateAnd`) do not propagate operand
-// poison at all -- so an obligation over a possibly-poison mask would be discharged against a model
-// that cannot see the thing the freeze is there to fix. The arm is left unexplored rather than
-// verified against a model known not to reach it.
+// NOT CLAIMED HERE: the `IsLogical` arm. The modelling reason for that has since been removed --
+// the unflagged builders now carry operand poison, and the logical arm of
+// foldAndOrOfICmpEqConstantAndICmp is verified on exactly that basis. This arm is simply not
+// exercised yet; there is no longer an obstacle to it, only unwritten harness.
 //
 // Reproduce the vendoring with:
 //   curl -fsSLO https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-18.1.8/llvm/lib/Transforms/InstCombine/InstCombineAndOrXor.cpp

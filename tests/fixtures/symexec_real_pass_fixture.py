@@ -122,6 +122,17 @@ def main() -> int:
     sf = R.verify_fold(z3, exe, "select_to_or_freeze")
     assert sf["ok"] and sf["proved"] == 1 and sf["refuted"] == 0, sf
 
+    #     ...and the ORDINARY builders carry poison too, which is not a detail: the same unsound
+    #     rewrite built with `CreateOr` instead of `CreateOrPoisoning` is the same miscompile, and it
+    #     used to be PROVED. The two differ in nothing a value model can see. Real folds call the
+    #     ordinary builder -- `Builder.CreateOr` is what upstream writes -- so an unflagged builder
+    #     that silently drops its operands' poison is a false-proof vector reachable by any fold
+    #     handed a poison-capable operand, not a harmless gap. Both spellings must refute.
+    sp = R.verify_fold(z3, exe, "select_to_or_plain")
+    assert not sp["ok"] and sp["refuted"] == 1 and sp["proved"] == 0, \
+        ("an `or` built with the ordinary builder must be poison when an operand is; if this proves, "
+         "the unflagged builders have stopped propagating operand poison", sp)
+
     #     ...and WHAT FREEZE YIELDS is itself modelled, not assumed. `select C,X,Y -> freeze Y` under
     #     an established X == Y is value-identical and still unsound: with C selecting X and Y poison,
     #     the source returns a definite value (a select does not propagate its unselected arm's

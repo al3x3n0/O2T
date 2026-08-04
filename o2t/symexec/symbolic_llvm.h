@@ -221,25 +221,62 @@ struct IRBuilder {
   Value *CreateICmp(CVPredicate p, Value *a, Value *b, const std::string & = "") {
     Value *r = cv_keep(Value{cv_icmp_term(p, a->t, b->t)});
     r->opcode = OP_ICMP; r->pred = p; r->op0 = a; r->op1 = b; r->ty = cv_i1();
+    r->poison = cv_orp(a->poison, b->poison);
     return r;
   }
   Value *CreateIsNotNull(Value *a, const std::string & = "") {
     return CreateICmp(::ICMP_NE, a, cv_keep(Value{"(_ bv0 32)"}));
   }
-  Value *CreateNot(Value *v, const std::string & = "") { return cv_keep(Value{"(bvnot " + v->t + ")"}); }
-  Value CreateNot(Value v) { return {"(bvnot " + v.t + ")"}; }
-  Value CreateAnd(Value a, Value b) { return {"(bvand " + a.t + " " + b.t + ")"}; }
-  Value CreateOr(Value a, Value b)  { return {"(bvor " + a.t + " " + b.t + ")"}; }
-  Value CreateXor(Value a, Value b) { return {"(bvxor " + a.t + " " + b.t + ")"}; }
-  Value CreateAdd(Value a, Value b) { return {"(bvadd " + a.t + " " + b.t + ")"}; }
-  Value CreateSub(Value a, Value b) { return {"(bvsub " + a.t + " " + b.t + ")"}; }
-  Value CreateMul(Value a, Value b) { return {"(bvmul " + a.t + " " + b.t + ")"}; }
-  Value CreateShl(Value a, Value b) { return {"(bvshl " + a.t + " " + b.t + ")"}; }
-  Value CreateLShr(Value a, Value b){ return {"(bvlshr " + a.t + " " + b.t + ")"}; }
-  Value CreateAShr(Value a, Value b){ return {"(bvashr " + a.t + " " + b.t + ")"}; }
-  Value CreateUDiv(Value a, Value b){ return {"(bvudiv " + a.t + " " + b.t + ")"}; }
-  Value CreateURem(Value a, Value b){ return {"(bvurem " + a.t + " " + b.t + ")"}; }
-  Value CreateSDiv(Value a, Value b){ return {"(bvsdiv " + a.t + " " + b.t + ")"}; }
+  Value *CreateNot(Value *v, const std::string & = "") { return cv_keep(CreateNot(*v)); }
+  Value CreateNot(Value v) { Value r; r.t = "(bvnot " + v.t + ")"; r.poison = v.poison; return r; }
+  Value CreateAnd(Value a, Value b) {
+    Value r; r.t = "(bvand " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateOr(Value a, Value b)  {
+    Value r; r.t = "(bvor " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateXor(Value a, Value b) {
+    Value r; r.t = "(bvxor " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateAdd(Value a, Value b) {
+    Value r; r.t = "(bvadd " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateSub(Value a, Value b) {
+    Value r; r.t = "(bvsub " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateMul(Value a, Value b) {
+    Value r; r.t = "(bvmul " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateShl(Value a, Value b) {
+    Value r; r.t = "(bvshl " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateLShr(Value a, Value b){
+    Value r; r.t = "(bvlshr " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateAShr(Value a, Value b){
+    Value r; r.t = "(bvashr " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateUDiv(Value a, Value b){
+    Value r; r.t = "(bvudiv " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateURem(Value a, Value b){
+    Value r; r.t = "(bvurem " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
+  Value CreateSDiv(Value a, Value b){
+    Value r; r.t = "(bvsdiv " + a.t + " " + b.t + ")";
+    r.poison = cv_orp(a.poison, b.poison); return r;
+  }
   Value CreateSelect(Value c, Value x, Value y) {
     return {"(ite (= " + c.t + " (_ bv1 1)) " + x.t + " " + y.t + ")"};
   }

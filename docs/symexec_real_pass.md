@@ -256,11 +256,10 @@ resolved `ctx['clang']` is a C driver and can't link libc++).
   names. Plan from `blocked_only_by`, never from the frequency table. The six folds that sweep named
   as reachable have been taken (or, for `stripSignOnlyFPOps`, identified as a HELPER with no rewrite
   to discharge -- compiling it would raise the reach count and verify nothing).
-- The shim's UNFLAGGED builders (`CreateOr`, `CreateAnd`, ...) do not propagate operand poison; only
-  the explicitly poison-aware ones do. Harmless while every fold is given definite operands, which is
-  the case today -- but it is why `foldAndOrOfICmpsOfAndWithPow2`'s `IsLogical` arm is left
-  unexplored rather than verified: that arm exists to insert a `freeze` against RHS poison, and the
-  model could not see the thing the freeze is for.
+- The shim's unflagged builders (`CreateOr`, `CreateAnd`, ...) now propagate operand poison. They did
+  not until 2026-08-04, and that was a demonstrated FALSE PROOF rather than a harmless gap: the same
+  unsound rewrite proved with `CreateOr` and refuted with `CreateOrPoisoning`. The fix is inert
+  wherever operands are definite, and it is what makes the `IsLogical`/`freeze` arms checkable at all.
 
 See also: `docs/o2t-design.md` (the broader methods), `docs/real_instcombine_coverage.md` (matcher
 vocabulary vs. real InstCombine). Project memory: `o2t-symexec-real-pass`, `o2t-mission`.

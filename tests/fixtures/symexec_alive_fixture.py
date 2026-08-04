@@ -62,6 +62,10 @@ ADDCONST_ARMS = ("addconst_ult", "addconst_ule", "addconst_ugt", "addconst_slt",
 SETCLEAR = VENDOR / "upstream_setclearbits_fold.cpp"
 SETCLEAR_ARMS = ("setclear_clear_first", "setclear_set_first")
 EQICMP = VENDOR / "upstream_icmpeq_and_icmp_fold.cpp"
+# NOT the logical arm: its target contains the value `freeze` chose, which is selected on a POISON
+# FLAG -- a Bool with no counterpart in IR. The renderer refuses it rather than emitting something
+# plausible, which is the right answer and the documented split: Alive2 checks the VALUE encoding
+# here, and poison-flag correctness is z3's job through the refinement obligation.
 EQICMP_ARMS = ("eqicmp_or", "eqicmp_and")
 POW2 = VENDOR / "upstream_icmps_and_pow2_fold.cpp"
 POW2_ARMS = ("pow2_and", "pow2_or")

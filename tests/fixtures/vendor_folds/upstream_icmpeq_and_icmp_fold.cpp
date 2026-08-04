@@ -83,6 +83,28 @@ int main(int argc, char **argv) {
   const unsigned long C = 5ul, NEGC = 0xFFFFFFFBul;    // -5 at i32
   bool is_or = !strcmp(f, "eqicmp_or");                // (X == 5) | (B <u X + -5)
   bool is_and = !strcmp(f, "eqicmp_and");              // (X != 5) & (B >=u X + -5)
+  // The LOGICAL form, which is why the freeze is in this fold at all. `a || b` is
+  // `select a, true, b`: when a is true the result is true whatever b is, INCLUDING poison. The
+  // rewrite puts b's value into a plain comparison, where poison would propagate -- so upstream
+  // freezes it. Both spellings are run: with the freeze (upstream's own code) and without it, which
+  // is the same rewrite differing only in that one call.
+  bool logical = !strcmp(f, "eqicmp_logical_or");
+  bool logical_nofreeze = !strcmp(f, "eqicmp_logical_or_nofreeze");
+  if (logical || logical_nofreeze) {
+    Other.poison = "Bp";                               // the operand the logical `or` may not evaluate
+    cv_decl("(declare-const Bp Bool)");
+    Value *Cc = ConstantInt::get(&CV_I32, C);
+    Value *NegC = ConstantInt::get(&CV_I32, NEGC);
+    std::string addt = "(bvadd X " + NegC->t + ")";
+    Value *add = cv_node(OP_ADD, addt.c_str(), &X, NegC);
+    Value *LHS = Builder.CreateICmp(::ICMP_EQ, &X, Cc);
+    Value *RHS = Builder.CreateICmp(::ICMP_ULT, &Other, add);
+    input = "(ite (= " + LHS->t + " #b1) #b1 " + RHS->t + ")";      // select LHS, true, RHS
+    // a logical or is poison if its condition is, or if the arm it actually SELECTS is
+    CV_INPUT_POISON = "(and (= " + LHS->t + " #b0) " + RHS->poison + ")";
+    out = foldAndOrOfICmpEqConstantAndICmp(LHS, RHS, /*IsAnd=*/false,
+                                           /*IsLogical=*/logical, Builder);
+  }
   if (is_or || is_and) {
     Value *Cc = ConstantInt::get(&CV_I32, C);
     Value *NegC = ConstantInt::get(&CV_I32, NEGC);

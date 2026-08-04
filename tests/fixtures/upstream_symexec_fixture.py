@@ -80,7 +80,7 @@ ADDCONST_ARMS = ("addconst_ult", "addconst_ule", "addconst_ugt", "addconst_slt",
 SETCLEAR = VENDOR / "upstream_setclearbits_fold.cpp"
 SETCLEAR_ARMS = ("setclear_clear_first", "setclear_set_first")
 EQICMP = VENDOR / "upstream_icmpeq_and_icmp_fold.cpp"
-EQICMP_ARMS = ("eqicmp_or", "eqicmp_and")
+EQICMP_ARMS = ("eqicmp_or", "eqicmp_and", "eqicmp_logical_or")
 FOLD10_ARMS = ("pow2_and", "pow2_or")
 FOLD9_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
@@ -458,6 +458,18 @@ def main() -> int:
             rb = R.verify_fold(z3, e, arm)
             assert rb["refuted"] >= 1 and not rb["ok"], (src.name, corruption, rb)
             assert next(x for x in rb["rows"] if x["status"] == "refuted").get("witness")
+
+    #     THE LOGICAL ARM, and why `freeze` is in that fold at all. `a || b` is `select a, true, b`:
+    #     when a is true the result is true whatever b is, INCLUDING poison, so the rewrite -- which
+    #     puts b's value into a plain comparison, where poison WOULD propagate -- has to freeze it.
+    #     Upstream's own code proves. Deleting just that one call, changing nothing else, refutes with
+    #     a witness in which the operand is poison. This arm was unverifiable until the ordinary
+    #     builders started carrying operand poison: before that the unfrozen version proved too,
+    #     because the model could not see the thing the freeze is for.
+    nofreeze = R.verify_fold(z3, R.compile_harness(str(EQICMP), clang=clang), "eqicmp_logical_or_nofreeze")
+    assert nofreeze["refuted"] == 1 and not nofreeze["ok"], \
+        ("a logical or whose unevaluated operand is used unfrozen must be refuted", nofreeze)
+    assert next(x for x in nofreeze["rows"] if x["status"] == "refuted").get("witness")
 
     #     ...and one corruption that does NOT refute, which is the more instructive kind. Asking the
     #     STATIC `getInversePredicate` instead of the instance one gives the shortcut spelling on

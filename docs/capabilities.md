@@ -93,7 +93,7 @@ Two consequences worth knowing when reading verdicts:
   (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`, `foldAndToXor`,
   `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`, `foldSelectICmpLshrAshr`, `foldSelectZeroOrOnes`, `foldSelectICmpAndAnd`, `foldAndOrOfICmpsOfAndWithPow2`, `foldICmpAddOpConst`, `foldSetClearBits`, `foldAndOrOfICmpEqConstantAndICmp`) are verified by
   compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
-  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirty-three rewriting arms**
+  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirty-four rewriting arms**
   are proved -- EVERY arm of the three AndOrXor folds, not merely the first of each, plus the commuted
   operand orders upstream's own comments enumerate. Two ablations keep those claims honest: disabling
   arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and
@@ -122,6 +122,15 @@ Two consequences worth knowing when reading verdicts:
   returns a struct), two folds needing their file's own pass-local helpers, and one FP matcher family
   belonging to `stripSignOnlyFPOps` -- which is a *helper*, not a rewrite, so verifying it as a fold
   would be a category error. Further reach on this track is architectural, not vocabulary.
+- **The ordinary builders carry poison, and that was a live false proof.** Only the explicitly
+  poison-aware builders propagated their operands' poison; `CreateOr`/`CreateAnd` -- what upstream
+  actually writes -- silently dropped it. Measured, not argued: the same unsound `select C, true, Y
+  -> or C, Y` rewrite REFUTES built with the poison-aware spelling and PROVED built with the ordinary
+  one, differing in nothing a value model can see. Fixed by propagating operand poison through every
+  unflagged builder, which is inert wherever operands are definite (so all existing arms are
+  unchanged) and decisive wherever they are not. It also made the first `IsLogical` arm verifiable:
+  `a || b` does not evaluate `b`, so upstream freezes it before using its value, and now that arm
+  proves while deleting only the freeze call refutes with a poison witness.
 - **What `freeze` YIELDS is modelled, not decided.** The shim modelled `freeze` as the operand's own
   term with the poison cleared, which says freeze(poison) equals whatever the operand happened to be
   -- stronger than the semantics, which leave the choice arbitrary. Measured by ablation: under that
