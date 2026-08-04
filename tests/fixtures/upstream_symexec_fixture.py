@@ -72,6 +72,15 @@ FOLD8 = "foldSelectZeroOrOnes"
 # `m_SpecificInt_ICMP` (a constraint on a constant, not an icmp instruction).
 ICMPANDAND = VENDOR / "upstream_select_icmpandand_fold.cpp"
 POW2 = VENDOR / "upstream_icmps_and_pow2_fold.cpp"
+# The batch the reach sweep named: folds blocked by shim API SHAPE or one missing accessor, not by
+# a whole category. See tools/cv-symexec-reach-sweep.py.
+ADDCONST = VENDOR / "upstream_icmp_addconst_fold.cpp"
+ADDCONST_ARMS = ("addconst_ult", "addconst_ule", "addconst_ugt", "addconst_slt", "addconst_sgt",
+                 "addconst_slt_neg", "addconst_sgt_neg")
+SETCLEAR = VENDOR / "upstream_setclearbits_fold.cpp"
+SETCLEAR_ARMS = ("setclear_clear_first", "setclear_set_first")
+EQICMP = VENDOR / "upstream_icmpeq_and_icmp_fold.cpp"
+EQICMP_ARMS = ("eqicmp_or", "eqicmp_and")
 FOLD10_ARMS = ("pow2_and", "pow2_or")
 FOLD9_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
 # Every REWRITING ARM of the three AndOrXor folds, not just the first one each. A fold's arms are
@@ -375,6 +384,7 @@ def main() -> int:
     #     two `isKnownToBeAPowerOfTwo` calls do. So this is the arm that exercises query grounding
     #     end to end: each query's fact is emitted into the path condition and the obligation is
     #     discharged over exactly those facts, with none left ungrounded.
+    batch_proved = 0
     exe10 = R.compile_harness(str(POW2), clang=clang)
     assert exe10 is not None, "the vendored power-of-two icmp fold must compile against the shim"
     ten = 0
@@ -404,6 +414,72 @@ def main() -> int:
             ("weakening a power-of-two query to admit zero must be refuted", rb10)
         assert next(x for x in rb10["rows"] if x["status"] == "refuted").get("witness")
 
+    # 4h) THREE MORE FOLDS, the batch that exhausts what vocabulary can buy on this track. The reach
+    #     sweep (tools/cv-symexec-reach-sweep.py) named them: measured over all 15 InstCombine files,
+    #     no blocker CATEGORY unblocks a fold on its own, and these were the folds blocked by shim API
+    #     SHAPE or by a single missing accessor rather than by a category.
+    #
+    #       foldICmpAddOpConst    icmp Pred (X+C), X -> a comparison of X against a constant bound,
+    #                             four theorems in one function (signed/unsigned x direction). First
+    #                             fold to COMPUTE its bound by two's-complement arithmetic on the
+    #                             constant, which is why APInt carries a width: `0 - C` at i8 is not
+    #                             the host's 64-bit answer, and a bound at the wrong width still
+    #                             type-checks and still looks like a fold.
+    #       foldSetClearBits      Cond ? (X & ~C) : (X | C) -> (X & ~C) | (Cond ? 0 : C). Guarded by
+    #                             the constants being exact complements AT THEIR WIDTH.
+    #       foldAndOrOfICmpEqConstantAndICmp
+    #                             two range checks collapsing into one, in `and` and `or` forms that
+    #                             are the same code with every predicate inverted.
+    for src, arms in ((ADDCONST, ADDCONST_ARMS), (SETCLEAR, SETCLEAR_ARMS), (EQICMP, EQICMP_ARMS)):
+        ex = R.compile_harness(str(src), clang=clang)
+        assert ex is not None, (f"{src.name} must compile against the shim", src.name)
+        for arm in arms:
+            v = R.verify_fold(z3, ex, arm)
+            assert v["ok"] and not v["crashes"] and v["proved"] == v["rewriting_paths"] >= 1, (arm, v)
+            batch_proved += v["proved"]
+
+    #     TEETH for each, aimed at the seam each fold introduced: the arithmetic that computes the
+    #     bound, the choice of which constant goes in which select arm, and the predicate inversion.
+    for src, corruption, replacement, arm in (
+            (ADDCONST, "SMax - (C - 1)", "SMax - C", "addconst_sgt"),
+            (ADDCONST, "ConstantInt::get(X->getType(), -C)", "ConstantInt::get(X->getType(), C)", "addconst_ugt"),
+            (SETCLEAR, 'Builder.CreateSelect(Cond, Zero, OrC, "masksel", &Sel)',
+                       'Builder.CreateSelect(Cond, OrC, Zero, "masksel", &Sel)', "setclear_clear_first"),
+            (EQICMP, "ConstantInt::get(LHS0->getType(), *CInt + 1)",
+                     "ConstantInt::get(LHS0->getType(), *CInt)", "eqicmp_or"),
+            (EQICMP, "IsAnd ? ICmpInst::ICMP_ULT : ICmpInst::ICMP_UGE,", "ICmpInst::ICMP_UGE,", "eqicmp_and")):
+        body = src.read_text().replace(corruption, replacement, 1)
+        assert body != src.read_text(), ("the corruption must apply", src.name, corruption)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.cpp"
+            p.write_text(body)
+            e = R.compile_harness(str(p), clang=clang)
+            assert e is not None, ("the corrupted variant should still compile", src.name)
+            rb = R.verify_fold(z3, e, arm)
+            assert rb["refuted"] >= 1 and not rb["ok"], (src.name, corruption, rb)
+            assert next(x for x in rb["rows"] if x["status"] == "refuted").get("witness")
+
+    #     ...and one corruption that does NOT refute, which is the more instructive kind. Asking the
+    #     STATIC `getInversePredicate` instead of the instance one gives the shortcut spelling on
+    #     Value, which collapses every non-equality predicate to ICMP_EQ. The fold then recognises
+    #     nothing and REWRITES ON NO PATH -- sound, silent, and invisible except that the arm stops
+    #     being verified at all. That is the failure this shim keeps producing (a matcher binding a
+    #     copy, a mask dropped, a query ungrounded), so the instance form deliberately does not reuse
+    #     the shortcut, and this pins the reason.
+    quiet = EQICMP.read_text().replace(
+        "IsAnd ? RHS->getInversePredicate() : RHS->getPredicate();",
+        "IsAnd ? Value::getInversePredicate(RHS->getPredicate()) : RHS->getPredicate();", 1)
+    assert quiet != EQICMP.read_text(), "the inverse-predicate substitution must apply"
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "quiet.cpp"
+        p.write_text(quiet)
+        e = R.compile_harness(str(p), clang=clang)
+        assert e is not None, "the substituted variant should still compile"
+        rq = R.verify_fold(z3, e, "eqicmp_and")
+        assert rq["rewriting_paths"] == 0 and rq["refuted"] == 0, \
+            ("collapsing the inverse predicate must make the fold DECLINE, not misfire -- if this "
+             "ever refutes instead, the shortcut is being used somewhere it changes a result", rq)
+
     # 5) A SOLVER TIMEOUT is a non-answer too, and it must be BOUNDED. Real folds carry obligations a
     #    bit-blasting solver cannot settle -- `foldBoxMultiply` reassociates a 32x32 multiply, and
     #    with no bound z3 ran indefinitely and hung the whole run rather than reporting anything. The
@@ -428,12 +504,12 @@ def main() -> int:
     assert not (bool(rewriting) and all(x["status"] == "proved" for x in rewriting)), \
         "an errored rewriting path must never count as sound"
 
-    print(f"upstream_symexec_fixture OK: TEN UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
+    print(f"upstream_symexec_fixture OK: THIRTEEN UNMODIFIED upstream LLVM 18 InstCombine folds ({FOLD} "
           f"from InstCombineAddSub.cpp, {FOLD2}, {FOLD3}, {FOLD4} and {FOLD5} from "
           f"InstCombineAndOrXor.cpp) "
           f"are "
           f"verified by executing their REAL C++ against the symbolic shim -- "
-          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved'] + nine + ten} "
+          f"{r['proved'] + arm_proved + r6['proved'] + r7['proved'] + r8['proved'] + nine + ten + batch_proved} "
           "rewriting arm(s) proved a sound refinement by z3 -- EVERY arm of the three AndOrXor folds, not merely the first of each. Corrupting any rewrite refutes with "
           "a concrete witness, so the proofs are load-bearing. The second fold is the interesting "
           "one: it detects a shared operand by POINTER IDENTITY (`A == C`), and matchers used to bind "

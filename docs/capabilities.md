@@ -89,17 +89,17 @@ Two consequences worth knowing when reading verdicts:
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
   boundary declines rather than guesses.
 
-- **Symbolic execution of real pass C++:** ten UNMODIFIED upstream LLVM 18 InstCombine folds
+- **Symbolic execution of real pass C++:** thirteen UNMODIFIED upstream LLVM 18 InstCombine folds
   (`combineAddSubWithShlAddSub`, `foldNotXor`, `foldXorToXor`, `foldOrToXor`, `foldAndToXor`,
-  `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`, `foldSelectICmpLshrAshr`, `foldSelectZeroOrOnes`, `foldSelectICmpAndAnd`, `foldAndOrOfICmpsOfAndWithPow2`) are verified by
+  `foldLogOpOfMaskedICmps_NotAllZeros_BMask_Mixed`, `foldSelectICmpLshrAshr`, `foldSelectZeroOrOnes`, `foldSelectICmpAndAnd`, `foldAndOrOfICmpsOfAndWithPow2`, `foldICmpAddOpConst`, `foldSetClearBits`, `foldAndOrOfICmpEqConstantAndICmp`) are verified by
   compiling their byte-for-byte source against the symbolic shim and discharging every rewriting
-  path. Corrupting any of the four rewrites refutes with a concrete witness. **Twenty-two rewriting arms**
+  path. Corrupting any of the four rewrites refutes with a concrete witness. **Thirty-three rewriting arms**
   are proved -- EVERY arm of the three AndOrXor folds, not merely the first of each, plus the commuted
   operand orders upstream's own comments enumerate. Two ablations keep those claims honest: disabling
   arm 1 silences only its harness (so each arm is genuinely distinct, not a fall-through), and
   disabling commutative matching silences only the commuted variants (so they are coverage of the
   `m_c_*` path rather than repetition). Reach
-  is **11 of 379** fold-shaped functions compiling, **10 verified** -- the one gap is `foldBoxMultiply`,
+  is **14 of 379** fold-shaped functions compiling, **13 verified** -- the one gap is `foldBoxMultiply`,
   a documented SOLVER bound rather than a modelling one. That denominator is now a REPRODUCIBLE
   measurement (`tools/cv-symexec-reach-sweep.py`, gated by `symexec_reach_sweep_fixture`) over all 15
   InstCombine files, replacing a hand-run figure quoted from a session nobody could re-derive.
@@ -113,9 +113,15 @@ Two consequences worth knowing when reading verdicts:
   bit-counting helpers and the constant statics unblocks **two** folds. What remains is a long thin
   tail -- 34 folds each wanting its own handful of names. So the actionable measure is not blocker
   frequency but how many folds a category blocks ALONE, which is what the sweep reports and why a
-  frequency table is a trap here. The folds actually within reach are counted individually: three
-  blocked purely by shim API *shape* (no missing names at all), and one each by a single APInt
-  accessor, one intrinsic type, and one matcher family.
+  frequency table is a trap here.
+
+  **That seam is now closed.** The sweep named exactly six reachable folds; the batch took the four
+  that carry a rewrite (two's-complement APInt arithmetic, the instance-form predicate inverse, a
+  5-argument select, `new ICmpInst`), and the `shape-mismatch` and `apint` buckets are now EMPTY.
+  What the sweep still lists is not more of the same: one intrinsic type (`WithOverflowInst`, which
+  returns a struct), two folds needing their file's own pass-local helpers, and one FP matcher family
+  belonging to `stripSignOnlyFPOps` -- which is a *helper*, not a rewrite, so verifying it as a fold
+  would be a category error. Further reach on this track is architectural, not vocabulary.
 - **What `freeze` YIELDS is modelled, not decided.** The shim modelled `freeze` as the operand's own
   term with the poison cleared, which says freeze(poison) equals whatever the operand happened to be
   -- stronger than the semantics, which leave the choice arbitrary. Measured by ablation: under that

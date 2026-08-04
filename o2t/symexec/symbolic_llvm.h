@@ -35,6 +35,14 @@ enum CVPredicate { ICMP_EQ, ICMP_NE, ICMP_ULT, ICMP_ULE, ICMP_UGT, ICMP_UGE,
 struct Value {
   std::string t;
   int opcode = 0;                                // 0 == a leaf / non-instruction value
+  // Upstream builds instructions with `new ICmpInst(Pred, X, R)` as well as through the IRBuilder,
+  // and every instruction class here aliases Value, so that constructor has to live on Value. The
+  // string constructors keep the shim's own `Value{"(bvand ...)"}` spelling working, which stopped
+  // being aggregate initialisation the moment any constructor was declared.
+  Value() = default;
+  Value(std::string term) : t(std::move(term)) {}
+  Value(const char *term) : t(term) {}
+  Value(CVPredicate p, Value *a, Value *b);      // defined once cv_icmp_term is available
   Value *op0 = nullptr, *op1 = nullptr;
   bool is_const = false;                         // a ConstantInt (for isa/m_ConstantInt)
   bool one_use = true;                           // single-use (profitability guards)
@@ -61,6 +69,12 @@ struct Value {
   static Value *CreateNot(Value *v, const std::string & = "");
   static bool isEquality(CVPredicate p) { return p == ::ICMP_EQ || p == ::ICMP_NE; }
   static CVPredicate getInversePredicate(CVPredicate p) { return p == ::ICMP_EQ ? ::ICMP_NE : ::ICMP_EQ; }
+  // upstream also asks the INSTANCE -- `LHS->getInversePredicate()` is the inverse of the icmp's OWN
+  // predicate. Only meaningful because an icmp node carries one; defined below, where the per-
+  // predicate algebra is (the shortcut spelling above collapses everything non-equality to EQ and is
+  // wrong for ordered comparisons, which is exactly why the instance form does not reuse it).
+  CVPredicate getInversePredicate() const;
+  CVPredicate getSwappedPredicate() const;
   Predicate pred = ::ICMP_EQ;
   struct Type *ty = nullptr;
   Value *cond = nullptr, *tval = nullptr, *fval = nullptr;   // select arms, when this is a select
@@ -229,6 +243,17 @@ struct IRBuilder {
   Value CreateSelect(Value c, Value x, Value y) {
     return {"(ite (= " + c.t + " (_ bv1 1)) " + x.t + " " + y.t + ")"};
   }
+  // Upstream's `CreateSelect(Cond, T, F, Name, MDFrom)` -- the trailing name and metadata source
+  // carry no semantics, but the ARITY has to match or the fold does not compile. Unlike the other
+  // unflagged builders this one propagates POISON, because a select's rule is specific and cheap to
+  // state: poison if the condition is, or if the SELECTED arm is. Modelling more poison on a target
+  // can only make a proof harder, never a refutation weaker.
+  Value *CreateSelect(Value *c, Value *x, Value *y, const std::string & = "", Value * = nullptr) {
+    Value *r = cv_keep(Value{"(ite (= " + c->t + " (_ bv1 1)) " + x->t + " " + y->t + ")"});
+    r->cond = c; r->tval = x; r->fval = y; r->ty = x->ty;
+    r->poison = cv_orp(c->poison, "(ite (= " + c->t + " (_ bv1 1)) " + x->poison + " " + y->poison + ")");
+    return r;
+  }
   // POISON-producing flagged ops. `add nsw X, Y` is poison on SIGNED overflow (operands share a
   // sign but the sum's sign differs) -- a fold that sets nsw without proving no-overflow is unsound.
   Value CreateNSWAdd(Value x, Value y) {
@@ -385,6 +410,9 @@ inline CVPredicate cv_inverse_pred(CVPredicate p) {
   }
   cv_unsupported("getInversePredicate on an unmodelled predicate");
 }
+inline CVPredicate Value::getInversePredicate() const { return cv_inverse_pred(pred); }
+inline CVPredicate Value::getSwappedPredicate() const { return cv_swap_pred(pred); }
+
 struct CmpInst {
   typedef CVPredicate Predicate;
   static bool isEquality(Predicate p) { return p == ICMP_EQ || p == ICMP_NE; }
@@ -418,7 +446,10 @@ struct APInt {
   APInt(unsigned w, unsigned long val) : v(val & _mask(w)), bits(w) {}
   bool isZero() const { return v == 0; }
   bool isOne() const { return v == 1; }
-  bool isAllOnes() const { return v == 0xFFFFFFFFul; }
+  // all-ones is all-ones AT THIS WIDTH. Hard-coding 0xFFFFFFFF made an i8 mask of 0xFF answer NO,
+  // which is not a near-miss: `isAllOnes` is how a fold recognises `~0`, so the arm simply never
+  // fires. The rest of this class already carries the width for exactly this reason.
+  bool isAllOnes() const { return v == _mask(bits); }
   unsigned getBitWidth() const { return bits; }
   unsigned long getZExtValue() const { return v; }
   // Mask arithmetic real folds do on CONSTANT operands. Host-side values, so this is exact integer
@@ -447,6 +478,29 @@ struct APInt {
   }
   static APInt getMinValue(unsigned n) { APInt a; a.bits = n; a.v = 0; return a; }
   static APInt getAllOnes(unsigned n) { return getMaxValue(n); }
+  // SIGNED extremes: at width n, the largest signed value is 2^(n-1) - 1 and the smallest is the
+  // sign bit alone. Folds that rewrite signed comparisons compute their new bound from these, so
+  // getting the width wrong here silently changes the CONSTANT the rewrite compares against -- which
+  // still type-checks and still looks like a fold.
+  static APInt getSignedMaxValue(unsigned n) {
+    if (n == 0 || n >= 64) cv_unsupported("APInt::getSignedMaxValue width 0 or >= 64");
+    APInt a; a.bits = n; a.v = (1ul << (n - 1)) - 1ul; return a;
+  }
+  static APInt getSignedMinValue(unsigned n) {
+    if (n == 0 || n >= 64) cv_unsupported("APInt::getSignedMinValue width 0 or >= 64");
+    APInt a; a.bits = n; a.v = 1ul << (n - 1); return a;
+  }
+  bool isMinSignedValue() const { return bits && v == (1ul << (bits - 1)); }
+  bool isMinValue() const { return v == 0; }
+  // TWO'S-COMPLEMENT ARITHMETIC, masked back to this value's width. `-C` and `MAX - C` are how the
+  // signed/unsigned comparison folds build their new bound, and an unmasked host subtraction would
+  // borrow into bits the value does not have -- 0 - 1 is 0xFF at i8, not 0xFFFFFFFFFFFFFFFF.
+  APInt operator+(const APInt &o) const { APInt r = *this; r.v = (v + o.v) & _mask(bits); return r; }
+  APInt operator-(const APInt &o) const { APInt r = *this; r.v = (v - o.v) & _mask(bits); return r; }
+  APInt operator+(unsigned long n) const { APInt r = *this; r.v = (v + n) & _mask(bits); return r; }
+  APInt operator-(unsigned long n) const { APInt r = *this; r.v = (v - n) & _mask(bits); return r; }
+  APInt operator-() const { APInt r = *this; r.v = (0ul - v) & _mask(bits); return r; }
+  bool operator!() const { return v == 0; }
 };
 
 // `m_APInt(C)` binds the matched constant's VALUE, and until a fold actually used it the binding
@@ -491,6 +545,15 @@ inline std::string cv_icmp_term(CVPredicate p, const std::string &a, const std::
   return "(ite (" + std::string(op) + " " + a + " " + b + ") (_ bv1 1) (_ bv0 1))";
 }
 
+
+// `new ICmpInst(Pred, A, B)` -- the icmp node, identical to what IRBuilder::CreateICmp builds. It
+// carries the predicate and operands so a later fold can match on them, and its type is i1: an icmp
+// is a one-bit value, and conflating it with the i32 default is the mismatch this shim exists to
+// avoid.
+inline Value::Value(CVPredicate p, Value *a, Value *b) {
+  t = cv_icmp_term(p, a->t, b->t);
+  opcode = OP_ICMP; pred = p; op0 = a; op1 = b; ty = cv_i1();
+}
 
 // The pass class an upstream fold is a member of. `Builder` is the shim's symbolic IRBuilder, so a
 // verbatim `Builder.CreateXor(...)` in real source builds a symbolic term exactly as the fold does.
@@ -691,6 +754,7 @@ inline Matcher *m_ConstantInt(Value *&v)  { Matcher *m = cv_m(MK_CONSTANT); m->c
 // path upstream would not take.
 inline Matcher *m_APIntAllowUndef(const APInt *&c) { return m_APInt(c); }
 inline Matcher *m_SpecificIntAllowUndef(unsigned long n) { return m_SpecificInt(n); }
+inline Matcher *m_SpecificIntAllowUndef(const APInt &a) { return m_SpecificInt(a); }
 inline Matcher *m_Deferred(Value *&v)     { Matcher *m = cv_m(MK_DEFERRED); m->deferred = &v; return m; }
 inline Matcher *m_Specific(Value *v)      { Matcher *m = cv_m(MK_SPECIFIC); m->specific = v; return m; }
 inline Matcher *m_ImmConstant(Value &v)   { Matcher *m = cv_m(MK_CONSTANT); m->cap = &v; return m; }

@@ -12,7 +12,7 @@ shim and knows what LLVM's operators actually mean. Agreement on all arms means 
 denote the instructions it claims.
 
 Gated here:
-  * every proved arm is CONFIRMED by Alive2 (22 of them, across ten upstream folds);
+  * every proved arm is CONFIRMED by Alive2 (33 of them, across thirteen upstream folds);
   * a FACT-DEPENDENT arm is confirmed under the facts its own branches established,
     rendered as `llvm.assume` -- and REFUTED without them, so the facts are shown to be
     load-bearing in the oracle and not decoration;
@@ -56,6 +56,13 @@ ZEROORONES = VENDOR / "upstream_select_zeroorones_fold.cpp"
 ZEROORONES_ARM = "foldSelectZeroOrOnes"
 ICMPANDAND = VENDOR / "upstream_select_icmpandand_fold.cpp"
 ICMPANDAND_ARMS = ("foldSelectICmpAndAnd", "foldSelectICmpAndAnd@shift")
+ADDCONST = VENDOR / "upstream_icmp_addconst_fold.cpp"
+ADDCONST_ARMS = ("addconst_ult", "addconst_ule", "addconst_ugt", "addconst_slt", "addconst_sgt",
+                 "addconst_slt_neg", "addconst_sgt_neg")
+SETCLEAR = VENDOR / "upstream_setclearbits_fold.cpp"
+SETCLEAR_ARMS = ("setclear_clear_first", "setclear_set_first")
+EQICMP = VENDOR / "upstream_icmpeq_and_icmp_fold.cpp"
+EQICMP_ARMS = ("eqicmp_or", "eqicmp_and")
 POW2 = VENDOR / "upstream_icmps_and_pow2_fold.cpp"
 POW2_ARMS = ("pow2_and", "pow2_or")
 ANDORXOR_ARMS = ("foldNotXor", "foldNotXor@2",
@@ -100,7 +107,10 @@ def main() -> int:
     arms = ([(exe1, "combineAddSubWithShlAddSub")] + [(exe2, a) for a in ANDORXOR_ARMS] +
             [(exe3, MASKED_ARM), (exe4, SELECTSHIFT_ARM),
              (R.compile_harness(str(ZEROORONES), clang=clang), ZEROORONES_ARM)] +
-            [(R.compile_harness(str(ICMPANDAND), clang=clang), a) for a in ICMPANDAND_ARMS])
+            [(R.compile_harness(str(ICMPANDAND), clang=clang), a) for a in ICMPANDAND_ARMS] +
+            [(R.compile_harness(str(ADDCONST), clang=clang), a) for a in ADDCONST_ARMS] +
+            [(R.compile_harness(str(SETCLEAR), clang=clang), a) for a in SETCLEAR_ARMS] +
+            [(R.compile_harness(str(EQICMP), clang=clang), a) for a in EQICMP_ARMS])
 
     # 1) EVERY proved arm is independently confirmed.
     confirmed = 0

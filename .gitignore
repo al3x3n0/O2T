@@ -38,3 +38,6 @@ examples/*.ll
 # Compiled symexec harnesses: `compile_harness` builds these next to their source on demand.
 # They are per-machine Mach-O/ELF binaries and were committed by accident once already.
 *_symexec
+
+# ctest leaves this behind if it is ever run from the source dir instead of build/
+Testing/

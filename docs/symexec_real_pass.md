@@ -248,12 +248,14 @@ resolved `ctx['clang']` is a C driver and can't link libc++).
 - The drop-in fold space (more flags, more peephole classes) is essentially saturated: each new one
   follows the same one-fold + one-query recipe. The genuinely-new frontiers are **architectural**:
   full provenance, unbounded inputs, and richer in-pass control flow.
-- **Reach is 11 of 379 fold-shaped functions compiling, 10 verified** (measured by the sweep above over
+- **Reach is 14 of 379 fold-shaped functions compiling, 13 verified** (measured by the sweep above over
   all 15 LLVM 18 InstCombine files). Measured pass-wide, NO blocker category unblocks a fold on its
   own: `KnownBits` appears in 55 blocker slots and is the sole blocker of nothing, and a composite
   batch of every `Create*` builder plus flag readers, casts, bit-counting and constant statics
   unblocks two folds. The remainder is a long thin tail of 34 folds each wanting its own handful of
-  names. Plan from `blocked_only_by`, never from the frequency table.
+  names. Plan from `blocked_only_by`, never from the frequency table. The six folds that sweep named
+  as reachable have been taken (or, for `stripSignOnlyFPOps`, identified as a HELPER with no rewrite
+  to discharge -- compiling it would raise the reach count and verify nothing).
 - The shim's UNFLAGGED builders (`CreateOr`, `CreateAnd`, ...) do not propagate operand poison; only
   the explicitly poison-aware ones do. Harmless while every fold is given definite operands, which is
   the case today -- but it is why `foldAndOrOfICmpsOfAndWithPow2`'s `IsLogical` arm is left
