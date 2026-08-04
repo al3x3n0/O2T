@@ -486,6 +486,40 @@ def _p_multiblock(fn, params, env, ctx):
     return params, term, w, poison, "false"
 
 
+def _undef_free(fn):
+    """The registers whose value provably cannot be `undef` -- the second lattice level, as far as it
+    is needed.
+
+    `undef` is not one value: each USE of it may observe a different one, which is why it cannot be a
+    single SMT term and why this model declines it. But a great many values are provably free of that
+    freedom, and knowing WHICH is enough to decide the one question that kept declining: whether a
+    source-side `freeze` has anything to collapse.
+
+    Computed syntactically, and deliberately UNDER-approximated -- a value is admitted only when every
+    operand it derives from is admitted. `and %x, 0` is really defined whatever `%x` is, and is not
+    admitted here; missing it costs a decline, never a proof. A call result is never admitted (a
+    callee may return `undef`), and `freeze` is admitted unconditionally, which is exactly what freeze
+    does.
+    """
+    free = {name for name, p in ((p.name, p) for p in fn.params) if p.noundef}
+
+    def operand_free(v):
+        if v.is_reg:
+            return v.name in free
+        return not v.is_undef                      # a constant (or `poison`) has no undef freedom
+
+    for blk in fn.blocks:
+        for inst in blk.instructions:
+            dst = getattr(inst, "result", None)
+            if not dst:
+                continue
+            if inst.op == "freeze":
+                free.add(dst)                      # the point of freeze: the freedom stops here
+            elif inst.op != "call" and inst.operands and all(operand_free(o) for o in inst.operands):
+                free.add(dst)
+    return free
+
+
 def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
                       side="source", fresh=None):
     """`translate` over a real parse. `module` is an `ir_model.Module`."""
@@ -495,7 +529,8 @@ def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
     params = fn.int_params
     env = dict(bindings) if bindings is not None else \
         {name: (name, w, "false", "false") for name, w in params.items()}
-    ctx = {"module": module, "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh}
+    ctx = {"module": module, "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh,
+           "undef_free": _undef_free(fn)}
 
     if len(fn.blocks) > 1:
         return _p_multiblock(fn, params, env, ctx)

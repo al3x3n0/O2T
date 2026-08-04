@@ -314,8 +314,24 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
         w = int_width(inst.type)
         v, _, vp, vu = value(inst.operands[0], env, w)
         if ctx.get("side") != "target" or ctx.get("fresh") is None:
-            raise Unsupported("freeze in the source (its nondeterministic choice is universal, and "
-                              "this model has no undef -- so the identity shortcut is unsound)")
+            # A source-side freeze is the IDENTITY exactly when its operand has no freedom to
+            # collapse -- neither poison nor undef. Then the universal quantifier has a one-element
+            # domain and disappears, so no new machinery is needed for this case.
+            #
+            # Both halves are required and neither is sufficient. `freeze %x` on a plain parameter
+            # is NOT the identity (LLVM lets an argument be `undef` unless `noundef`, and freeze is
+            # precisely the instruction that observes that -- reference Alive2 refutes removing it),
+            # and `freeze` over a poison-capable value is not the identity either. Both still
+            # decline, and only the doubly-free case is decided.
+            operand = inst.operands[0]
+            free = ctx.get("undef_free") or set()
+            undef_free = operand.name in free if operand.is_reg else not operand.is_undef
+            if vp == "false" and undef_free:
+                env[dst] = (v, w, "false", vu)
+                return
+            raise Unsupported("freeze in the source over a value that may be poison or undef (its "
+                              "nondeterministic choice is universal, which this encoding cannot "
+                              "express; declare the operand `noundef` if it is definite)")
         fresh = ctx["fresh"]
         name = f"frz{len(fresh)}_{ctx['side']}"
         fresh.append((name, w))

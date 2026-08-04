@@ -910,6 +910,16 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/upstream_symexec_fixture.py; else echo 'upstream_symexec_fixture: z3 or clang++ not found, skipped'; fi"
     )
+    # `undef` as a second lattice level, first slice: a source-side `freeze` is the identity exactly
+    # where its operand has no freedom to collapse (neither poison nor undef). Every expected verdict
+    # is reference Alive2's own and is re-checked against alive-tv, because this is the one area where
+    # O2T's other oracles are blind -- lli does not model undef at all. Needs z3.
+    add_test(
+        NAME undef_lattice_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/undef_lattice_fixture.py; else echo 'undef_lattice_fixture: z3 not found, skipped'; fi"
+    )
     # The reach measurement the symexec track is steered by ("N of M fold-shaped functions compile
     # against the shim") is a checked-in tool, not a number someone once ran. The sweep itself needs
     # real LLVM source; gated here is everything that does not -- the extractor, the classifier, and
