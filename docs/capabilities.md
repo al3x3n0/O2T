@@ -60,7 +60,16 @@ Two consequences worth knowing when reading verdicts:
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV:** **495 / 715 (69%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
+- **Track B whole-function TV, re-measured 2026-08-05 over NINE of LLVM 18's InstCombine test files
+  (1,664 functions):** **1,236 proved (74%)**, 400 declines, 26 timeouts, **0 refutations**, and every
+  proof spot-checked against lli + Alive2 with **0 disagreements** and 0 vacuous. The jump from a
+  ~1,100 baseline came from two things measured rather than guessed: modelling arguments as
+  poison-capable plus a `forall`-bound source choice (which decided `freeze` in both directions), and
+  treating LLVM's keep-alive `call void @use(i32 %x)` as an *observable effect* rather than an
+  undecidable shape — that idiom alone accounted for 124 of 540 declines. A tenth file (`shift.ll`,
+  171 functions) is NOT measured: LLVM 18's own `opt` errors on it ("Instruction Combining did not
+  reach a fixpoint"), so it is excluded rather than silently counted as zero.
+- **Track B whole-function TV (earlier single-file figure):** **495 / 715 (69%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
   functions proved sound end-to-end, **0 false refutations**; the rest decline on shapes above, plus a
   handful of timing-dependent per-function solver timeouts (a sound decline). Re-measured at the
   current head: the scalar refinement path proves ~434 and the memory/vector dispatch the other ~61 (the dispatch

@@ -362,6 +362,37 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
             ops = [value(a, env, w if a.type.is_int() else None) for a in inst.args]
             env[dst] = INTRINSICS[intr](ops, w)
             return
+        # A VOID call to a function with no body -- overwhelmingly `call void @use(i32 %x)`, which
+        # LLVM's own tests use to keep a value alive so the fold under test is not deleted by DCE.
+        # It cannot change the value this function returns: it returns nothing, and with no pointer
+        # in the scalar fragment there is nothing for it to write through. What it CAN do is be
+        # observable, so it is not simply ignored -- it is recorded as an EFFECT, and the caller
+        # requires the target to make the same calls with the same argument values. Dropping one, or
+        # passing it something different, is then a refutation rather than something unnoticed.
+        #
+        # Only void, and only when the caller asked for effects. A call whose RESULT is used would
+        # need the callee to be a function of its arguments, and a bodiless declaration promises no
+        # such thing -- modelling it as one would assume purity LLVM does not give.
+        effects = ctx.get("effects")
+        callee = inst.callee
+        # ...but NOT an LLVM intrinsic. `@llvm.*` is not an unknown external function: it has
+        # semantics LLVM defines, and an unmodelled one must decline on its NAME rather than be
+        # waved through as an opaque effect. `llvm.assume` is the case that proves it -- it does not
+        # "do something unknown", it ESTABLISHES that its argument is true, and treating it as opaque
+        # drops that fact, so a target simplified USING the assumption is refuted on the inputs the
+        # assumption excluded. Three false refutations in LLVM's own tests, immediately.
+        if (effects is not None and callee and inst.result is None and not intr
+                and not callee.lstrip("@").startswith("llvm.")):
+            fn = ctx["module"].function(callee.lstrip("@")) if ctx.get("module") else None
+            if fn is None or fn.is_declaration:
+                args = []
+                for a in inst.args:
+                    if not (a.type and a.type.is_int()):
+                        raise Unsupported(f"call to {callee} with a non-integer argument")
+                    av, aw, ap, au = value(a, env, int_width(a.type))
+                    args.append((av, aw, ap, au))
+                effects.append((callee, args))
+                return
         raise Unsupported(f"call to {inst.callee or '<indirect>'}")
 
     raise Unsupported(f"instruction {op!r}")

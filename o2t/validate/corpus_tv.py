@@ -83,7 +83,16 @@ def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int 
 
 
 def _extract_define(ll_text: str, fn: str):
-    """The full `define ... @fn(...) {...}` block as a standalone module string, or None."""
+    """The full `define ... @fn(...) {...}` block as a standalone module string, or None.
+
+    The module's `target datalayout` / `target triple` COME WITH IT, and that is not cosmetic. Without
+    the datalayout an extracted function is a DIFFERENT program: LLVM falls back to its defaults, so
+    the alignment `opt` inferred and wrote explicitly onto the optimized store (`store i64 %v, ptr %p,
+    align 8`) is stricter than the un-annotated source's, and reference Alive2 correctly refutes the
+    pair as "source is more defined than target" -- for a transform that never happened. That surfaced
+    as four FALSE DISAGREEMENTS on LLVM's own sub.ll, in the very machinery whose job is to catch
+    false proofs, which is the worst place to carry noise: a real disagreement would have been
+    indistinguishable from these."""
     import re
     m = re.search(r"define\b[^@]*@" + re.escape(fn) + r"\s*\([^)]*\)[^{]*\{", ll_text)
     if not m:
@@ -92,7 +101,9 @@ def _extract_define(ll_text: str, fn: str):
     while j < len(ll_text) and depth:
         depth += {"{": 1, "}": -1}.get(ll_text[j], 0)
         j += 1
-    return ll_text[m.start():j]
+    header = [ln for ln in ll_text.splitlines()
+              if ln.startswith("target datalayout") or ln.startswith("target triple")]
+    return "\n".join([*header, ll_text[m.start():j]])
 
 
 def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: str | None = None,

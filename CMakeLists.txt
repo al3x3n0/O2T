@@ -910,6 +910,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/upstream_symexec_fixture.py; else echo 'upstream_symexec_fixture: z3 or clang++ not found, skipped'; fi"
     )
+    # A void call to a bodiless declaration (`call void @use(i32 %x)`, LLVM's keep-alive idiom) no
+    # longer makes a whole function undecidable: it cannot change the returned value, but it IS
+    # observable, so the callee sequence must match and the arguments are proved equal. Needs z3.
+    add_test(
+        NAME observable_call_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observable_call_fixture.py; else echo 'observable_call_fixture: z3 not found, skipped'; fi"
+    )
     # `undef` as a second lattice level, first slice: a source-side `freeze` is the identity exactly
     # where its operand has no freedom to collapse (neither poison nor undef). Every expected verdict
     # is reference Alive2's own and is re-checked against alive-tv, because this is the one area where

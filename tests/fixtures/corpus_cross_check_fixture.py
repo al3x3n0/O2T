@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from o2t import toolchain  # noqa: E402
-from o2t.validate.corpus_tv import cross_check_file  # noqa: E402
+from o2t.validate.corpus_tv import _extract_define, cross_check_file  # noqa: E402
 
 CORPUS = ROOT / "tests" / "fixtures" / "vendor_folds" / "instcombine_scalar_tests.ll"
 
@@ -41,6 +41,18 @@ def main() -> int:
     assert r["cross_checked"] == proved, ("every proved function must be cross-checked", r)
     assert r["disagreements"] == [], \
         ("an INDEPENDENT oracle contradicts an O2T `proved` -- a FALSE PROOF on real code", r["disagreements"])
+
+    # THE PAIR HANDED TO THE ORACLE MUST BE THE TRANSFORM THAT HAPPENED. A function extracted without
+    # its module's `target datalayout` is a different program: LLVM falls back to defaults, so the
+    # alignment `opt` inferred and wrote onto the optimized store is stricter than the un-annotated
+    # source's, and Alive2 correctly refutes a pair that never existed. Four such FALSE DISAGREEMENTS
+    # appeared on LLVM's own sub.ll -- noise in the one place it must not be, since a real disagreement
+    # would look identical. The header travels with the extraction, and this pins it.
+    dl = 'target datalayout = "e-p:64:64:64-i64:64:64"'
+    mod = dl + "\ndefine i64 @g(i64 %a) {\n  ret i64 %a\n}\n"
+    got = _extract_define(mod, "g")
+    assert dl in got, ("the extracted function must carry the module's datalayout, or the oracle is "
+                       "asked about a different program", got)
 
     print(f"corpus_cross_check_fixture OK: O2T proved {proved} real InstCombine functions and BOTH "
           "independent oracles confirmed every one -- lli (value execution) and reference Alive2 "

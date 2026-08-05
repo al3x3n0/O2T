@@ -77,7 +77,7 @@ def _noundef_params(ll_text, func):
 
 
 def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth=0,
-              side="source", fresh=None, param_poison=False):
+              side="source", fresh=None, param_poison=False, effects=None):
     """Translate a function to (params, ret_term, ret_width, ret_poison, ret_ub) over LLVM's OWN
     parse. Validated function-by-function against the text reader it replaces over LLVM 18's
     InstCombine tests: 500 identical SMT, 465 identical declines, 0 differences, 0 regressions, and 58
@@ -85,7 +85,7 @@ def translate(ll_text, func, extra_ops=None, bindings=None, _module=None, _depth
     or a `zeroinitializer` -- valid IR its regexes could not match."""
     module = ir.parse(_module if _module is not None else ll_text)
     return _translate_parsed(module, func, extra_ops, bindings, _depth, side, fresh,
-                             param_poison)
+                             param_poison, effects)
 
 
 def _bool_of(term, width):
@@ -245,10 +245,11 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     `cross_check` replays the decided query through a second, independently implemented solver."""
     fresh: list = []                                   # nondeterministic choices (freeze), declared below
     try:
+        src_eff, tgt_eff = [], []
         p0, r0, w0, sp, su = translate(src_text, func, extra_ops, side="source", fresh=fresh,
-                                       param_poison=True)
+                                       param_poison=True, effects=src_eff)
         p1, r1, w1, tp, tu = translate(opt_text, func, extra_ops, side="target", fresh=fresh,
-                                       param_poison=True)
+                                       param_poison=True, effects=tgt_eff)
     except Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     except ir.IrParseError as exc:
@@ -299,9 +300,39 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     # Alive2 refinement refutation: an input where the source is defined (no UB, value not poison)
     # but the target misbehaves -- it is UB, becomes poison, or returns a different value. (A pass
     # that only DROPS a flag / removes UB cannot satisfy this, so it still proves.)
+    # OBSERVABLE CALLS. A void call to a bodiless declaration -- `call void @use(i32 %x)`, which
+    # LLVM's tests use to stop DCE deleting the value a fold is about -- cannot change what this
+    # function returns, but it IS observable, so the target has to make the same ones. The SEQUENCE
+    # of callees must match syntactically (dropping, adding or reordering an observable call is not
+    # something this models, so it declines); the ARGUMENTS are compared in the solver, because
+    # `opt`'s whole job is to rewrite them into different-looking but equal terms.
+    if [c for c, _ in src_eff] != [c for c, _ in tgt_eff]:
+        return {"status": "unsupported", "function": func,
+                "reason": f"observable calls differ between source and target "
+                          f"({[c for c, _ in src_eff]} vs {[c for c, _ in tgt_eff]})"}
+    eff_differs = []
+    for (_, sargs), (_, targs) in zip(src_eff, tgt_eff):
+        if len(sargs) != len(targs) or [a[1] for a in sargs] != [a[1] for a in targs]:
+            return {"status": "unsupported", "function": func,
+                    "reason": "an observable call's arguments changed shape"}
+        # Per argument, the SAME rule the returned value gets, and for the same reason: where the
+        # SOURCE already passes poison, the callee may observe anything, so the target passing
+        # something else is a refinement rather than a difference. Comparing values unconditionally
+        # here reports those as miscompiles -- a false REFUTATION, which this project treats as
+        # seriously as a false proof, and which the corpus produced immediately.
+        eff_differs += [smt_and([f"(not {a[2]})", smt_or([b[2], f"(not (= {a[0]} {b[0]}))"])])
+                        for a, b in zip(sargs, targs)]
+
     refute = smt_and([f"(not {su})",
                       smt_or([tu, smt_and([f"(not {sp})",
-                                           smt_or([tp, f"(not (= {r0} {r1}))"])])])])
+                                           smt_or([tp, f"(not (= {r0} {r1}))", *eff_differs])])])])
+    # A literal `poison` operand denotes an ARBITRARY value whose poison bit is set, and the
+    # semantics layer spells that value `poison_<width>` -- but nothing declared it, so any function
+    # containing one produced an undeclared symbol and came back as a solver ERROR rather than a
+    # verdict. An unconstrained constant is exactly the right declaration: the value is arbitrary,
+    # and its poison-ness is already carried separately.
+    decls += [f"(declare-const poison_{w} (_ BitVec {w}))"
+              for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", refute)})]
     smt = _smt(decls, refute, get_model=True, forall=src_fresh)
     try:
         head, out = _query(z3_bin, smt, timeout)
@@ -557,7 +588,7 @@ def param_poison_flag(name):
 
 
 def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
-                      side="source", fresh=None, param_poison=False):
+                      side="source", fresh=None, param_poison=False, effects=None):
     """`translate` over a real parse. `module` is an `ir_model.Module`."""
     fn = module.function(func)
     if fn is None or fn.is_declaration:
@@ -573,7 +604,7 @@ def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
         {name: (name, w, "false" if name in nou else param_poison_flag(name), "false")
          for name, w in params.items()}
     ctx = {"module": module, "depth": _depth, "extra_ops": extra_ops, "side": side, "fresh": fresh,
-           "undef_free": _undef_free(fn)}
+           "undef_free": _undef_free(fn), "effects": effects}
 
     if len(fn.blocks) > 1:
         return _p_multiblock(fn, params, env, ctx)
