@@ -44,13 +44,21 @@ def validate_transform_ex(z3_bin: str, before_ll: str, after_ll: str, func: str,
     # the dispatcher could route around it.
     if v.get("guard"):
         return v
+    declines = {"scalar": v.get("reason")}
     for name, validator in (("mem_state", mem_state_tv), ("vec", vec_tv), ("svec", svec_tv)):
         vv = validator(z3_bin, before_ll, after_ll, func, timeout=timeout, cross_check=cross_check)
         if vv["status"] in ("proved", "refuted"):
             return {**vv, "via": name}
         if vv.get("guard"):        # a guard decline from ANY validator is final, as above
             return {**vv, "via": name}
-    return v                                           # everything declined -> honest unsupported
+        declines[name] = vv.get("reason")
+    # Everything declined -> honest unsupported, but say why EACH one declined rather than only the
+    # scalar validator. Returning the scalar reason alone MISATTRIBUTES the cause: it is always the
+    # first to look, so a vector function reads as "non-integer type <2 x i32>" even when the lane
+    # model tried it and stopped somewhere else entirely (`zext`, `select`, an undef element). A
+    # decline census built on that reason ranks "vectors" as the biggest bucket and hides what would
+    # actually have to be built -- which is how this was found.
+    return {**v, "declines": declines}
 
 
 def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int = 15,

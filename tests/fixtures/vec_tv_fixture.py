@@ -89,11 +89,45 @@ def main() -> int:
     assert vec_tv(z3, pv, pz, "p")["status"] == "unsupported", \
         "a sound poison-exploiting vector fold must DECLINE (lane model lacks poison refinement), not refute"
 
+    # 5. THE ELEMENT-WISE OPERATIONS THE LANE MODEL WAS MISSING. Measured over LLVM 18's InstCombine
+    #    tests, `select` (60), `zext` (28) and `sext` (9) were this validator's largest remaining
+    #    decline causes -- and each is exactly what a lane model is for, since every lane's result
+    #    depends only on that lane's inputs. A per-lane condition and a scalar condition are BOTH
+    #    legal for a vector select, so both are exercised.
+    SEL = ("define <2 x i32> @s(<2 x i1> %c, <2 x i32> %a, <2 x i32> %b) {\n"
+           "  %r = select <2 x i1> %c, <2 x i32> %a, <2 x i32> %b\n  ret <2 x i32> %r\n}\n")
+    assert vec_tv(z3, SEL, si.run_passes(SEL, "instcombine", opt), "s")["status"] == "proved", \
+        "a per-lane vector select must be modelled lane by lane"
+    SELSCALAR = ("define <2 x i32> @s(i1 %c, <2 x i32> %a, <2 x i32> %b) {\n"
+                 "  %r = select i1 %c, <2 x i32> %a, <2 x i32> %b\n  ret <2 x i32> %r\n}\n")
+    assert vec_tv(z3, SELSCALAR, si.run_passes(SELSCALAR, "instcombine", opt), "s")["status"] == "proved", \
+        "a scalar condition selecting whole vectors must broadcast to every lane"
+    for kind in ("zext", "sext"):
+        # kept to ONE instruction on purpose: give `opt` an arithmetic op to work with and it infers
+        # `nsw`, whereupon the target-poison guard correctly declines -- a value-equality model cannot
+        # prove refinement against a target that can be poison. That guard firing is right, but it
+        # would test the guard rather than the widening.
+        EXT = ("define <2 x i32> @e(<2 x i8> %a) {\n  %r = " + kind +
+               " <2 x i8> %a to <2 x i32>\n  ret <2 x i32> %r\n}\n")
+        assert vec_tv(z3, EXT, si.run_passes(EXT, "instcombine", opt), "e")["status"] == "proved", \
+            f"widening a vector lane by lane ({kind})"
+
+    #    TEETH: the two extensions differ on a set sign bit, so swapping them must REFUTE. Without
+    #    this, `zext` and `sext` could both be emitted as the same widening and nothing would notice.
+    swapped = ("define <2 x i32> @e(<2 x i8> %a) {\n  %r = zext <2 x i8> %a to <2 x i32>\n"
+               "  ret <2 x i32> %r\n}\n")
+    sext_src = ("define <2 x i32> @e(<2 x i8> %a) {\n  %r = sext <2 x i8> %a to <2 x i32>\n"
+                "  ret <2 x i32> %r\n}\n")
+    assert vec_tv(z3, sext_src, swapped, "e")["status"] == "refuted", \
+        "zext where sext is required must refute -- they differ wherever the sign bit is set"
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "
           "folds prove (add X,0->X, and X,splat(-1)->X), a wrong lane refutes, and a cross-lane op "
-          "declines (the per-lane model stays sound). The vector gap -- fixed and scalable -- closed")
+          "declines (the per-lane model stays sound). select/zext/sext are modelled lane by lane -- "
+          "the three largest decline causes left in this validator on LLVM's own tests -- and zext "
+          "where sext is required refutes. The vector gap -- fixed and scalable -- closed")
     return 0
 
 

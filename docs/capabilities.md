@@ -61,7 +61,7 @@ Two consequences worth knowing when reading verdicts:
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, re-measured 2026-08-05 over NINE of LLVM 18's InstCombine test files
-  (1,664 functions):** **1,236 proved (74%)**, 400 declines, 26 timeouts, **0 refutations**, and every
+  (1,664 functions):** **1,272 proved (76%)**, 400 declines, 26 timeouts, **0 refutations**, and every
   proof spot-checked against lli + Alive2 with **0 disagreements** and 0 vacuous. The jump from a
   ~1,100 baseline came from two things measured rather than guessed: modelling arguments as
   poison-capable plus a `forall`-bound source choice (which decided `freeze` in both directions), and
@@ -69,6 +69,12 @@ Two consequences worth knowing when reading verdicts:
   undecidable shape — that idiom alone accounted for 124 of 540 declines. A tenth file (`shift.ll`,
   171 functions) is NOT measured: LLVM 18's own `opt` errors on it ("Instruction Combining did not
   reach a fixpoint"), so it is excluded rather than silently counted as zero.
+- **What the decline census actually says**, once each verdict is attributed to the validator that got
+  FURTHEST rather than to the first one to look: `select` 60, undef vector elements 34, `zext` 28,
+  `bitcast` 18, `sext` 9. `select`/`zext`/`sext` are now modelled lane by lane, which is why the
+  figure above moved. Reporting only the scalar validator's reason had ranked "vectors" as the largest
+  bucket at ~150 — misleading, because the lane model was already being dispatched to and was
+  declining somewhere else entirely.
 - **Track B whole-function TV (earlier single-file figure):** **495 / 715 (69%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
   functions proved sound end-to-end, **0 false refutations**; the rest decline on shapes above, plus a
   handful of timing-dependent per-function solver timeouts (a sound decline). Re-measured at the

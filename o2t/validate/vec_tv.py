@@ -109,6 +109,36 @@ def _vec_instr(inst, env):
         env[inst.result] = ([f"(ite {sem.ICMP[inst.pred].format(a=a[i], b=b[i])} "
                              f"{sem.const(1, 1)} {sem.const(0, 1)})" for i in range(n)], 1)
         return
+    # ELEMENT-WISE and therefore exactly what a lane model is for: each lane's result depends only on
+    # that lane's inputs, so the vector case is the scalar case repeated. Measured over LLVM 18's
+    # InstCombine tests these three were the largest decline causes left in this validator by a wide
+    # margin -- `select` 60, `zext` 28, `sext` 9 -- because every other vector shape it handles tends
+    # to be reached THROUGH one of them.
+    if op == "select":
+        n, w = _vshape(inst.type)
+        # the condition is either one i1 (a scalar select over vectors) or one i1 PER LANE
+        cn, cw = _vshape(inst.operands[0].type)
+        if cw != 1:
+            raise sem.Unsupported(f"select condition of width {cw}")
+        if cn not in (1, n):
+            raise sem.Unsupported("select condition lane count differs from the result")
+        c = _lanes_of(inst.operands[0], cn, 1, env)
+        a = _lanes_of(inst.operands[1], n, w, env)
+        b = _lanes_of(inst.operands[2], n, w, env)
+        env[inst.result] = ([f"(ite (= {c[i if cn == n else 0]} {sem.const(1, 1)}) {a[i]} {b[i]})"
+                             for i in range(n)], w)
+        return
+    if op in ("zext", "sext"):
+        n, w = _vshape(inst.type)
+        sn, sw = _vshape(inst.src_type or inst.operands[0].type)
+        if sn != n:
+            raise sem.Unsupported("extension changes the lane count")
+        if sw >= w:
+            raise sem.Unsupported(f"{op} from i{sw} to i{w} does not widen")
+        a = _lanes_of(inst.operands[0], n, sw, env)
+        kind = "zero_extend" if op == "zext" else "sign_extend"
+        env[inst.result] = ([f"((_ {kind} {w - sw}) {a[i]})" for i in range(n)], w)
+        return
     if op == "extractelement":
         n, w = _vshape(inst.operands[0].type)
         idx = inst.operands[1]
