@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 r"""Vectors: whole-function TV via a LANE MODEL (fixed-width, element-wise + shuffle/extract/insert).
 
-A vector value is modeled as a LIST of per-lane scalar SMT terms (a scalar is a 1-lane list), so
-element-wise operations lower lane-by-lane and the cross-lane instructions -- `extractelement`,
-`insertelement`, `shufflevector` -- are exact index/permutation operations on the lists. A transform is
-a refinement iff, for all inputs, every lane of the result agrees (scalars are the 1-lane case). So a
-vector fold (`and <2 x i32> %x, <-1,-1> -> %x`) proves, and a wrong lane refutes.
+A vector value is modeled as a LIST of per-lane `(value, poison)` pairs (a scalar is a 1-lane list),
+so element-wise operations lower lane-by-lane and the cross-lane instructions -- `extractelement`,
+`insertelement`, `shufflevector` -- are exact index/permutation operations on the lists. The
+obligation is Alive2-style REFINEMENT applied per lane -- wherever a source lane is defined, the
+target's lane must be defined and equal -- which is the same thing `scalar_ir` discharges. So a vector
+fold (`and <2 x i32> %x, <-1,-1> -> %x`) proves, a wrong lane refutes, a fold that EXPLOITS poison
+(`ashr x,x -> 0`) proves, and one that INTRODUCES it (adding `exact`) refutes even though every lane
+value is identical.
 
 Scope: fixed-width `<N x iW>` vectors; lane-wise binops/icmp; `extractelement`/`insertelement` with a
 CONSTANT index; `shufflevector` with a constant, fully-defined mask (an undef/poison mask lane declines);
@@ -46,13 +49,34 @@ def _signature(ll_text, func):
 # for a shuffle mask. All three are structured data in the parse (`type.n`, `type.elem.bits`,
 # `Value.elements`, `Instruction.mask`, where LLVM already reports -1 for an undef lane).
 #
-# Ported FAITHFULLY -- same lane terms, same declines -- with one deliberate non-change: the old
-# binop regex discarded poison flags in a non-capturing group, so this model ignores nsw/nuw/exact/
-# disjoint entirely and gates refutation on `poison_risk` instead. The parse now makes those flags
-# available, but using them would change verdicts, and a refactor is the wrong place to do that.
+# The poison flags the old binop regex discarded in a non-capturing group are now USED. For a while
+# this model ignored nsw/nuw/exact/disjoint and leaned on two whole-function guards instead -- refuse
+# to prove if the target could be poison anywhere, refuse to refute if the source could. Both were
+# blunt, because poison in LLVM is PER ELEMENT: one flagged lane disqualified an entire function. The
+# lane model now carries a poison term beside each lane's value and discharges the same refinement
+# obligation the scalar validator does, so the guards are gone from this path (the SCALABLE model
+# below is still value-equality and still needs them).
 
-def _lanes_of(v, n, w, env):
-    """A scalar/vector operand -> a list of n lane terms of width w."""
+def _free(ctx, w, kind):
+    """A fresh per-lane value for an `undef` or `poison` element.
+
+    `poison` is an arbitrary value whose poison bit is SET; `undef` is an arbitrary value that is
+    perfectly defined. Neither is one value, so neither can be a constant -- and the freedom is not
+    transparent either: `and undef, 0` is 0, not "anything", so a lane cannot simply be dropped from
+    the obligation because an undef reached it. The choice is named instead, and the SIDE decides its
+    quantifier: a TARGET choice is existential (free, so the solver may expose a miscompile) while a
+    SOURCE choice is universal (the target must match EVERY value the source could have produced).
+    """
+    if ctx is None or ctx.get("fresh") is None:
+        raise sem.Unsupported(f"vector element {kind}")
+    fresh = ctx["fresh"]
+    name = f"vfr{len(fresh)}_{ctx.get('side', 'source')}"
+    fresh.append((name, w))
+    return name, ("true" if kind == "poison" else "false")
+
+
+def _lanes_of(v, n, w, env, ctx=None):
+    """A scalar/vector operand -> a list of n `(term, poison)` lanes of width w."""
     if v.is_reg:
         if v.name not in env:
             raise sem.Unsupported(f"operand {v.name!r}")
@@ -61,24 +85,29 @@ def _lanes_of(v, n, w, env):
             raise sem.Unsupported("lane-count mismatch")
         return ls
     if v.kind == "zeroinit":
-        return [sem.const(0, w)] * n
+        return [(sem.const(0, w), "false")] * n
     if v.kind == "splat":                      # every lane the same value
         elem = v.splat_elem
         if elem is None or elem.kind != "int":
             raise sem.Unsupported("non-integer splat")
-        return [sem.const(elem.int_value, w)] * n
+        return [(sem.const(elem.int_value, w), "false")] * n
     if v.kind == "vector":
         elems = v.elements
         if len(elems) != n:
             raise sem.Unsupported("vector-literal arity")
         out = []
         for e in elems:
-            if e.kind != "int":                        # an undef/poison element -> decline
+            if e.kind == "int":
+                out.append((sem.const(e.int_value, w), "false"))
+            elif e.is_undef or e.is_poison:
+                out.append(_free(ctx, w, "poison" if e.is_poison else "undef"))
+            else:
                 raise sem.Unsupported(f"vector element {e.kind}")
-            out.append(sem.const(e.int_value, w))
         return out
+    if v.is_undef or v.is_poison:
+        return [_free(ctx, w, "poison" if v.is_poison else "undef") for _ in range(n)]
     if v.kind == "int" and n == 1:
-        return [sem.const(v.int_value, w)]
+        return [(sem.const(v.int_value, w), "false")]
     raise sem.Unsupported(f"operand {v.kind}")
 
 
@@ -91,23 +120,35 @@ def _vshape(t):
     raise sem.Unsupported(f"type {t}")
 
 
-def _vec_instr(inst, env):
+def _vec_instr(inst, env, ctx=None):
     op = inst.op
+    ub = ctx.setdefault("ub", []) if ctx is not None else []
     if op in sem.BIN:
         n, w = _vshape(inst.type)
-        a = _lanes_of(inst.operands[0], n, w, env)
-        b = _lanes_of(inst.operands[1], n, w, env)
+        a = _lanes_of(inst.operands[0], n, w, env, ctx)
+        b = _lanes_of(inst.operands[1], n, w, env, ctx)
         smt = sem.BIN[op]
-        env[inst.result] = ([f"({smt} {a[i]} {b[i]})" for i in range(n)], w)
+        lanes = []
+        for i in range(n):
+            (av, ap), (bv, bp) = a[i], b[i]
+            # the SHARED poison/UB rules, per lane -- not a second reading of LLVM. A duplicate model
+            # is what round 6 of the 2026-07 review found a false proof inside.
+            lanes.append((f"({smt} {av} {bv})",
+                          si.smt_or([ap, bp, sem.own_poison(op, smt, inst.flags, av, bv, w)])))
+            if op in ("udiv", "sdiv", "urem", "srem"):
+                # a poison DIVISOR is UB, not merely poison: it decides whether the division traps
+                ub.append(si.smt_or([bp, sem.own_ub(op, av, bv, w)]))
+        env[inst.result] = (lanes, w)
         return
     if op == "icmp":
         if inst.pred not in sem.ICMP:
             raise sem.Unsupported(f"icmp predicate {inst.pred!r}")
         n, w = _vshape(inst.operands[0].type)
-        a = _lanes_of(inst.operands[0], n, w, env)
-        b = _lanes_of(inst.operands[1], n, w, env)
-        env[inst.result] = ([f"(ite {sem.ICMP[inst.pred].format(a=a[i], b=b[i])} "
-                             f"{sem.const(1, 1)} {sem.const(0, 1)})" for i in range(n)], 1)
+        a = _lanes_of(inst.operands[0], n, w, env, ctx)
+        b = _lanes_of(inst.operands[1], n, w, env, ctx)
+        env[inst.result] = ([(f"(ite {sem.ICMP[inst.pred].format(a=a[i][0], b=b[i][0])} "
+                              f"{sem.const(1, 1)} {sem.const(0, 1)})",
+                              si.smt_or([a[i][1], b[i][1]])) for i in range(n)], 1)
         return
     # ELEMENT-WISE and therefore exactly what a lane model is for: each lane's result depends only on
     # that lane's inputs, so the vector case is the scalar case repeated. Measured over LLVM 18's
@@ -122,11 +163,18 @@ def _vec_instr(inst, env):
             raise sem.Unsupported(f"select condition of width {cw}")
         if cn not in (1, n):
             raise sem.Unsupported("select condition lane count differs from the result")
-        c = _lanes_of(inst.operands[0], cn, 1, env)
-        a = _lanes_of(inst.operands[1], n, w, env)
-        b = _lanes_of(inst.operands[2], n, w, env)
-        env[inst.result] = ([f"(ite (= {c[i if cn == n else 0]} {sem.const(1, 1)}) {a[i]} {b[i]})"
-                             for i in range(n)], w)
+        c = _lanes_of(inst.operands[0], cn, 1, env, ctx)
+        a = _lanes_of(inst.operands[1], n, w, env, ctx)
+        b = _lanes_of(inst.operands[2], n, w, env, ctx)
+        lanes = []
+        for i in range(n):
+            cv, cp = c[i if cn == n else 0]
+            test = f"(= {cv} {sem.const(1, 1)})"
+            # a select is poison if its condition is, or if the arm it SELECTS is -- the unselected
+            # arm's poison does not propagate, which is the whole reason `freeze` exists
+            lanes.append((f"(ite {test} {a[i][0]} {b[i][0]})",
+                          si.smt_or([cp, f"(ite {test} {a[i][1]} {b[i][1]})"])))
+        env[inst.result] = (lanes, w)
         return
     if op in ("zext", "sext"):
         n, w = _vshape(inst.type)
@@ -135,9 +183,9 @@ def _vec_instr(inst, env):
             raise sem.Unsupported("extension changes the lane count")
         if sw >= w:
             raise sem.Unsupported(f"{op} from i{sw} to i{w} does not widen")
-        a = _lanes_of(inst.operands[0], n, sw, env)
+        a = _lanes_of(inst.operands[0], n, sw, env, ctx)
         kind = "zero_extend" if op == "zext" else "sign_extend"
-        env[inst.result] = ([f"((_ {kind} {w - sw}) {a[i]})" for i in range(n)], w)
+        env[inst.result] = ([(f"((_ {kind} {w - sw}) {a[i][0]})", a[i][1]) for i in range(n)], w)
         return
     if op == "extractelement":
         n, w = _vshape(inst.operands[0].type)
@@ -145,7 +193,7 @@ def _vec_instr(inst, env):
         if idx.kind != "int":
             raise sem.Unsupported("variable extractelement index")
         k = idx.int_value
-        ls = _lanes_of(inst.operands[0], n, w, env)
+        ls = _lanes_of(inst.operands[0], n, w, env, ctx)
         if k < 0 or k >= n:
             raise sem.Unsupported("extractelement index out of range")
         env[inst.result] = ([ls[k]], w)
@@ -156,8 +204,8 @@ def _vec_instr(inst, env):
         if idx.kind != "int":
             raise sem.Unsupported("variable insertelement index")
         k = idx.int_value
-        ls = list(_lanes_of(inst.operands[0], n, w, env))
-        elt = _lanes_of(inst.operands[1], 1, w, env)[0]
+        ls = list(_lanes_of(inst.operands[0], n, w, env, ctx))
+        elt = _lanes_of(inst.operands[1], 1, w, env, ctx)[0]
         if k < 0 or k >= n:
             raise sem.Unsupported("insertelement index out of range")
         ls[k] = elt
@@ -165,8 +213,8 @@ def _vec_instr(inst, env):
         return
     if op == "shufflevector":
         n, w = _vshape(inst.operands[0].type)
-        a = _lanes_of(inst.operands[0], n, w, env)
-        b = _lanes_of(inst.operands[1], n, w, env)
+        a = _lanes_of(inst.operands[0], n, w, env, ctx)
+        b = _lanes_of(inst.operands[1], n, w, env, ctx)
         pool = a + b
         out = []
         for idx in inst.mask:
@@ -180,23 +228,24 @@ def _vec_instr(inst, env):
     raise sem.Unsupported(f"instruction {op!r}")
 
 
-def _vtranslate(ll_text, func):
-    """Single-BB vector function -> (result lanes, lane width, param declarations)."""
+def _vtranslate(ll_text, func, side="source", fresh=None):
+    """Single-BB vector function -> (result lanes, lane width, param declarations, ub)."""
     fn = ir.parse(ll_text).function(func)
     if fn is None or fn.is_declaration:
         raise sem.Unsupported(f"function {func} not found")
     if len(fn.blocks) > 1:
         raise sem.Unsupported("multi-block")
     env, decls = {}, []
+    ctx = {"side": side, "fresh": fresh, "ub": []}
     for p in fn.params:
         t = p.type
         if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
             ls = [f"{p.name}!{i}" for i in range(t.n)]
             decls += [(lane, t.elem.bits) for lane in ls]
-            env[p.name] = (ls, t.elem.bits)
+            env[p.name] = ([(lane, "false") for lane in ls], t.elem.bits)
         elif t.is_int():
             decls.append((p.name, t.bits))
-            env[p.name] = ([p.name], t.bits)
+            env[p.name] = ([(p.name, "false")], t.bits)
         else:
             raise sem.Unsupported(f"parameter type {t}")
     for inst in fn.blocks[0].instructions:
@@ -204,8 +253,9 @@ def _vtranslate(ll_text, func):
             if not inst.operands:
                 raise sem.Unsupported("no vector/scalar ret")
             n, w = _vshape(inst.operands[0].type)
-            return _lanes_of(inst.operands[0], n, w, env), w, decls
-        _vec_instr(inst, env)
+            return (_lanes_of(inst.operands[0], n, w, env, ctx), w, decls,
+                    si.smt_or(ctx["ub"]))
+        _vec_instr(inst, env, ctx)
     raise sem.Unsupported("no vector/scalar ret")
 
 
@@ -341,9 +391,10 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     `cross_check` replays the decided query through a second, independent solver."""
     if _signature(before_ll, func) != _signature(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
+    fresh: list = []
     try:
-        rb, wb, decls = _vtranslate(before_ll, func)
-        ra, wa, _ = _vtranslate(after_ll, func)
+        rb, wb, decls, sub = _vtranslate(before_ll, func, side="source", fresh=fresh)
+        ra, wa, _, tub = _vtranslate(after_ll, func, side="target", fresh=fresh)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     except ir.IrParseError as exc:
@@ -351,9 +402,24 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
                 "reason": f"module is not valid LLVM IR: {str(exc).splitlines()[0][:120]}"}
     if wb != wa or len(rb) != len(ra):
         return {"status": "error", "function": func, "reason": "result shape changed"}
+    src_fresh = [(n, w) for n, w in fresh if n.endswith("_source")]
+    tgt_fresh = [(n, w) for n, w in fresh if not n.endswith("_source")]
     ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]
-    refute = si.smt_or([f"(not (= {rb[i]} {ra[i]}))" for i in range(len(rb))])
-    smt = "\n".join(["(set-logic QF_BV)", *ds, f"(assert {refute})", "(check-sat)", "(get-model)", ""])
+    ds += [f"(declare-const {n} (_ BitVec {w}))" for n, w in tgt_fresh]
+    # ALIVE2-STYLE REFINEMENT, PER LANE. This model used to compare VALUES and lean on two guards --
+    # decline if the target could produce poison anywhere, decline a mismatch if the source could.
+    # Both were blunt: poison is per-element in LLVM, so one flagged lane disqualified the whole
+    # function. The obligation is now the same one the scalar validator discharges, applied lane by
+    # lane: wherever a SOURCE lane is defined, the target's lane must be defined and equal.
+    lane_bad = si.smt_or([si.smt_and([f"(not {rb[i][1]})",
+                                      si.smt_or([ra[i][1], f"(not (= {rb[i][0]} {ra[i][0]}))"])])
+                          for i in range(len(rb))])
+    refute = si.smt_and([f"(not {sub})", si.smt_or([tub, lane_bad])])
+    if src_fresh:
+        binders = " ".join(f"({n} (_ BitVec {w}))" for n, w in src_fresh)
+        refute = f"(forall ({binders}) {refute})"
+    logic = "BV" if src_fresh else "QF_BV"
+    smt = "\n".join([f"(set-logic {logic})", *ds, f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:
         out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
                              timeout=timeout).stdout
@@ -363,17 +429,7 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        if si.target_may_poison(after_ll, func):
-            return {"status": "unsupported", "function": func, "guard": "target-poison",
-                    "reason": "target can produce poison; a value-equality model cannot prove "
-                              "refinement against it (values agree, poison is not a value)"}
         return {"status": "proved", "function": func, **xc}
     if head == "sat":
-        # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
-        # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
-        # `ashr x,x` to 0), so decline rather than false-refute.
-        if si.poison_risk(before_ll, func):
-            return {"status": "unsupported", "function": func, "guard": "poison-risk",
-                    "reason": "value mismatch under possible poison (lane model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out, **xc}
     return {"status": "error", "function": func, "reason": head}

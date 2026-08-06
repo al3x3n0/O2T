@@ -80,14 +80,24 @@ def main() -> int:
           "  %e = extractelement <vscale x 4 x i32> %x, i32 0\n  ret i32 %e\n}\n")
     assert svec_tv(z3, xl, xl, "h")["status"] == "unsupported", "a cross-lane op must decline"
 
-    # POISON-REFINEMENT gate (the same class the differential fuzzer found in the memory model): the
-    # lane model compares VALUES, so a sound poison-exploiting vector fold -- `ashr x,x` (poison for
-    # shift >= width) folded to 0 -- must DECLINE, not falsely REFUTE. A poison-free wrong lane (above)
-    # still refutes.
+    # POISON EXPLOITATION IS NOW PROVED, not declined. `ashr x, x` is poison wherever the shift
+    # reaches the width, so folding it to 0 is a sound refinement -- and reference Alive2 proves it.
+    # A value-only lane model could not: it saw 0 != ashr(x,x) and had to decline rather than
+    # false-refute, which is what the old `poison-risk` guard was for. Carrying poison PER LANE
+    # replaces the guard with the real obligation. A poison-free wrong lane (above) still refutes.
     pv = ("define <2 x i32> @p(<2 x i32> %x) {\n  %r = ashr <2 x i32> %x, %x\n  ret <2 x i32> %r\n}\n")
     pz = ("define <2 x i32> @p(<2 x i32> %x) {\n  ret <2 x i32> zeroinitializer\n}\n")
-    assert vec_tv(z3, pv, pz, "p")["status"] == "unsupported", \
-        "a sound poison-exploiting vector fold must DECLINE (lane model lacks poison refinement), not refute"
+    assert vec_tv(z3, pv, pz, "p")["status"] == "proved", \
+        "a sound poison-exploiting vector fold must now PROVE -- the lane model carries poison"
+
+    # ...and the other direction is the teeth: INTRODUCING poison the source did not have must
+    # refute. Values are identical everywhere, so only the poison term can catch it.
+    nf = ("define <2 x i32> @q(<2 x i32> %x, <2 x i32> %y) {\n  %r = lshr <2 x i32> %x, %y\n"
+          "  ret <2 x i32> %r\n}\n")
+    ex = ("define <2 x i32> @q(<2 x i32> %x, <2 x i32> %y) {\n  %r = lshr exact <2 x i32> %x, %y\n"
+          "  ret <2 x i32> %r\n}\n")
+    assert vec_tv(z3, nf, ex, "q")["status"] == "refuted", \
+        "adding `exact` to a vector shift introduces poison and must refute, values being identical"
 
     # 5. THE ELEMENT-WISE OPERATIONS THE LANE MODEL WAS MISSING. Measured over LLVM 18's InstCombine
     #    tests, `select` (60), `zext` (28) and `sext` (9) were this validator's largest remaining

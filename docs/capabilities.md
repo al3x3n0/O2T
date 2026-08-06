@@ -61,7 +61,7 @@ Two consequences worth knowing when reading verdicts:
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, re-measured 2026-08-05 over NINE of LLVM 18's InstCombine test files
-  (1,664 functions):** **1,272 proved (76%)**, 400 declines, 26 timeouts, **0 refutations**, and every
+  (1,664 functions):** **1,411 proved (85%)**, 400 declines, 26 timeouts, **0 refutations**, and every
   proof spot-checked against lli + Alive2 with **0 disagreements** and 0 vacuous. The jump from a
   ~1,100 baseline came from two things measured rather than guessed: modelling arguments as
   poison-capable plus a `forall`-bound source choice (which decided `freeze` in both directions), and
@@ -69,10 +69,18 @@ Two consequences worth knowing when reading verdicts:
   undecidable shape — that idiom alone accounted for 124 of 540 declines. A tenth file (`shift.ll`,
   171 functions) is NOT measured: LLVM 18's own `opt` errors on it ("Instruction Combining did not
   reach a fixpoint"), so it is excluded rather than silently counted as zero.
+- **The lane model discharges REFINEMENT, not value equality.** It used to compare values behind two
+  whole-function guards — refuse to prove if the target could be poison anywhere, refuse to refute if
+  the source could — and poison in LLVM is per *element*, so one flagged lane disqualified a whole
+  function. Each lane now carries a poison term and the obligation is the one `scalar_ir` discharges,
+  per lane; `undef`/`poison` elements become named choices whose quantifier depends on their side
+  (∀ for the source, free for the target), as for `freeze`. Both guards are gone from this path.
+  A fold that EXPLOITS poison (`ashr x,x -> 0`) now proves; one that INTRODUCES it (adding `exact`)
+  refutes though every lane value is identical. **Measured: +139 functions.**
 - **What the decline census actually says**, once each verdict is attributed to the validator that got
   FURTHEST rather than to the first one to look: `select` 60, undef vector elements 34, `zext` 28,
-  `bitcast` 18, `sext` 9. `select`/`zext`/`sext` are now modelled lane by lane, which is why the
-  figure above moved. Reporting only the scalar validator's reason had ranked "vectors" as the largest
+  `bitcast` 18, `sext` 9. `select`/`zext`/`sext` are now modelled lane by lane, and the undef/poison
+  element buckets fell to the refinement port above. Reporting only the scalar validator's reason had ranked "vectors" as the largest
   bucket at ~150 — misleading, because the lane model was already being dispatched to and was
   declining somewhere else entirely.
 - **Track B whole-function TV (earlier single-file figure):** **495 / 715 (69%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test

@@ -105,10 +105,15 @@ def main() -> int:
     nd = mem_state_tv(z3, deref_b, deref_a, "f")
     assert nd["status"] == "unsupported" and nd.get("guard") == "new-deref", nd
 
+    # The LANE model no longer needs this guard: it carries poison per lane and discharges the real
+    # refinement obligation, so a sound poison exploitation -- `ashr x,x` is poison wherever the shift
+    # reaches the width, so folding it to 0 refines -- is PROVED rather than declined, which is what
+    # reference Alive2 says too. The guard rule below still matters for the validators that remain
+    # value-equality (the memory model above, and the scalable lane model).
     vec_b = f"define {V} @f({V} %x){{\n  %s = ashr {V} %x, %x\n  ret {V} %s\n}}\n"
     vec_a = f"define {V} @f({V} %x){{\n  ret {V} zeroinitializer\n}}\n"
     vg = vec_tv(z3, vec_b, vec_a, "f")
-    assert vg["status"] == "unsupported" and vg.get("guard") == "poison-risk", vg
+    assert vg["status"] == "proved", ("a sound poison-exploiting vector fold must now PROVE", vg)
 
     # 3) THE ACID TEST. Sweep synthesized targets: no decline may be overturned into a verdict Alive2
     #    contradicts. Then REVERT the rule and require the same sweep to surface false proofs -- a

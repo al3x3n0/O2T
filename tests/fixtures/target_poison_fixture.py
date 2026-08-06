@@ -68,11 +68,16 @@ def main() -> int:
             assert got in (expect, "skip"), ("Alive2 contradicts the premise of this case", expect, got)
             answered.append(got != "skip")
 
-    # 1) LANE MODEL: adding `exact` keeps every lane value identical and makes the target poison.
+    # 1) LANE MODEL -- and this case has GRADUATED. Adding `exact` keeps every lane value identical
+    #    and makes the target poison, which a value-equality model could only DECLINE: it saw equal
+    #    values and had to refuse the proof rather than risk one. The lane model now carries poison
+    #    per lane and discharges the real refinement obligation, so it REFUTES, which is what Alive2
+    #    says too. The guard it used to return no longer exists on this path.
     vec_b = f"define {V} @f({V} %x, {V} %y) {{\n  %s = lshr {V} %x, %y\n  %r = mul {V} %s, %s\n  ret {V} %r\n}}\n"
     vec_a = vec_b.replace(f"lshr {V}", f"lshr exact {V}")
     v = vec_tv(z3, vec_b, vec_a, "f")
-    assert v["status"] == "unsupported" and v.get("guard") == "target-poison", v
+    assert v["status"] == "refuted" and v.get("witness"), \
+        ("introducing poison into a vector target must now REFUTE, not decline", v)
     confirm(vec_b, vec_a, "refuted")
 
     # 2) MEMORY MODEL: `ashr 1, -1` is poison in LLVM (shift >= width) but a defined 0 in SMT, so the
@@ -106,10 +111,14 @@ def main() -> int:
     assert d["status"] == "proved", ("dropping a flag is sound and must still prove", d)
     confirm(drop_b, drop_a, "proved")
 
-    # 5) The decline is TAGGED, so the dispatcher returns it rather than routing to another
-    #    value-equality validator that would prove the same pair.
+    # 5) The dispatcher agrees with the validator that decided it. The tagged-decline mechanism it
+    #    used to rely on still matters for the validators that remain value-equality (the memory
+    #    model above, and the scalable lane model), which is what case 2 pins.
     disp = validate_transform_ex(z3, vec_b, vec_a, "f")
-    assert disp["status"] == "unsupported", ("a target-poison decline must survive dispatch", disp)
+    assert disp["status"] == "refuted", ("the dispatcher must report the lane model's verdict", disp)
+    mdisp = validate_transform_ex(z3, mem_b, mem_a, "f")
+    assert mdisp["status"] == "unsupported", \
+        ("a target-poison decline from a value-equality validator must still survive dispatch", mdisp)
 
     # The oracle must have actually SPOKEN at least once. Without this, a systematic Alive2 timeout
     # would turn every `confirm` above into a no-op while the fixture still reported success.
@@ -119,11 +128,14 @@ def main() -> int:
     oracle = "confirmed against reference Alive2" if alive else "Alive2 absent (skipped)"
     print("target_poison_fixture OK: 'value-equal everywhere implies refinement' is FALSE when the "
           "TARGET can be poison -- poison is not a value. Both live cases the synthesized-target "
-          "fuzzer found are now declined: a lane-model target adding `exact` (identical lane values, "
-          "poison when the shift is inexact) and a memory target storing `shl %x, (ashr 1, -1)` "
-          "(poison in LLVM, a defined 0 in SMT, so the final memories looked equal). The condition is "
-          "on the TARGET only, so poison-free folds still prove and a poison-carrying SOURCE still "
-          f"permits one -- flag-dropping stays provable. Every verdict {oracle}")
+          "fuzzer found are caught, by different means now. The lane-model one -- a target adding "
+          "`exact`, identical lane values, poison when the shift is inexact -- is REFUTED rather than "
+          "declined: that model carries poison PER LANE and discharges the real refinement "
+          "obligation, so it no longer needs a guard standing in for one. The memory one -- storing "
+          "`shl %x, (ashr 1, -1)`, poison in LLVM but a defined 0 in SMT, so the final memories "
+          "looked equal -- is still a VALUE-equality model, still declines, and is what the guard is "
+          "for. The condition is on the TARGET only, so poison-free folds still prove and a "
+          f"poison-carrying SOURCE still permits one -- flag-dropping stays provable. Every verdict {oracle}")
     return 0
 
 
