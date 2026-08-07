@@ -63,6 +63,24 @@ def _load_bytes(mem, addr, width):
     return f"(concat {' '.join(reversed(parts))})"
 
 
+# --- poison, stored alongside the bytes ----------------------------------------------------------
+# Poison is a property of a VALUE, and a value put into memory keeps it: storing poison and loading
+# it back yields poison, not some defined byte. So the model carries a second array, of the same
+# addresses, holding one boolean per byte. Without it this validator could only compare values, and
+# needed two whole-function guards to stay sound -- refuse to prove if the target could be poison
+# anywhere, refuse to refute if the source could.
+
+def _store_poison(mp, addr, poison, width):
+    for i in range(width // 8):
+        mp = f"(store {mp} {_addr_off(addr, i)} {poison})"
+    return mp
+
+
+def _load_poison(mp, addr, width):
+    """A loaded value is poison if ANY byte it is assembled from is."""
+    return si.smt_or([f"(select {mp} {_addr_off(addr, i)})" for i in range(width // 8)])
+
+
 def _idx64(v, env):
     """A gep index operand -> a 64-bit SMT term (sign-extended: gep indices are signed)."""
     if v.is_reg:
@@ -162,7 +180,7 @@ def _signature(ll_text, func):
 
 def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
     """Symbolically execute a single-BB function over the memory array; return
-    (ret_term|None, ret_width, final_mem_term, derefs). Same model as the text reader it replaces:
+    (ret_term|None, ret_width, final_mem_term, derefs, ret_poison, ub, final_poison_mem). Same model as the text reader it replaces:
     pointer arguments are opaque address terms, a store/load splits into little-endian bytes, and a
     direct call to a DEFINED callee is inlined THROUGH the memory array."""
     module_text = module_text if module_text is not None else ll_text
@@ -173,13 +191,17 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
     if len(fn.blocks) > 1:
         raise sem.Unsupported("multi-block")
     if bind is not None:
-        env, addr, mem = dict(bind[0]), dict(bind[1]), bind[2]
+        env, addr, mem, mp = dict(bind[0]), dict(bind[1]), bind[2], bind[3]
     else:
         sig = _signature(ll_text, func) or []
         env = {n: (n, w, "false", "false") for w, n in sig if w != "ptr"}
         addr = {n: n for w, n in sig if w == "ptr"}
         mem = "mem0"
+        # The initial memory is arbitrary but DEFINED -- the same reading `mem0` already had. Both
+        # sides start from it, so anything neither writes cancels out of the comparison.
+        mp = "((as const (Array (_ BitVec 64) Bool)) false)"
     ret_term, ret_width = None, None
+    ret_poison, ub = "false", []
     derefs = []
 
     for inst in fn.blocks[0].instructions:
@@ -191,16 +213,19 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             if not t.is_int():
                 raise sem.Unsupported("non-integer return")
             ret_width = t.bits
-            ret_term = sem.value(inst.operands[0], env, ret_width)[0]
+            ret_term, _, ret_poison, rub = sem.value(inst.operands[0], env, ret_width)
+            ub.append(rub)
             break
         if op == "store":
             val, ptr = inst.operands[0], inst.operands[1]
             w = val.type.bits if val.type.is_int() else None
             if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
                 raise sem.Unsupported("store width/target out of scope")
-            vt = sem.value(val, env, w)[0]
+            vt, _, vp, vub = sem.value(val, env, w)
+            ub.append(vub)
             derefs.append(addr[ptr.name])
             mem = _store_bytes(mem, addr[ptr.name], vt, w)
+            mp = _store_poison(mp, addr[ptr.name], vp, w)      # the stored value keeps its poison
             continue
         if op == "load":
             ptr = inst.operands[0]
@@ -208,7 +233,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
                 raise sem.Unsupported("load width/target out of scope")
             derefs.append(addr[ptr.name])
-            env[inst.result] = (_load_bytes(mem, addr[ptr.name], w), w, "false", "false")
+            env[inst.result] = (_load_bytes(mem, addr[ptr.name], w), w,
+                                _load_poison(mp, addr[ptr.name], w), "false")
             continue
         if op == "getelementptr":
             addr[inst.result] = _gep_address(inst, addr, env)
@@ -229,16 +255,19 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                         caddr[pname] = addr[a.name]
                     else:
                         cenv[pname] = sem.value(a, env, kind)
-                cret, cw, mem, cderefs = _mem_translate(module_text, callee.name, module_text,
-                                                       (cenv, caddr, mem), depth + 1)
+                cret, cw, mem, cderefs, cp, cub, mp = _mem_translate(
+                    module_text, callee.name, module_text, (cenv, caddr, mem, mp), depth + 1)
                 derefs.extend(cderefs)
+                ub.append(cub)
                 if inst.result is not None and not inst.type.kind == "void":
                     if cret is None:
                         raise sem.Unsupported("value use of a void call")
-                    env[inst.result] = (cret, cw, "false", "false")
+                    env[inst.result] = (cret, cw, cp, "false")
                 continue
         sem.evaluate(inst, env, {})                     # scalar op; alloca/other shapes decline here
-    return ret_term, ret_width, mem, derefs
+    # UB is a whole-function property: a div-by-zero anywhere is UB even if its result is dead.
+    ub += [v[3] for v in env.values()]
+    return ret_term, ret_width, mem, derefs, ret_poison, si.smt_or(ub), mp
 
 
 def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
@@ -254,8 +283,8 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     if _signature(before_ll, func) != _signature(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
     try:
-        rb, wb, mb, db = _mem_translate(before_ll, func)
-        ra, wa, ma, da = _mem_translate(after_ll, func)
+        rb, wb, mb, db, rbp, sub, mbp = _mem_translate(before_ll, func)
+        ra, wa, ma, da, rap, tub, map_ = _mem_translate(after_ll, func)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if wb != wa or (rb is None) != (ra is None):
@@ -284,9 +313,24 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
             return {"status": "unsupported", "function": func, "guard": "new-deref",
                     "reason": "target introduces a dereference the source lacks (null-deref UB not modeled)"}
 
-    diffs = ([f"(not (= {rb} {ra}))"] if rb is not None else []) + [f"(not (= {mb} {ma}))"]
+    # ALIVE2-STYLE REFINEMENT over the returned value AND the final memory. This model used to
+    # compare values and lean on two whole-function guards; each stood in for an obligation it could
+    # not state. Both are gone: the value carries its poison, and so does every byte of memory.
+    #
+    # The memory half needs NO quantifier, which is worth noticing. To refute, it is enough that
+    # SOME address misbehaves -- and "some" is exactly what a satisfying assignment provides, so a
+    # free probe address does the work a `forall` would have to do in the proving direction.
+    ret_bad = ([si.smt_and([f"(not {rbp})", si.smt_or([rap, f"(not (= {rb} {ra}))"])])]
+               if rb is not None else [])
+    probe = "probe_addr"
+    decls.append(f"(declare-const {probe} (_ BitVec 64))")
+    sbyte, tbyte = f"(select {mb} {probe})", f"(select {ma} {probe})"
+    spois, tpois = f"(select {mbp} {probe})", f"(select {map_} {probe})"
+    mem_bad = si.smt_and([f"(not {spois})",
+                          si.smt_or([tpois, f"(not (= {sbyte} {tbyte}))"])])
+    refute = si.smt_and([f"(not {sub})", si.smt_or([tub, *ret_bad, mem_bad])])
     smt = "\n".join(["(set-logic QF_ABV)", *decls,
-                     f"(assert {si.smt_or(diffs)})", "(check-sat)", "(get-model)", ""])
+                     f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:
         out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
                              timeout=timeout).stdout
@@ -296,18 +340,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        if si.target_may_poison(after_ll, func):
-            return {"status": "unsupported", "function": func, "guard": "target-poison",
-                    "reason": "target can produce poison; a value-equality model cannot prove "
-                              "refinement against it (values agree, poison is not a value)"}
-        return {"status": "proved", "function": func, **xc}   # value-equal everywhere => sound refinement
+        return {"status": "proved", "function": func, **xc}
     if head == "sat":
-        # This model compares VALUES, not poison-refinement. So a value mismatch is a genuine miscompile
-        # ONLY when the source is poison-free; otherwise the mismatch may be a SOUND poison exploitation
-        # (opt folding a poison `ashr x,x` to 0), and refuting it would be a false refutation. Decline
-        # rather than refute when the source carries poison risk.
-        if si.poison_risk(before_ll, func):
-            return {"status": "unsupported", "function": func, "guard": "poison-risk",
-                    "reason": "value mismatch under possible poison (memory model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out, **xc}
     return {"status": "error", "function": func, "reason": head}

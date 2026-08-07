@@ -79,15 +79,28 @@ def main() -> int:
     assert mem_state_tv(z3, reads_p, reads_ok, "h")["status"] == "proved", \
         "a source-dereferenced pointer is fine to re-read (guard must not over-decline)"
 
-    # 6. POISON-REFINEMENT gate (found by the differential fuzzer): this model compares VALUES, not
-    #    poison-refinement, so a value mismatch is a genuine miscompile ONLY when the source is
-    #    poison-free. A sound poison-exploiting fold -- opt folds `ashr x,x` (poison for shift >= width)
-    #    to 0 -- must DECLINE, not falsely REFUTE. (A poison-free mismatch, case 2 above, still refutes.)
+    # 6. POISON REFINEMENT, through memory. This case was found by the differential fuzzer and used
+    #    to DECLINE: the model compared values, so it could not tell a miscompile from a sound
+    #    exploitation and had to refuse. `ashr x,x` is poison wherever the shift reaches the width,
+    #    so folding it -- and the store of it -- to 0 refines, and reference Alive2 proves it. Every
+    #    byte of memory now carries a poison bit, so this is PROVED rather than declined.
     pois_b = ("define i32 @k(ptr %q, i32 %x) {\n  %v = ashr i32 %x, %x\n  store i32 %v, ptr %q\n"
               "  ret i32 %v\n}\n")
     pois_a = ("define i32 @k(ptr %q, i32 %x) {\n  store i32 0, ptr %q\n  ret i32 0\n}\n")
-    assert mem_state_tv(z3, pois_b, pois_a, "k")["status"] == "unsupported", \
-        "a sound poison-exploiting fold must DECLINE (value model lacks poison refinement), not refute"
+    assert mem_state_tv(z3, pois_b, pois_a, "k")["status"] == "proved", \
+        "a sound poison-exploiting fold through memory must now PROVE"
+
+    # 6b. TEETH for the other direction, which only a poison term can catch: the target STORES a
+    #     value that is poison where the source's is defined. Every stored byte is value-identical,
+    #     so the old value comparison saw nothing at all -- and the guard it relied on erred toward
+    #     declining, never toward catching this.
+    st_b = ("define void @m(ptr %q, i32 %x, i32 %y) {\n  %v = lshr i32 %x, %y\n"
+            "  store i32 %v, ptr %q\n  ret void\n}\n")
+    st_a = ("define void @m(ptr %q, i32 %x, i32 %y) {\n  %v = lshr exact i32 %x, %y\n"
+            "  store i32 %v, ptr %q\n  ret void\n}\n")
+    v = mem_state_tv(z3, st_b, st_a, "m")
+    assert v["status"] == "refuted" and v.get("witness"), \
+        ("storing a value poison where the source's is defined must refute, values being identical", v)
 
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "

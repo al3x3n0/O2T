@@ -89,7 +89,9 @@ def main() -> int:
     mem_a = mem_b.replace("  store i32 %pv, ptr %p\n  store i32 %x, ptr %p\n",
                           "  store i32 %pv, ptr %p\n")
     m = mem_state_tv(z3, mem_b, mem_a, "f")
-    assert m["status"] == "unsupported" and m.get("guard") == "target-poison", m
+    assert m["status"] == "refuted" and m.get("witness"), \
+        ("the memory model now carries a poison bit per BYTE, so a target whose final memory is "
+         "poison where the source's is defined must REFUTE, not decline", m)
     confirm(mem_b, mem_a, "refuted")
 
     # 3) NOT A BLANKET REFUSAL. A poison-free target still proves -- dead-store elimination and an
@@ -117,8 +119,7 @@ def main() -> int:
     disp = validate_transform_ex(z3, vec_b, vec_a, "f")
     assert disp["status"] == "refuted", ("the dispatcher must report the lane model's verdict", disp)
     mdisp = validate_transform_ex(z3, mem_b, mem_a, "f")
-    assert mdisp["status"] == "unsupported", \
-        ("a target-poison decline from a value-equality validator must still survive dispatch", mdisp)
+    assert mdisp["status"] == "refuted", ("the dispatcher must report the memory model's verdict", mdisp)
 
     # The oracle must have actually SPOKEN at least once. Without this, a systematic Alive2 timeout
     # would turn every `confirm` above into a no-op while the fixture still reported success.
@@ -128,14 +129,15 @@ def main() -> int:
     oracle = "confirmed against reference Alive2" if alive else "Alive2 absent (skipped)"
     print("target_poison_fixture OK: 'value-equal everywhere implies refinement' is FALSE when the "
           "TARGET can be poison -- poison is not a value. Both live cases the synthesized-target "
-          "fuzzer found are caught, by different means now. The lane-model one -- a target adding "
-          "`exact`, identical lane values, poison when the shift is inexact -- is REFUTED rather than "
-          "declined: that model carries poison PER LANE and discharges the real refinement "
-          "obligation, so it no longer needs a guard standing in for one. The memory one -- storing "
-          "`shl %x, (ashr 1, -1)`, poison in LLVM but a defined 0 in SMT, so the final memories "
-          "looked equal -- is still a VALUE-equality model, still declines, and is what the guard is "
-          "for. The condition is on the TARGET only, so poison-free folds still prove and a "
-          f"poison-carrying SOURCE still permits one -- flag-dropping stays provable. Every verdict {oracle}")
+          "fuzzer found are now REFUTED rather than declined, which is the point: each model has the "
+          "obligation the guard used to stand in for. The lane model carries poison per LANE -- a "
+          "target adding `exact` has identical lane values and is poison when the shift is inexact "
+          "-- and the memory model carries it per BYTE, so storing `shl %x, (ashr 1, -1)` (poison in "
+          "LLVM, a defined 0 in SMT, so the final memories looked equal) is caught by the poison bit "
+          "rather than missed by the comparison. The guard survives only where a validator still "
+          "compares values, which is the scalable lane model. The condition is on the TARGET only, "
+          "so poison-free folds still prove and a poison-carrying SOURCE still permits one -- "
+          f"flag-dropping stays provable. Every verdict {oracle}")
     return 0
 
 

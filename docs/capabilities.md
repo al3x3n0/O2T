@@ -61,7 +61,7 @@ Two consequences worth knowing when reading verdicts:
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, re-measured 2026-08-05 over NINE of LLVM 18's InstCombine test files
-  (1,664 functions):** **1,411 proved (85%)**, 400 declines, 26 timeouts, **0 refutations**, and every
+  (1,664 functions):** **1,418 proved (85%)**, 400 declines, 26 timeouts, **0 refutations**, and every
   proof spot-checked against lli + Alive2 with **0 disagreements** and 0 vacuous. The jump from a
   ~1,100 baseline came from two things measured rather than guessed: modelling arguments as
   poison-capable plus a `forall`-bound source choice (which decided `freeze` in both directions), and
@@ -69,6 +69,16 @@ Two consequences worth knowing when reading verdicts:
   undecidable shape — that idiom alone accounted for 124 of 540 declines. A tenth file (`shift.ll`,
   171 functions) is NOT measured: LLVM 18's own `opt` errors on it ("Instruction Combining did not
   reach a fixpoint"), so it is excluded rather than silently counted as zero.
+- **The memory model discharges refinement too, and it bought almost nothing here.** Same port as the
+  lane model, one file later: every byte of memory carries a poison bit, a store writes the stored
+  value's poison across its range, a load ORs it back, and the obligation covers the returned value
+  AND the final memory. Both poison guards are gone from this path (the new-deref guard stays — it is
+  about pointer validity, not poison). **Measured lift: +7 functions.** These are peephole tests,
+  mostly scalar and vector, and their memory declines were about SHAPE — escaped pointers, `alloca`,
+  `getelementptr` — not poison. The value here is that two blunt whole-function guards were replaced
+  by the real obligation, so cases that could only be *declined* are now decided: a sound poison
+  exploitation through memory proves, and a target whose final memory is poison where the source's is
+  defined refutes. Reach is not the argument.
 - **The lane model discharges REFINEMENT, not value equality.** It used to compare values behind two
   whole-function guards — refuse to prove if the target could be poison anywhere, refuse to refute if
   the source could — and poison in LLVM is per *element*, so one flagged lane disqualified a whole

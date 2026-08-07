@@ -96,8 +96,10 @@ def main() -> int:
                     "  store i32 %s, ptr %p\n  %v = load i32, ptr %p\n  ret i32 %v\n}\n")
     poison_mem_a = ("define i32 @f(ptr %p, i32 %x){\n  store i32 0, ptr %p\n"
                     "  %v = load i32, ptr %p\n  ret i32 %v\n}\n")
+    # Like the lane model, the memory model no longer needs this guard: it carries poison per byte
+    # and discharges the real obligation, so a sound poison exploitation through memory is PROVED.
     m = mem_state_tv(z3, poison_mem_b, poison_mem_a, "f")
-    assert m["status"] == "unsupported" and m.get("guard") == "poison-risk", m
+    assert m["status"] == "proved", ("a sound poison-exploiting fold through memory must PROVE", m)
 
     deref_b = "define i32 @f(ptr %p, ptr %q, i32 %x){\n  store i32 %x, ptr %p\n  ret i32 %x\n}\n"
     deref_a = ("define i32 @f(ptr %p, ptr %q, i32 %x){\n  store i32 %x, ptr %p\n"
