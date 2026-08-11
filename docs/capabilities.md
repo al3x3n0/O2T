@@ -149,6 +149,17 @@ Two consequences worth knowing when reading verdicts:
   `immarg`, `zeroinitializer`, `splat (iW C)` and named/packed struct geps are all valid IR the old
   text readers could not match.
   The previously documented 351/715 (49%) counted the scalar path alone.
+- **An observable call is observable whatever the function returns — and that was a second false
+  proof.** The effect terms sat *inside* the guard on the returned value's poison, so once the source's
+  result was poison the solver never examined the calls at all. Isolated by a source that is poison-
+  returning but UB-free (`shl i32 %x, 33` is poison for every input): the source hands the callee `%x`,
+  the target hands it `0`, nothing else differs — O2T **proved** it and reference Alive2 refutes it with
+  witness `%x = 1`. The terms now sit beside the value obligation, each argument keeping its own poison
+  guard (where the source already passes poison the callee may observe anything), and a UB source still
+  refines to any behaviour, observable effects included. **Cost: zero — 1,439 of 1,664 and 199 declines,
+  unchanged, with 0 refutations on LLVM's own tests**, which is what `opt` not rewriting keep-alive
+  arguments into observably different values predicts. Like the `undef` case above, no sweep could have
+  found it; it took constructing the pair and asking the oracle.
 - **Assumption hygiene.** Where a proof would rest on an undeclared assumption, O2T declines instead:
   a source that is UB/poison everywhere is flagged vacuous (below), and a transform whose soundness
   needs an argument to be non-`undef` declines unless the argument is declared `noundef`.

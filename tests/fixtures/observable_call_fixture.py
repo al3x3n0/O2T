@@ -128,6 +128,21 @@ def main() -> int:
     assert d["status"] == "unsupported", ("a call with a used result must decline", d)
     assert "call to" in d["reason"], d
 
+    # 7) AN OBSERVABLE CALL IS OBSERVABLE WHATEVER THE FUNCTION RETURNS -- and getting that wrong was
+    #    a live FALSE PROOF here, not a missed nicety. The effect terms used to sit INSIDE the guard
+    #    on the returned value's poison, so once the source's result was poison the solver never
+    #    looked at the calls at all. `shl i32 %x, 33` is poison for every input while the function
+    #    itself has no UB, which isolates exactly that: the source hands the callee `%x`, the target
+    #    hands it `0`, nothing else differs, and this PROVED while Alive2 refutes it (witness
+    #    `%x = 1` -- the callee sees 1 against 0). `check` confirms the verdict against Alive2, so
+    #    this case is pinned by the oracle rather than by our own reading.
+    poison_ret = fn("  %p = shl i32 %x, 33\n  call void @use32(i32 %x)\n  ret i32 %p")
+    poison_ret_bad = fn("  %p = shl i32 %x, 33\n  call void @use32(i32 0)\n  ret i32 %p")
+    check("observable difference under a poison result", poison_ret, poison_ret_bad, "refuted")
+    #    ...and the same shape with the argument PRESERVED must still prove, so the fix above is not
+    #    simply refusing everything whose result is poison.
+    check("poison result, call preserved", poison_ret, poison_ret, "proved")
+
     print("observable_call_fixture OK: a void call to a bodiless declaration no longer makes a whole "
           "function undecidable. It cannot change the returned value -- it returns nothing, and the "
           "scalar fragment gives it no pointer to write through -- but it IS observable, so the "
@@ -135,7 +150,10 @@ def main() -> int:
           "the ARGUMENTS are proved equal in the solver, since rewriting them into equal-looking "
           "different terms is what the pass under test does. Passing a different value refutes with a "
           "witness, and a call whose result is used still declines rather than assuming a purity "
-          "LLVM does not promise.")
+          "LLVM does not promise. The call's obligation sits BESIDE the returned value's rather than "
+          "inside it -- an observable call is observable whatever the function returns -- and while "
+          "those terms were nested under the result's poison guard, a source whose result is poison "
+          "hid the difference completely: a false proof reference Alive2 refutes.")
     return 0
 
 

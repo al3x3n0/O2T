@@ -323,9 +323,22 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
         eff_differs += [smt_and([f"(not {a[2]})", smt_or([b[2], f"(not (= {a[0]} {b[0]}))"])])
                         for a, b in zip(sargs, targs)]
 
+    # AN OBSERVABLE CALL IS OBSERVABLE WHATEVER THE FUNCTION RETURNS, so its terms sit BESIDE the
+    # returned value's obligation, not inside it. They used to sit inside `and(not sp, ...)` -- the
+    # guard on the RESULT's poison -- which made an observable difference invisible whenever the
+    # source's result was poison. That was a live FALSE PROOF, not a missed nicety:
+    #   define i32 @f(i32 %x) { %p = shl i32 %x, 33   ; poison for every input, and no UB
+    #                           call void @use32(i32 %x)   ->   call void @use32(i32 0)
+    #                           ret i32 %p }
+    # proved here, and reference Alive2 refutes it with witness `%x = 1` (the callee sees 1 vs 0).
+    # Each argument still carries its OWN poison guard (built above), which is the part that must not
+    # be dropped: where the source already passes poison the callee may observe anything.
+    # `not su` still covers everything -- a source with UB refines to any behaviour, observable
+    # effects included.
     refute = smt_and([f"(not {su})",
-                      smt_or([tu, smt_and([f"(not {sp})",
-                                           smt_or([tp, f"(not (= {r0} {r1}))", *eff_differs])])])])
+                      smt_or([tu,
+                              smt_and([f"(not {sp})", smt_or([tp, f"(not (= {r0} {r1}))"])]),
+                              *eff_differs])])
     # A literal `poison` operand denotes an ARBITRARY value whose poison bit is set, and the
     # semantics layer spells that value `poison_<width>` -- but nothing declared it, so any function
     # containing one produced an undeclared symbol and came back as a solver ERROR rather than a
