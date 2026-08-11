@@ -84,8 +84,16 @@ def main() -> int:
     after = "define i32 @f(i32 %p0, i32 %p1) {\n  %u = xor i32 %p0, %p0\n  ret i32 %u\n}\n"
     s = si.validate_transform(z3, before, after, "f", timeout=20)
     assert s["status"] == "unsupported" and s.get("guard") == "undef-risk", s
-    assert vec_tv(z3, before, after, "f")["status"] == "proved", \
-        "the lane model should still prove it in isolation -- that is why the tag is needed"
+    #    This case USED to be the illustration: the lane model proved it by value equality while
+    #    Alive2 refuted it. It no longer does, and the reason is worth recording rather than
+    #    quietly deleting -- the lane model's parameters became poison-capable, so `xor %p0, %p0`
+    #    is poison wherever %p0 is, and it now REFUTES with witness `%p0?p = true`. Alive2 refutes
+    #    it for the undef reason; the verdicts agree. The dispatcher rule below is what is actually
+    #    under test, and part 3 still shows it has teeth by reverting it.
+    v = vec_tv(z3, before, after, "f")
+    assert v["status"] == "refuted", \
+        ("the lane model now DECIDES this case (poison-capable parameters) rather than false-proving "
+         "it; if this ever proves again, the seam is open", v)
     d = corpus_tv.validate_transform_ex(z3, before, after, "f")
     assert d["status"] == "unsupported", ("a guard decline must survive dispatch", d)
     assert alive_refines(before, after, alive).get("status") == "refuted", \
@@ -132,9 +140,10 @@ def main() -> int:
     assert bad_reverted > 0, ("with the guard rule reverted the sweep must surface false proofs "
                               "again, or it is not probing the seam at all")
 
-    print("dispatcher_guard_fixture OK: a guard is only as strong as the dispatcher above it. The "
-          "undef-risk decline that the lane model would still PROVE by value equality (and Alive2 "
-          "refutes) survives dispatch; every guard in the tree -- undef-risk, poison-risk in the "
+    print("dispatcher_guard_fixture OK: a guard is only as strong as the dispatcher above it. An "
+          "undef-risk decline survives dispatch rather than being overturned by a later validator "
+          "(the lane model now DECIDES that particular case, agreeing with Alive2, since its "
+          "parameters became poison-capable); every guard in the tree -- undef-risk, poison-risk in the "
           "memory/lane/mem2reg models, and the new-dereference guard -- now TAGS its decline, so none "
           "of them relies on 'no later validator happens to parse this shape', which is how the other "
           "three were safe before. And the acid test holds: reverting the rule makes false proofs "

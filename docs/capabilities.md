@@ -60,9 +60,16 @@ Two consequences worth knowing when reading verdicts:
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV, re-measured 2026-08-05 over NINE of LLVM 18's InstCombine test files
-  (1,664 functions):** **1,418 proved (85%)**, 400 declines, 26 timeouts, **0 refutations**, and every
-  proof spot-checked against lli + Alive2 with **0 disagreements** and 0 vacuous. The jump from a
+- **Track B whole-function TV, re-measured 2026-08-10 over EIGHT of LLVM 18's InstCombine test files
+  (1,664 functions):** **1,439 proved (86%)**, **199 declines**, 26 timeouts, **0 refutations**, and
+  every proof independently confirmed — a full `--cross-check` pass over the same tree reports
+  **1,430 cross-checked against lli + Alive2 + bitwuzla, 0 disagreements, 0 vacuous**.
+  The two runs differ only in timeouts (26 vs 33) and therefore in proofs (1,437 vs 1,430): the
+  declines are identical at 201, and the per-function budget is WALL CLOCK, so the three extra oracle
+  processes push a handful of slow functions over it. A timeout is a non-answer, not a proof, so the
+  honest pair of numbers is "1,437 decided when run alone; every proof confirmed". It is also the
+  standing argument for `rlimit` over wall clock — a verdict should not depend on machine load.
+  (Earlier figure, 2026-08-05: 1,418 proved, 400 declines.) The jump from a
   ~1,100 baseline came from two things measured rather than guessed: modelling arguments as
   poison-capable plus a `forall`-bound source choice (which decided `freeze` in both directions), and
   treating LLVM's keep-alive `call void @use(i32 %x)` as an *observable effect* rather than an
@@ -87,6 +94,46 @@ Two consequences worth knowing when reading verdicts:
   (∀ for the source, free for the target), as for `freeze`. Both guards are gone from this path.
   A fold that EXPLOITS poison (`ashr x,x -> 0`) now proves; one that INTRODUCES it (adding `exact`)
   refutes though every lane value is identical. **Measured: +139 functions.**
+- **A FALSE PROOF the refinement port left behind, and it was in `undef`, not poison.** A literal
+  `undef` is named fresh at every read, which is right — each use may observe a different value. But a
+  register that *carries* that freedom (`%u = and undef, -1`) is one term, so reading it twice modelled
+  the two uses as agreeing. `xor %u, %u` therefore modelled `0`, and `ret zeroinitializer -> xor %u, %u`
+  **proved here while reference Alive2 refutes it** (witness: lane 1, source 0, target 1). It is unsound
+  in the *proving* direction, because sharing shrinks the TARGET's behaviour set and a target with fewer
+  behaviours is easier to prove a refinement of. Per-use instantiation is a change to the value model,
+  not to a read, so an undef-tainted register is **declined on its second read** instead; the taint is
+  transitive, and a single read (exactly one observation of undef) stays decided. **Measured cost: zero
+  — 1,418 of 1,664, unchanged.** The corpus oracles could not have found it: real InstCombine does not
+  introduce a duplicated undef use, so it is reachable through the API rather than through the sweep.
+  The class is bounded, and that was checked rather than assumed: `semantics.value` declines on *any*
+  undef operand and both the scalar and memory models read operands through it, while the scalable lane
+  model declines on the operand kind — so the fixed-width lane model was the only validator that
+  materializes `undef` at all, and is now the only one that needs the per-use rule.
+- **The element-wise tail the lane model was still missing** — the census named it, and each item is
+  exactly what a lane model is for. `trunc` narrows lane by lane (truncating the wrong bits refutes).
+  `freeze` is decided in BOTH directions, which required giving a vector parameter a **poison flag per
+  lane**: without one every lane is definite, freeze collapses to the identity, and `freeze %x -> %x`
+  would PROVE — Alive2 refutes it with witness `<3 [based on undef], poison>`. The two went in together
+  or not at all. Removal refutes, introduction proves, and adding `noundef` — the exact promise the flag
+  encodes — flips removal back to proved, so the verdict turns on the model rather than on the fixture.
+  Keep-alive `call void @use(...)` is carried into this path too, with the scalar path's split (callee
+  sequence syntactic, arguments per lane in the solver) and its poison rule (where the source already
+  passes poison, a different target argument refines). **Measured: 1,418 → 1,437 for `trunc` + `freeze`
+  + parameter poison, no new timeouts and no proof lost.**
+  **The observable-call half of that bought nothing here, and is recorded flat.** It removed the lane
+  model's `call` stop entirely (20 → 0 across the corpus), but the decline total did not move: those
+  functions get past the call and stop elsewhere, and four now decline correctly on an unmodelled
+  *intrinsic* name (`@llvm.smin.v2i32`) rather than on the shape. The argument for it is that the
+  scalar and lane paths now read a keep-alive call the same way, not reach.
+- **A precision bug in the undef rule, which only the measurement found.** The taint propagated through
+  `freeze` — but freeze is exactly the instruction that collapses undef into ONE fixed value, so its
+  uses legitimately agree. That declined five real functions in LLVM 18's tests
+  (`and_freeze_undef_multipleuses` and friends) that reference Alive2 confirms. The taint now clears at
+  a freeze, and the boundary is pinned from both sides: **frozen** undef used twice proves, **unfrozen**
+  undef used twice still declines (the original false proof). **Measured: 1,437 → 1,439**; the three
+  that still decline return `void`, which this validator does not model — a pre-existing limit, and the
+  one place where an observable call is the entire obligation. Worth noting for anyone extending the
+  rule: it cost nothing when it was written, and would have cost five the moment `freeze` landed.
 - **What the decline census actually says**, once each verdict is attributed to the validator that got
   FURTHEST rather than to the first one to look: `select` 60, undef vector elements 34, `zext` 28,
   `bitcast` 18, `sext` 9. `select`/`zext`/`sext` are now modelled lane by lane, and the undef/poison

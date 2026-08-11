@@ -131,13 +131,129 @@ def main() -> int:
     assert vec_tv(z3, sext_src, swapped, "e")["status"] == "refuted", \
         "zext where sext is required must refute -- they differ wherever the sign bit is set"
 
+    # 6. TRUNC, the third element-wise op the lane model was missing (10 declines on LLVM's tests).
+    TR = ("define <2 x i8> @t(<2 x i32> %a) {\n  %r = trunc <2 x i32> %a to <2 x i8>\n"
+          "  ret <2 x i8> %r\n}\n")
+    assert vec_tv(z3, TR, si.run_passes(TR, "instcombine", opt), "t")["status"] == "proved", \
+        "narrowing a vector lane by lane"
+    #    TEETH: truncating different bits must refute -- otherwise `trunc` could extract any field.
+    shifted = ("define <2 x i8> @t(<2 x i32> %a) {\n  %s = lshr <2 x i32> %a, <i32 8, i32 8>\n"
+               "  %r = trunc <2 x i32> %s to <2 x i8>\n  ret <2 x i8> %r\n}\n")
+    assert vec_tv(z3, TR, shifted, "t")["status"] == "refuted", \
+        "a trunc of the wrong bits must refute"
+
+    # 7. FREEZE, AND THE POISON-CAPABLE PARAMETERS IT NEEDS. A vector parameter without `noundef` may
+    #    arrive poison per lane, so each lane carries a shared Bool flag -- part of the INPUT, so no
+    #    quantifier. Without it every lane is definite, freeze collapses to the identity, and
+    #    `freeze %x -> %x` would PROVE; reference Alive2 refutes it with witness
+    #    `<2 x i32> %x = <3 [based on undef], poison>`. The freeze's own choice is side-quantified
+    #    like an undef element: universal on the source, free on the target.
+    FZ = ("define <2 x i32> @f(<2 x i32> %x) {\n  %r = freeze <2 x i32> %x\n  ret <2 x i32> %r\n}\n")
+    ID = ("define <2 x i32> @f(<2 x i32> %x) {\n  ret <2 x i32> %x\n}\n")
+    assert vec_tv(z3, FZ, ID, "f")["status"] == "refuted", \
+        "removing a vector freeze must refute -- a parameter may arrive poison"
+    assert vec_tv(z3, ID, FZ, "f")["status"] == "proved", \
+        "INTRODUCING a freeze is sound and must prove"
+    #    ABLATION by attribute, not by patch: `noundef` is exactly the promise the flag encodes, so
+    #    declaring it removes the flag and the SAME pair flips to proved. The verdict turns on the
+    #    model, not on the fixture.
+    assert vec_tv(z3, FZ.replace("%x)", "noundef %x)"), ID.replace("%x)", "noundef %x)"),
+                  "f")["status"] == "proved", \
+        "with `noundef` the parameter is definite and freeze removal is the identity"
+
+    # 8. OBSERVABLE CALLS reach the lane model too. LLVM's tests keep a vector alive with
+    #    `call void @use(<2 x i32> %x)` exactly as they do for scalars, and this validator declined
+    #    every such function (20 of its declines). Same split as the scalar path: the callee SEQUENCE
+    #    is syntactic, the ARGUMENTS go to the solver, per lane.
+    DECL = "declare void @use(<2 x i32>)\n"
+    KEEP = (DECL + "define <2 x i32> @f(<2 x i32> %x) {\n"
+            "  %a = and <2 x i32> %x, <i32 -1, i32 -1>\n  call void @use(<2 x i32> %a)\n"
+            "  ret <2 x i32> %a\n}\n")
+    FOLDED = (DECL + "define <2 x i32> @f(<2 x i32> %x) {\n  call void @use(<2 x i32> %x)\n"
+              "  ret <2 x i32> %x\n}\n")
+    assert vec_tv(z3, KEEP, FOLDED, "f")["status"] == "proved", \
+        "a fold under a vector keep-alive call must prove -- the call is preserved and its argument agrees"
+    #    TEETH: dropping the call DECLINES (a behaviour change this does not model), and passing a
+    #    different value REFUTES (the callee observes it).
+    dropped = DECL + "define <2 x i32> @f(<2 x i32> %x) {\n  ret <2 x i32> %x\n}\n"
+    assert vec_tv(z3, KEEP, dropped, "f")["status"] == "unsupported", \
+        "dropping an observable call must decline, not prove"
+    wrong = (DECL + "define <2 x i32> @f(<2 x i32> %x) {\n"
+             "  %b = add <2 x i32> %x, <i32 1, i32 1>\n  call void @use(<2 x i32> %b)\n"
+             "  ret <2 x i32> %x\n}\n")
+    assert vec_tv(z3, KEEP, wrong, "f")["status"] == "refuted", \
+        "handing an observable call a different value must REFUTE"
+    #    ...and an unmodelled `@llvm.*` declines ON ITS NAME rather than being swallowed as an opaque
+    #    effect. `llvm.assume` ESTABLISHES its argument; treating it as unknown drops that fact.
+    AS = ("declare void @llvm.assume(i1)\ndefine <2 x i32> @g(<2 x i32> %x, i1 %c) {\n"
+          "  call void @llvm.assume(i1 %c)\n  ret <2 x i32> %x\n}\n")
+    g = vec_tv(z3, AS, AS, "g")
+    assert g["status"] == "unsupported" and "llvm.assume" in g.get("reason", ""), \
+        ("an unmodelled intrinsic must decline on its name, not be waved through as observable", g)
+
+    # 9. UNDEF'S FREEDOM IS PER USE, AND SHARING IT WAS A FALSE PROOF. A literal `undef` is named
+    #    fresh at every read, which is right. But an SSA register CARRYING that freedom is one term
+    #    in the environment, so two reads of it modelled the two uses as agreeing -- and they need
+    #    not. `xor %u, %u` therefore modelled 0, and this pair PROVED while reference Alive2 refutes
+    #    it with a witness (lane 1: source 0, target 1). It is unsound in the proving direction
+    #    because it shrinks the TARGET's behaviour set, and a target with fewer behaviours is easier
+    #    to prove a refinement of. An undef-tainted register is now declined on its SECOND read.
+    zero = ("define <2 x i32> @f(<2 x i32> %x) {\n  ret <2 x i32> zeroinitializer\n}\n")
+    undef_twice = ("define <2 x i32> @f(<2 x i32> %x) {\n"
+                   "  %u = and <2 x i32> undef, <i32 -1, i32 -1>\n"
+                   "  %r = xor <2 x i32> %u, %u\n  ret <2 x i32> %r\n}\n")
+    v = vec_tv(z3, zero, undef_twice, "f")
+    assert v["status"] == "unsupported" and "used more than once" in v.get("reason", ""), \
+        ("a register carrying undef freedom, read twice, must DECLINE -- Alive2 refutes this pair", v)
+
+    #    ABLATION -- the claim is that the VERDICT changes with the rule, not merely that the rule
+    #    runs. `_step` is what propagates the taint onto an instruction's result; without it the
+    #    taint never leaves the literal, the second read looks ordinary, and the pair PROVES again.
+    import o2t.validate.vec_tv as _vt
+    _step = _vt._step
+    try:
+        _vt._step = lambda inst, env, ctx: _vt._vec_instr(inst, env, ctx)
+        assert vec_tv(z3, zero, undef_twice, "f")["status"] == "proved", \
+            "ablation must restore the false proof -- otherwise this fixture proves nothing"
+    finally:
+        _vt._step = _step
+
+    #    ...but a FROZEN undef used twice must still be DECIDED, and that is the boundary the rule
+    #    has to get right rather than merely be conservative about. `freeze` is the instruction that
+    #    collapses undef into one fixed value, so its uses legitimately agree; letting the taint
+    #    propagate through it declined five real functions in LLVM 18's own tests
+    #    (`and_freeze_undef_multipleuses` and friends), all of which reference Alive2 confirms.
+    frozen_twice = ("declare void @use_i32(i32)\n"
+                    "define i32 @h(i32 %x) {\n  %f = freeze i32 undef\n"
+                    "  %res = and i32 %x, %f\n  call void @use_i32(i32 %f)\n  ret i32 %res\n}\n")
+    folded = ("declare void @use_i32(i32)\n"
+              "define i32 @h(i32 %x) {\n  call void @use_i32(i32 0)\n  ret i32 0\n}\n")
+    assert vec_tv(z3, frozen_twice, folded, "h")["status"] == "proved", \
+        "a FROZEN undef is one fixed value -- two uses of it agree, and the rule must not decline it"
+
+    #    ...and ONE read of an undef-derived register is exactly one observation of undef, so it
+    #    stays DECIDED rather than being swept up by the rule. `and undef, 0` is 0, not "anything".
+    and_zero = ("define <2 x i32> @g() {\n  %u = and <2 x i32> undef, zeroinitializer\n"
+                "  ret <2 x i32> %u\n}\n")
+    ret_zero = ("define <2 x i32> @g() {\n  ret <2 x i32> zeroinitializer\n}\n")
+    assert vec_tv(z3, and_zero, ret_zero, "g")["status"] == "proved", \
+        "a single read of an undef-derived register must stay decided, not decline"
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "
           "folds prove (add X,0->X, and X,splat(-1)->X), a wrong lane refutes, and a cross-lane op "
           "declines (the per-lane model stays sound). select/zext/sext are modelled lane by lane -- "
           "the three largest decline causes left in this validator on LLVM's own tests -- and zext "
-          "where sext is required refutes. The vector gap -- fixed and scalable -- closed")
+          "where sext is required refutes; `trunc` narrows lane by lane and truncating the wrong "
+          "bits refutes; `freeze` is decided in BOTH directions because a vector parameter now "
+          "carries a poison flag per lane -- removal REFUTES (Alive2's witness is a poison lane), "
+          "introduction proves, and adding `noundef` flips removal to proved; a vector keep-alive "
+          "`call void @use(...)` is an observable EFFECT -- dropping it declines, handing it a "
+          "different value refutes, and an unmodelled `@llvm.*` declines on its name. UNDEF'S FREEDOM IS PER USE: a register carrying it, read "
+          "twice, is declined rather than modelled as agreeing with itself -- that sharing was a "
+          "FALSE PROOF (Alive2 refutes the pair), and the ablation shows the verdict changes with "
+          "the rule. The vector gap -- fixed and scalable -- closed")
     return 0
 
 

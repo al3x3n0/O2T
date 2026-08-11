@@ -12,9 +12,14 @@ value is identical.
 
 Scope: fixed-width `<N x iW>` vectors; lane-wise binops/icmp; `extractelement`/`insertelement` with a
 CONSTANT index; `shufflevector` with a constant, fully-defined mask (an undef/poison mask lane declines);
-integer element constants / `zeroinitializer` / `splat`. Single-BB. Variable indices, reductions, FP,
-memory, and undef decline (a sound decline, never a mis-model); scalable vectors are handled by the
-per-lane model below.
+integer element constants / `zeroinitializer` / `splat`. Single-BB. Variable indices, reductions, FP and
+memory decline (a sound decline, never a mis-model); scalable vectors are handled by the per-lane model
+below.
+
+`undef` is modelled, but only where its freedom is not SHARED: it is named fresh at every read of a
+literal (each use may observe a different value), and a register that carries that freedom is declined
+on its second read rather than modelled as agreeing with itself. Sharing it was a false proof, not a
+precision gap -- see `_lanes_of`.
 
 The module reads LLVM's OWN parse (`ir_model`), not instruction text. The reader it replaces did
 string surgery on types -- `<(\d+) x i(\d+)>` for the lane count and width, a comma split for a vector
@@ -58,7 +63,10 @@ def _signature(ll_text, func):
 # below is still value-equality and still needs them).
 
 def _free(ctx, w, kind):
-    """A fresh per-lane value for an `undef` or `poison` element.
+    """A fresh per-lane value for an `undef` or `poison` element, or for a `freeze`'s choice.
+
+    Returns `(term, poison)` for an element and the bare NAME for a freeze, whose poison the caller
+    sets itself (a freeze is poison nowhere, whatever its operand was).
 
     `poison` is an arbitrary value whose poison bit is SET; `undef` is an arbitrary value that is
     perfectly defined. Neither is one value, so neither can be a constant -- and the freedom is not
@@ -68,21 +76,53 @@ def _free(ctx, w, kind):
     SOURCE choice is universal (the target must match EVERY value the source could have produced).
     """
     if ctx is None or ctx.get("fresh") is None:
-        raise sem.Unsupported(f"vector element {kind}")
+        # A caller that cannot quantify still declines, so nothing that used to be quantifier-free
+        # silently becomes quantified -- the same rule `semantics.py` applies to a scalar freeze.
+        raise sem.Unsupported(f"{kind} choice (this caller does not quantify)"
+                              if kind == "freeze" else f"vector element {kind}")
     fresh = ctx["fresh"]
     name = f"vfr{len(fresh)}_{ctx.get('side', 'source')}"
     fresh.append((name, w))
+    if kind == "freeze":
+        # NOT undef freedom: a freeze picks ONE value and every use sees it, so this term may be
+        # shared across uses. Only `undef` gets the per-use rule.
+        return name
+    if kind == "undef":
+        # Only UNDEF's freedom is per-use (see `_lanes_of`). A poison choice may be shared freely:
+        # its poison BIT is set, and every operation that reads it propagates that bit, so the value
+        # term underneath is never what the obligation turns on.
+        ctx["undef_hit"] = True
     return name, ("true" if kind == "poison" else "false")
 
 
 def _lanes_of(v, n, w, env, ctx=None):
-    """A scalar/vector operand -> a list of n `(term, poison)` lanes of width w."""
+    """A scalar/vector operand -> a list of n `(term, poison)` lanes of width w.
+
+    A literal `undef` is named FRESH at every read, which is exactly its semantics -- each use may
+    observe a different value. But an SSA register that CARRIES that freedom (`%u = and undef, -1`)
+    is one term in `env`, so reading it twice models the two uses as agreeing, and they need not.
+    That is not a precision gap, it is unsound in the proving direction: it shrinks the TARGET's
+    behaviour set, and a target with fewer behaviours is easier to prove a refinement. `xor %u, %u`
+    modelled 0, so `ret zeroinitializer -> xor %u, %u` PROVED here while reference Alive2 refutes it
+    with a witness (lane 1: source 0, target 1).
+
+    Per-use instantiation is a change to the value model, not to this read (an undef value is not one
+    term at all). So an undef-tainted register is DECLINED on its second read instead -- a sound
+    non-answer. A single read is exactly one observation of undef and stays decided, and the taint is
+    transitive, so a register computed from a tainted one is tainted too."""
     if v.is_reg:
         if v.name not in env:
             raise sem.Unsupported(f"operand {v.name!r}")
         ls, _ = env[v.name]
         if len(ls) != n:
             raise sem.Unsupported("lane-count mismatch")
+        if ctx is not None and v.name in ctx.get("undef_regs", ()):
+            ctx["undef_hit"] = True
+            reads = ctx.setdefault("undef_reads", {})
+            reads[v.name] = reads.get(v.name, 0) + 1
+            if reads[v.name] > 1:
+                raise sem.Unsupported(f"undef-derived {v.name!r} is used more than once (each use may "
+                                      "observe a different value; this model has one term per value)")
         return ls
     if v.kind == "zeroinit":
         return [(sem.const(0, w), "false")] * n
@@ -118,6 +158,17 @@ def _vshape(t):
     if t.is_int():
         return 1, t.bits
     raise sem.Unsupported(f"type {t}")
+
+
+def _step(inst, env, ctx):
+    """Model one instruction and PROPAGATE the undef taint onto its result.
+
+    `_lanes_of`/`_free` set `undef_hit` whenever a read brought undef freedom in; whatever this
+    instruction defines therefore carries it too, so the per-use rule keeps applying downstream."""
+    ctx["undef_hit"] = False
+    _vec_instr(inst, env, ctx)
+    if ctx.pop("undef_hit", False) and inst.result:
+        ctx.setdefault("undef_regs", set()).add(inst.result)
 
 
 def _vec_instr(inst, env, ctx=None):
@@ -176,16 +227,82 @@ def _vec_instr(inst, env, ctx=None):
                           si.smt_or([cp, f"(ite {test} {a[i][1]} {b[i][1]})"])))
         env[inst.result] = (lanes, w)
         return
-    if op in ("zext", "sext"):
+    if op in ("zext", "sext", "trunc"):
         n, w = _vshape(inst.type)
         sn, sw = _vshape(inst.src_type or inst.operands[0].type)
         if sn != n:
-            raise sem.Unsupported("extension changes the lane count")
+            raise sem.Unsupported(f"{op} changes the lane count")
+        a = _lanes_of(inst.operands[0], n, sw, env, ctx)
+        if op == "trunc":
+            # NARROWING, and the lane's own poison is all there is: a truncation introduces none of
+            # its own. That is not an assumption about LLVM 18 -- its parser REJECTS `trunc nuw`
+            # ("expected type"), and this module reads IR through that same parser, so the flag
+            # cannot reach here. Same reading as the scalar model; a second reading of LLVM is what
+            # round 6 of the 2026-07 review found a false proof inside.
+            if sw <= w:
+                raise sem.Unsupported(f"trunc from i{sw} to i{w} does not narrow")
+            env[inst.result] = ([(f"((_ extract {w - 1} 0) {a[i][0]})", a[i][1]) for i in range(n)], w)
+            return
         if sw >= w:
             raise sem.Unsupported(f"{op} from i{sw} to i{w} does not widen")
-        a = _lanes_of(inst.operands[0], n, sw, env, ctx)
         kind = "zero_extend" if op == "zext" else "sign_extend"
         env[inst.result] = ([(f"((_ {kind} {w - sw}) {a[i][0]})", a[i][1]) for i in range(n)], w)
+        return
+    if op == "call":
+        # THE SAME RULE `scalar_ir` USES, not a second reading of it. A VOID call to a bodiless
+        # declaration -- `call void @use(<2 x i32> %x)`, which LLVM's tests use so DCE cannot delete
+        # the value a fold is about -- cannot change what this function returns, but it IS
+        # observable, so it is recorded as an effect and the target must make the same calls.
+        #
+        # NOT an `@llvm.*` intrinsic: that is not an unknown external function, it has semantics LLVM
+        # defines, and an unmodelled one must decline on its NAME. `llvm.assume` is the case that
+        # proves it -- it ESTABLISHES its argument rather than doing something unknown, and treating
+        # it as opaque refuted three correct transforms in LLVM's own tests.
+        effects = ctx.get("effects") if ctx is not None else None
+        callee = inst.callee
+        if (effects is not None and callee and inst.result is None and not inst.indirect
+                and not sem.intrinsic_name(callee)
+                and not callee.lstrip("@").startswith("llvm.")):
+            fn = ctx["module"].function(callee.lstrip("@")) if ctx.get("module") else None
+            if fn is None or fn.is_declaration:
+                args = []
+                for a in inst.args:
+                    an, aw = _vshape(a.type)      # a ptr/FP argument declines here, as it should
+                    args.append((_lanes_of(a, an, aw, env, ctx), an, aw))
+                effects.append((callee, args))
+                return
+        raise sem.Unsupported(f"call to {callee or '<indirect>'}")
+    if op == "freeze":
+        # Lane by lane, the encoding scalar_ir uses: a FRESH value exactly where the operand is
+        # poison, and the result is poison nowhere. The choice's quantifier comes from the side, as
+        # for an undef element -- universal on the source (the target must match EVERY value the
+        # freeze could have picked), free on the target.
+        #
+        # This is only sound because vector PARAMETERS carry a poison flag (see `_vtranslate`).
+        # Without one, every lane's poison term is `false`, freeze collapses to the identity, and
+        # `freeze %x -> %x` PROVES -- which reference Alive2 refutes, witness `<3 [based on undef],
+        # poison>`. The two go in together or not at all.
+        n, w = _vshape(inst.type)
+        lanes = []
+        for v, p in _lanes_of(inst.operands[0], n, w, env, ctx):
+            if p == "false":
+                # No represented freedom to collapse, so the quantifier has a one-element domain and
+                # disappears. The operand's UNDEF-ness is not represented for a parameter, which
+                # under-approximates the source's freedom -- sound in the proving direction (a
+                # smaller source set only makes refinement harder) and matched on the target side,
+                # where an undef literal is already a free choice and freeze of it is the same set.
+                lanes.append((v, "false"))
+            else:
+                lanes.append((f"(ite {p} {_free(ctx, w, 'freeze')} {v})", "false"))
+        env[inst.result] = (lanes, w)
+        # ...AND THE RESULT CARRIES NO PER-USE FREEDOM, whatever the operand had. Freeze is the
+        # instruction that COLLAPSES undef into one fixed value, so its uses legitimately agree --
+        # which is the whole point of it. Letting the taint propagate here declined five real
+        # functions in LLVM's own tests (`and_freeze_undef_multipleuses` and friends, where `%f =
+        # freeze i32 undef` is used twice and reference Alive2 confirms the fold is correct). The
+        # per-use rule is about undef reaching a use UNFROZEN; past a freeze it has no force.
+        if ctx is not None:
+            ctx["undef_hit"] = False
         return
     if op == "extractelement":
         n, w = _vshape(inst.operands[0].type)
@@ -228,34 +345,48 @@ def _vec_instr(inst, env, ctx=None):
     raise sem.Unsupported(f"instruction {op!r}")
 
 
-def _vtranslate(ll_text, func, side="source", fresh=None):
-    """Single-BB vector function -> (result lanes, lane width, param declarations, ub)."""
-    fn = ir.parse(ll_text).function(func)
+def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
+    """Single-BB vector function -> (result lanes, lane width, param declarations, ub, poison flags)."""
+    module = ir.parse(ll_text)
+    fn = module.function(func)
     if fn is None or fn.is_declaration:
         raise sem.Unsupported(f"function {func} not found")
     if len(fn.blocks) > 1:
         raise sem.Unsupported("multi-block")
-    env, decls = {}, []
-    ctx = {"side": side, "fresh": fresh, "ub": []}
+    env, decls, pflags = {}, [], []
+    ctx = {"side": side, "fresh": fresh, "ub": [], "undef_regs": set(), "undef_reads": {},
+           "effects": effects, "module": module}
+    # A PARAMETER MAY ARRIVE POISON, per lane. LLVM only promises otherwise with `noundef`, and
+    # modelling a parameter as definite is what makes `freeze %x -> %x` look like the identity. The
+    # flag is part of the INPUT, so it needs no quantifier: it is one Bool per lane, SHARED by both
+    # sides (the names derive from the parameter, and the two sides have the same parameters), which
+    # is exactly the shape `scalar_ir.param_poison_flag` has.
+    def _flag(name, noundef):
+        if noundef:
+            return "false"
+        pflags.append(f"{name}?p")
+        return f"{name}?p"
     for p in fn.params:
         t = p.type
+        nu = p.noundef                      # declared definite -> no flag, and freeze is the identity
         if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
             ls = [f"{p.name}!{i}" for i in range(t.n)]
             decls += [(lane, t.elem.bits) for lane in ls]
-            env[p.name] = ([(lane, "false") for lane in ls], t.elem.bits)
+            env[p.name] = ([(lane, _flag(lane, nu)) for lane in ls], t.elem.bits)
         elif t.is_int():
             decls.append((p.name, t.bits))
-            env[p.name] = ([(p.name, "false")], t.bits)
+            env[p.name] = ([(p.name, _flag(p.name, nu))], t.bits)
         else:
             raise sem.Unsupported(f"parameter type {t}")
+    ctx["pflags"] = pflags
     for inst in fn.blocks[0].instructions:
         if inst.op == "ret":
             if not inst.operands:
                 raise sem.Unsupported("no vector/scalar ret")
             n, w = _vshape(inst.operands[0].type)
             return (_lanes_of(inst.operands[0], n, w, env, ctx), w, decls,
-                    si.smt_or(ctx["ub"]))
-        _vec_instr(inst, env, ctx)
+                    si.smt_or(ctx["ub"]), pflags)
+        _step(inst, env, ctx)
     raise sem.Unsupported("no vector/scalar ret")
 
 
@@ -393,8 +524,11 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
     fresh: list = []
     try:
-        rb, wb, decls, sub = _vtranslate(before_ll, func, side="source", fresh=fresh)
-        ra, wa, _, tub = _vtranslate(after_ll, func, side="target", fresh=fresh)
+        src_eff, tgt_eff = [], []
+        rb, wb, decls, sub, pf = _vtranslate(before_ll, func, side="source", fresh=fresh,
+                                             effects=src_eff)
+        ra, wa, _, tub, _pf = _vtranslate(after_ll, func, side="target", fresh=fresh,
+                                          effects=tgt_eff)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     except ir.IrParseError as exc:
@@ -406,14 +540,49 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     tgt_fresh = [(n, w) for n, w in fresh if not n.endswith("_source")]
     ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]
     ds += [f"(declare-const {n} (_ BitVec {w}))" for n, w in tgt_fresh]
+    # one SHARED Bool per poison-capable parameter lane: it is part of the input, not a choice
+    # either side makes, so it is free in the refutation and needs no quantifier.
+    ds += [f"(declare-const {n} Bool)" for n in sorted(set(pf) | set(_pf))]
     # ALIVE2-STYLE REFINEMENT, PER LANE. This model used to compare VALUES and lean on two guards --
     # decline if the target could produce poison anywhere, decline a mismatch if the source could.
     # Both were blunt: poison is per-element in LLVM, so one flagged lane disqualified the whole
     # function. The obligation is now the same one the scalar validator discharges, applied lane by
     # lane: wherever a SOURCE lane is defined, the target's lane must be defined and equal.
+    # OBSERVABLE CALLS, split exactly as the scalar path splits them: the SEQUENCE of callees is
+    # checked syntactically (dropping, adding or reordering one is a behaviour change this does not
+    # model, so it declines), and the ARGUMENTS go to the solver, because rewriting them into
+    # different-looking equal terms is what the pass under test does.
+    if [c for c, _ in src_eff] != [c for c, _ in tgt_eff]:
+        return {"status": "unsupported", "function": func,
+                "reason": f"observable calls differ between source and target "
+                          f"({[c for c, _ in src_eff]} vs {[c for c, _ in tgt_eff]})"}
+    eff_bad = []
+    for (_, sargs), (_, targs) in zip(src_eff, tgt_eff):
+        if len(sargs) != len(targs) or [(n, w) for _, n, w in sargs] != [(n, w) for _, n, w in targs]:
+            return {"status": "unsupported", "function": func,
+                    "reason": "an observable call's arguments changed shape"}
+        for (slanes, n, _), (tlanes, _, _) in zip(sargs, targs):
+            # Per LANE, the same rule the returned value gets: where the SOURCE already passes
+            # poison the callee may observe anything, so the target passing something else REFINES.
+            # Comparing values unconditionally here is a false REFUTATION, which this project treats
+            # as seriously as a false proof and which the corpus produced immediately on the scalar
+            # path when it was written that way.
+            #
+            # ONE DELIBERATE DIFFERENCE FROM `scalar_ir`, recorded rather than left to be discovered:
+            # there the effect terms sit INSIDE the guard on the returned value's poison, so an
+            # effect difference goes unnoticed whenever the source's RESULT is poison. Here each
+            # argument is gated on its OWN poison instead. An observable call is observable whatever
+            # the result turns out to be, so this is the stricter and, I believe, the correct
+            # reading -- it can only add refutations, and each added one is a real difference in
+            # observable behaviour. The scalar path is a candidate for the same treatment; it is not
+            # changed here because that is a separate obligation to re-measure.
+            eff_bad += [si.smt_and([f"(not {slanes[i][1]})",
+                                    si.smt_or([tlanes[i][1],
+                                               f"(not (= {slanes[i][0]} {tlanes[i][0]}))"])])
+                        for i in range(n)]
     lane_bad = si.smt_or([si.smt_and([f"(not {rb[i][1]})",
                                       si.smt_or([ra[i][1], f"(not (= {rb[i][0]} {ra[i][0]}))"])])
-                          for i in range(len(rb))])
+                          for i in range(len(rb))] + eff_bad)
     refute = si.smt_and([f"(not {sub})", si.smt_or([tub, lane_bad])])
     if src_fresh:
         binders = " ".join(f"({n} (_ BitVec {w}))" for n, w in src_fresh)
