@@ -125,7 +125,12 @@ std::string typeJson(Type *T) {
     std::string s;
     raw_string_ostream os(s);
     T->print(os);
-    return "{\"kind\":\"float\",\"name\":" + quote(os.str()) + "}";
+    // The WIDTH comes with it, from LLVM's own accessor -- the same one `bitcast` legality is
+    // decided by. A validator that carries a float only as opaque BITS (never applying an FP
+    // operation to it) needs exactly this and nothing else; deriving it from the type NAME in
+    // Python would be the second reading of LLVM that the parse migration removed.
+    return "{\"kind\":\"float\",\"name\":" + quote(os.str()) +
+           ",\"bits\":" + std::to_string(T->getPrimitiveSizeInBits()) + "}";
   }
   std::string s;
   raw_string_ostream os(s);

@@ -135,6 +135,18 @@ def int_width(t: ir.Type) -> int:
     return t.bits
 
 
+def bit_width(t: ir.Type) -> int | None:
+    """The number of BITS in a scalar type, or None if this model has no bit view of it.
+
+    Integers and floating-point types both have one, and LLVM reports it (the dumper carries
+    `getPrimitiveSizeInBits()` for FP, the same accessor `bitcast` legality is decided by). This is
+    NOT `int_width`: it says how wide the value is, not that it may be used as an integer. Only
+    `bitcast` consults it, which is what keeps a float confined to being bits."""
+    if t is None:
+        return None
+    return t.bits if t.kind in ("int", "float") else None
+
+
 # --- intrinsics ----------------------------------------------------------------------------------
 # These models are RELOCATED VERBATIM from scalar_ir, not re-derived. Each is lli-validated
 # (intrinsics_ir_fixture pins hand-computed ground truth AND checks real LLVM agrees), and rewriting
@@ -304,6 +316,27 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
         else:
             ext = "zero_extend" if op == "zext" else "sign_extend"
             env[dst] = (f"((_ {ext} {dst_w - src_w}) {v})", dst_w, vp, vu)
+        return
+
+    if op == "bitcast":
+        # A bitcast REINTERPRETS bits and changes no value, so it is the identity on the term --
+        # provided the two types really are the same number of bits, which LLVM guarantees for valid
+        # IR but which is checked here rather than assumed (an unequal or unknown pair declines).
+        #
+        # This is what lets `bitcast float %b to i32` be modelled with NO floating-point semantics
+        # whatsoever: the parameter is carried as an opaque bitvector and every bit pattern is a
+        # valid float, so the model is exact rather than approximate. Soundness rests on a float
+        # value being unable to reach anywhere that would treat it as an FP VALUE, and it cannot:
+        # `ret` requires an integer type, `int_width` declines on every non-integer, an observable
+        # call's arguments must be integers, and any real FP operation declines on its opcode. A
+        # VECTOR bitcast declines -- reinterpreting lanes needs a lane<->flat-bits correspondence
+        # this scalar model does not have, and guessing one is how a false proof gets in.
+        src_t = inst.src_type or inst.operands[0].type
+        sw, dw = bit_width(src_t), bit_width(inst.type)
+        if sw is None or dw is None or sw != dw:
+            raise Unsupported(f"bitcast {src_t} -> {inst.type}")
+        v, _, vp, vu = value(inst.operands[0], env, sw)
+        env[dst] = (v, dw, vp, vu)
         return
 
     if op == "freeze":

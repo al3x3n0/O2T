@@ -97,6 +97,39 @@ def main() -> int:
         if want == "refuted":
             assert got.get("witness"), ("refutation lacks a witness", got)
 
+    # 4b) BITCAST, AND A FLOAT CARRIED AS OPAQUE BITS. A parameter this model has no VALUE theory
+    #     for still has a WIDTH, and a `bitcast` changes no value -- so `bitcast float %b to i32`
+    #     needs no floating-point semantics at all: every bit pattern is a valid float, which makes
+    #     the model exact rather than approximate. Previously a function merely MENTIONING a float
+    #     argument was undecidable whatever it did with it (LLVM 18's own or.ll `test39a`-`d` are
+    #     the case: a float argument used only for its bits, in an otherwise pure-integer fold).
+    bc = ("define i32 @f(i32 %a, float %b) {\n  %a1 = mul i32 %a, 42\n"
+          "  %b1 = bitcast float %b to i32\n  %nota = xor i32 %a1, -1\n"
+          "  %and = and i32 %nota, %b1\n  %or = or i32 %and, %a1\n  ret i32 %or\n}\n")
+    assert si.validate_transform(z3, bc, si.run_instcombine(bc, opt), "f")["status"] == "proved", \
+        "a float argument used only for its bits must not make the fold undecidable"
+    #     TEETH: the bitcast is the IDENTITY on bits, so corrupting the value still refutes.
+    bad = ("define i32 @f(i32 %a, float %b) {\n  %a1 = mul i32 %a, 42\n"
+           "  %b1 = bitcast float %b to i32\n  %or = or i32 %a1, %b1\n"
+           "  %w = xor i32 %or, 1\n  ret i32 %w\n}\n")
+    v = si.validate_transform(z3, bc, bad, "f")
+    assert v["status"] == "refuted" and v.get("witness"), ("a corrupted bitcast fold must refute", v)
+
+    #     THE CONTAINMENT IS THE SOUNDNESS ARGUMENT, so it is asserted rather than described. A
+    #     float may be carried as bits ONLY because it cannot reach anything that reads it as a
+    #     floating-point VALUE. Each exit is checked:
+    for name, ir_text, why in (
+        ("float return", "define float @f(float %x) {\n  %i = bitcast float %x to i32\n"
+                         "  %j = xor i32 %i, -2147483648\n  %r = bitcast i32 %j to float\n"
+                         "  ret float %r\n}\n", "a float RESULT would need FP value semantics"),
+        ("fp operation", "define float @f(float %x) {\n  %r = fadd float %x, %x\n"
+                         "  ret float %r\n}\n", "an actual FP op has no model here"),
+        ("vector bitcast", "define i64 @f(<2 x i32> %v) {\n  %r = bitcast <2 x i32> %v to i64\n"
+                           "  ret i64 %r\n}\n", "reinterpreting LANES needs a lane<->bits map"),
+    ):
+        d = si.validate_transform(z3, ir_text, ir_text, "f")
+        assert d["status"] == "unsupported", (f"{name} must DECLINE -- {why}", d)
+
     # 5) the CLI agrees and exits 0.
     tool = ROOT / "tools" / "cv-validate-instcombine-ir.py"
     proc = subprocess.run([sys.executable, str(tool)], capture_output=True, text=True)
@@ -106,7 +139,10 @@ def main() -> int:
           "over scalar IR->SMT for every function (incl. select->smin canonicalization); a wrong "
           "fold refuted with a witness; poison/UB-introducing folds (new nsw/nuw/exact/disjoint or "
           "div-by-zero) refuted by Alive2 refinement while flag/UB removal still proves; an "
-          "unmodeled instruction soundly declined")
+          "unmodeled instruction soundly declined. A `bitcast` is the identity on BITS, so a float "
+          "argument used only for its bits no longer makes a fold undecidable -- with no FP "
+          "semantics assumed anywhere, because the containment that permits it is asserted: a float "
+          "RETURN, a real FP operation and a VECTOR bitcast each still decline")
     return 0
 
 

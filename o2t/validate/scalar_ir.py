@@ -606,7 +606,16 @@ def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
     fn = module.function(func)
     if fn is None or fn.is_declaration:
         raise sem.Unsupported(f"function {func} not found")
-    params = fn.int_params
+    # Integer parameters, plus any parameter this model has a BIT view of -- today that means
+    # floating-point ones, which were previously dropped from the environment entirely, so a
+    # function merely MENTIONING a float argument was undecidable no matter what it did with it.
+    # Carrying one as an opaque bitvector assumes nothing about floating point: every bit pattern
+    # is a valid float, and the value cannot reach anything that would read it as an FP value (see
+    # the `bitcast` case in semantics.py for why that containment holds). LLVM's `bitcast` legality
+    # rests on exactly this width, and it is LLVM's own accessor that reports it.
+    params = dict(fn.int_params)
+    params.update({p.name: sem.bit_width(p.type) for p in fn.params
+                   if not p.type.is_int() and sem.bit_width(p.type) is not None})
     # A parameter without `noundef` may be passed POISON as well as `undef`, and modelling it as
     # definitely-not-poison flatters the TARGET: it can return that parameter, look defined, and be
     # poison in reality. Reference Alive2 refutes `freeze %x -> %x` for exactly this reason, and its

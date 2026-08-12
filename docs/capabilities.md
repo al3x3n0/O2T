@@ -61,7 +61,7 @@ Two consequences worth knowing when reading verdicts:
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, re-measured 2026-08-10 over EIGHT of LLVM 18's InstCombine test files
-  (1,664 functions):** **1,439 proved (86%)**, **199 declines**, 26 timeouts, **0 refutations**, and
+  (1,664 functions):** **1,442 proved (86%)**, **195 declines**, 27 timeouts, **0 refutations**, and
   every proof independently confirmed — a full `--cross-check` pass over the same tree reports
   **1,430 cross-checked against lli + Alive2 + bitwuzla, 0 disagreements, 0 vacuous**.
   The two runs differ only in timeouts (26 vs 33) and therefore in proofs (1,437 vs 1,430): the
@@ -160,6 +160,30 @@ Two consequences worth knowing when reading verdicts:
   unchanged, with 0 refutations on LLVM's own tests**, which is what `opt` not rewriting keep-alive
   arguments into observably different values predicts. Like the `undef` case above, no sweep could have
   found it; it took constructing the pair and asking the oracle.
+- **`bitcast`, and a float carried as opaque BITS — with no floating-point semantics assumed.** A
+  parameter this model has no value theory for still has a *width*, and a `bitcast` changes no value,
+  so it is the identity on the term (equal widths checked, not assumed). That makes
+  `bitcast float %b to i32` decidable without any FP model at all: every bit pattern is a valid float,
+  so carrying the argument as an opaque bitvector is **exact rather than approximate**. Previously
+  `scalar_ir` took `fn.int_params`, so a non-integer parameter was dropped from the environment
+  entirely and a function merely *mentioning* a float argument was undecidable whatever it did with
+  it — which is the real blocker the census had filed under "bitcast".
+  **The soundness argument is containment, and it is asserted rather than described**: a float cannot
+  reach anything that reads it as an FP *value*, because `ret` requires an integer type, `int_width`
+  declines on every non-integer, an observable call's arguments must be integers, and a real FP
+  operation declines on its opcode. A float return, an `fadd`, and a *vector* bitcast (which would
+  need a lane↔flat-bits correspondence this scalar model does not have) each still decline, and the
+  fixture checks all three. Widths come from LLVM's own `getPrimitiveSizeInBits()`, the accessor
+  `bitcast` legality is decided by — deriving them from type names in Python would be the second
+  reading of LLVM the parse migration removed.
+  **Measured: declines 199 → 195, exactly `or.ll test39a`–`d`, none added; proved 1,439 → 1,442 in
+  clean runs, the fourth landing as a timeout rather than a proof in this one.** Declines are the
+  load-insensitive figure and the one to compare; a proved count moves by a few either way with the
+  wall-clock budget. Only four verdicts changed across all 1,664 functions, and the three files that
+  could have been touched re-cross-check at 673/673 with 0 disagreements. The census called this
+  bucket 18; 11 of those return `float`, and comparing an FP result needs a value theory that is out
+  of scope by design, so 4 was the honest target and 4 is what it delivered. The argument for the work
+  is that it removes a decline *reason* rather than a symptom, not the four functions.
 - **Assumption hygiene.** Where a proof would rest on an undeclared assumption, O2T declines instead:
   a source that is UB/poison everywhere is flagged vacuous (below), and a transform whose soundness
   needs an argument to be non-`undef` declines unless the argument is declared `noundef`.
