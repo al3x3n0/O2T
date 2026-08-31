@@ -83,9 +83,19 @@ def main(argv=None) -> int:
     if args.cross_check:
         return _cross_check(args, z3, opt)
     total = Counter()
-    files, vacuous = [], 0
+    files, vacuous, skipped = [], 0, []
     for path in args.ll:
         r = validate_file(z3, path.read_text(), opt, timeout=args.timeout)
+        # A WHOLE-FILE `opt` FAILURE MUST NOT READ AS "NOTHING TO DO". `validate_file` records it
+        # as `opt_ok: False` and returns no functions, and this loop used to print the resulting
+        # empty count dict and move on -- so a file whose every function vanished looked exactly
+        # like a file with no work in it, and silently left the aggregate's DENOMINATOR. That is
+        # how `shift.ll`'s 171 functions sat outside a corpus figure reported as nine files.
+        if not r.get("opt_ok", True):
+            skipped.append(path.name)
+            print(f"{path.name}: !! OPT FAILED -- 0 of this file's functions were validated; it is "
+                  f"NOT in the aggregate below", file=sys.stderr)
+            continue
         total.update(r["counts"])
         vacuous += r.get("vacuous", 0)
         files.append({"file": str(path), "counts": r["counts"], "vacuous": r.get("vacuous", 0),
@@ -98,9 +108,13 @@ def main(argv=None) -> int:
     n = sum(total.values())
     proved = total.get("proved", 0)
     summary = {"functions": n, "counts": dict(total), "vacuous": vacuous,
-               "proved_pct": (100 * proved // n) if n else 0, "refuted": total.get("refuted", 0)}
+               "proved_pct": (100 * proved // n) if n else 0, "refuted": total.get("refuted", 0),
+               "opt_failed_files": skipped}
     print(f"AGGREGATE: proved {proved}/{n} ({summary['proved_pct']}%), refuted {summary['refuted']}, "
           f"vacuous {vacuous} (proved only because the source is UB/poison everywhere)")
+    if skipped:
+        print(f"!! {len(skipped)} FILE(S) NOT MEASURED AT ALL (opt failed): {', '.join(skipped)} -- "
+              f"the percentage above is over the REMAINING files", file=sys.stderr)
     if args.report:
         args.report.write_text(json.dumps({"summary": summary, "files": files}, indent=2) + "\n")
     return 0

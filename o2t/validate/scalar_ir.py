@@ -168,7 +168,20 @@ def run_passes(src_text, passes, opt_bin="opt"):
 
 
 def run_instcombine(src_text, opt_bin="opt"):
-    return run_passes(src_text, "instcombine", opt_bin)
+    """`opt -passes=instcombine`, falling back to `instcombine<no-verify-fixpoint>`.
+
+    On some inputs InstCombine legitimately does not reach a fixpoint in one iteration, and `opt`
+    responds with `LLVM ERROR: Instruction Combining did not reach a fixpoint` and ABORTS -- the
+    whole file, not the offending function. LLVM's own tests hit this and answer it exactly this
+    way (`shift.ll` runs `instcombine<no-verify-fixpoint>` in its RUN line); without the fallback
+    that file's 171 functions produced no output at all and left the corpus silently.
+
+    The option disables a self-check that the pass's output is STABLE under another iteration. It
+    does not change the transformation, and translation validation asks a different question
+    anyway -- whether this output refines this input -- which is well posed at a non-fixpoint.
+    Tried second, so nothing that already worked changes."""
+    return (run_passes(src_text, "instcombine", opt_bin)
+            or run_passes(src_text, "instcombine<no-verify-fixpoint>", opt_bin))
 
 
 def _query(z3_bin, smt, timeout):

@@ -57,6 +57,44 @@ def main() -> int:
     good_opt = "define i32 @t(i32 %A) {\n  ret i32 0\n}\n"
     assert si.validate_transform(z3, src, good_opt, "t")["status"] == "proved"
 
+    # 4. A FILE `opt` CANNOT PROCESS MUST NOT VANISH INTO THE DENOMINATOR. InstCombine does not
+    #    always reach a fixpoint in one iteration, and plain `opt -passes=instcombine` then ABORTS
+    #    the whole file with "did not reach a fixpoint" -- so every function in it produced no
+    #    output and the sweep reported the file as empty, indistinguishable from a file with no
+    #    work in it. LLVM's own `shift.ll` is exactly this case and answers it in its RUN line;
+    #    `run_instcombine` now falls back the same way. This function is a minimal reproduction:
+    #    This is the actual trigger, `ashr_out_of_range` (OSS-Fuzz #26135), copied from that file:
+    #    ONE function out of 171 aborted `opt`, and with it the whole file left the corpus.
+    nofix = """define void @ashr_out_of_range(ptr %A) {
+  %L = load i177, ptr %A
+  %B5 = udiv i177 %L, -1
+  %B4 = add i177 %B5, -1
+  %B2 = add i177 %B4, -1
+  %G11 = getelementptr i177, ptr %A, i177 %B2
+  %L7 = load i177, ptr %G11
+  %B6 = mul i177 %B5, %B2
+  %B24 = ashr i177 %L7, %B6
+  %B36 = and i177 %L7, %B4
+  %C17 = icmp sgt i177 %B36, %B24
+  %G62 = getelementptr i177, ptr %G11, i1 %C17
+  %B28 = urem i177 %B24, %B6
+  store i177 %B28, ptr %G62
+  ret void
+}
+"""
+    assert si.run_passes(nofix, "instcombine", opt) is None, \
+        ("this fixture's premise is that PLAIN instcombine aborts on this function; if that stops "
+         "being true the assertion below proves nothing and needs a new trigger")
+    assert si.run_instcombine(nofix, opt) is not None, \
+        "run_instcombine must return IR, falling back to <no-verify-fixpoint> when opt aborts"
+    #    ...and the fallback is the ONLY reason a genuinely non-fixpoint file is measurable: pass a
+    #    file opt truly cannot handle and `validate_file` reports `opt_ok: False` with no functions,
+    #    which the corpus CLI prints to stderr and leaves OUT of the aggregate rather than counting
+    #    it as zero work.
+    broken = validate_file(z3, "this is not LLVM IR at all\n", opt)
+    assert broken["opt_ok"] is False and broken["functions"] == [] and broken["counts"] == {}, \
+        ("a file opt cannot process must be flagged opt_ok=False, not reported as empty", broken)
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "
