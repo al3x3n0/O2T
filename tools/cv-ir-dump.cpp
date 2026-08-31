@@ -277,6 +277,18 @@ std::string instJson(const Instruction &I) {
     s += ",\"align\":" + std::to_string(LI->getAlign().value());
     s += ",\"volatile\":";
     s += LI->isVolatile() ? "true" : "false";
+    // `!noundef` is a PROMISE about the loaded value, and it is the only thing that makes some
+    // `freeze` pairs decidable: a freeze whose operand cannot be poison has no nondeterministic
+    // choice left to collapse, so a validator that cannot pick a side can still decide it. LLVM
+    // spells it as metadata rather than a flag, so nothing reached the model until now.
+    // Three metadata kinds carry the same promise for this purpose. `!noundef` states it
+    // directly; `!dereferenceable` and `!dereferenceable_or_null` state that the loaded pointer
+    // is dereferenceable (or null), and a POISON pointer is neither -- so violating them is UB
+    // just the same. Alive2 agrees the freeze folds under all three, checked before modeling it.
+    s += ",\"noundef\":";
+    s += (LI->hasMetadata(LLVMContext::MD_noundef) ||
+          LI->hasMetadata(LLVMContext::MD_dereferenceable) ||
+          LI->hasMetadata(LLVMContext::MD_dereferenceable_or_null)) ? "true" : "false";
   }
   if (const auto *SI = dyn_cast<StoreInst>(&I)) {
     s += ",\"align\":" + std::to_string(SI->getAlign().value());

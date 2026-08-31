@@ -189,6 +189,40 @@ def main() -> int:
     assert d["status"] == "unsupported" and d.get("reason") == "return type changed", \
         ("a pair whose sides return different types must decline, not prove", d)
 
+    # 7f. `!noundef` ON A LOAD, and the UB that must come with it. The promise is that the loaded
+    #     value is neither undef nor poison -- and that it is UB if it ever is. Taking the result as
+    #     definite WITHOUT the UB term would leave a target that VIOLATES the promise looking
+    #     defined, which is the direction a false proof comes from, so both halves land together.
+    #     `!dereferenceable` and `!dereferenceable_or_null` carry the same promise here: a poison
+    #     pointer is neither dereferenceable nor null. Alive2 was asked before this was modeled and
+    #     agrees the freeze folds under all three.
+    for md in ("!noundef !0", "!dereferenceable !1", "!dereferenceable_or_null !1"):
+        src = (f"define ptr @fz(ptr %ptr) {{\n  %p = load ptr, ptr %ptr, {md}\n"
+               "  %f = freeze ptr %p\n  ret ptr %f\n}\n!0 = !{}\n!1 = !{i64 4}\n")
+        tgt = (f"define ptr @fz(ptr %ptr) {{\n  %p = load ptr, ptr %ptr, {md}\n"
+               "  ret ptr %p\n}\n!0 = !{}\n!1 = !{i64 4}\n")
+        assert mem_state_tv(z3, src, tgt, "fz")["status"] == "proved", \
+            f"freeze over a load promising a definite value must fold ({md})"
+    #     ...and WITHOUT the metadata the very same pair must DECLINE, not prove: there the freeze
+    #     has real freedom to collapse and this validator cannot tell which side it is translating.
+    #     This is what stops the assertions above from passing for the wrong reason.
+    bare_s = ("define ptr @fz(ptr %ptr) {\n  %p = load ptr, ptr %ptr\n"
+              "  %f = freeze ptr %p\n  ret ptr %f\n}\n")
+    bare_t = "define ptr @fz(ptr %ptr) {\n  %p = load ptr, ptr %ptr\n  ret ptr %p\n}\n"
+    d = mem_state_tv(z3, bare_s, bare_t, "fz")
+    assert d["status"] == "unsupported" and "freeze" in d.get("reason", ""), \
+        ("without the promise the freeze has freedom to collapse and must decline", d)
+    #     THE UB HALF NEEDS ITS OWN TOOTH -- the assertions above pass with it removed, because
+    #     they only ever need the result to be DEFINITE. Here the load's value IS poison, so the
+    #     promise is violated and the source is UB, which refines to anything: the pair proves
+    #     despite the two sides storing different values. Drop `ub.append(...)` and the model sees
+    #     a definite pointer, no UB on either side, two different stores -- and refutes.
+    nd_s = ("define void @nd(ptr %m) {\n  store i64 poison, ptr %m\n"
+            "  %p = load ptr, ptr %m, !noundef !0\n  store i32 1, ptr %p\n  ret void\n}\n"
+            "!0 = !{}\n")
+    assert mem_state_tv(z3, nd_s, nd_s.replace("store i32 1", "store i32 2"), "nd")["status"] \
+        == "proved", "violating a !noundef promise is UB, and a UB source refines to anything"
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "

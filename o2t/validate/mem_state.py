@@ -305,12 +305,20 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             base = addr[ptr.name]
             ub.append(apois.get(ptr.name, "false"))     # dereferencing a poison pointer is UB
             derefs.append(base)
+            lp = _load_poison(mp, base, w)
+            # `!noundef` PROMISES the loaded value is neither undef nor poison, and makes it UB if
+            # it ever is. Both halves matter: taking the result as definite WITHOUT the UB term
+            # would leave a target that violates the promise looking defined, which is the
+            # direction a false proof comes from. So the result's poison becomes `false` and the
+            # would-be poison joins `ub` -- the reading Alive2 gives it.
+            if inst.noundef:
+                ub.append(lp)
+                lp = "false"
             if as_ptr:
                 addr[inst.result] = _load_bytes(mem, base, 64)
-                apois[inst.result] = _load_poison(mp, base, 64)
+                apois[inst.result] = lp
                 continue
-            env[inst.result] = (_load_bytes(mem, base, w), w,
-                                _load_poison(mp, base, w), "false")
+            env[inst.result] = (_load_bytes(mem, base, w), w, lp, "false")
             continue
         if op == "select" and inst.type.kind == "ptr":
             c, _, cp, cub = sem.value(inst.operands[0], env, 1)

@@ -277,6 +277,13 @@ class Instruction:
         return self.raw.get("align")
 
     @property
+    def noundef(self) -> bool:
+        """`load ... !noundef`: the loaded value is promised to be neither undef nor poison, and
+        it is UB if it ever is. That promise is what makes a `freeze` over the result decidable --
+        with no poison there is no nondeterministic choice left to collapse."""
+        return bool(self.raw.get("noundef", False))
+
+    @property
     def alloc_type(self) -> Type | None:
         t = self.raw.get("alloc_type")
         return Type(t) if t else None
