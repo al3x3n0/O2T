@@ -420,7 +420,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::string out = "{\"functions\":[";
+  // THE POINTER SIZE IS NOT ALWAYS 64. `or.ll` in LLVM's own InstCombine tests declares
+  // `p:32:32:32`, and there `ptrtoint ptr to i32` is EXACT rather than a truncation -- which is
+  // what makes InstCombine's fold to `icmp eq ptr %A, null` correct. A model that assumes 64-bit
+  // addresses reads that fold as unsound and REFUTES it. Emitting the real width lets a validator
+  // decline what it cannot represent instead of inventing a disagreement.
+  std::string out = "{\"ptr_bits\":" +
+                    std::to_string(M->getDataLayout().getPointerSizeInBits(0)) +
+                    ",\"functions\":[";
   bool first = true;
   for (const Function &F : *M) {
     if (!first) out += ",";

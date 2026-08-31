@@ -223,6 +223,41 @@ def main() -> int:
     assert mem_state_tv(z3, nd_s, nd_s.replace("store i32 1", "store i32 2"), "nd")["status"] \
         == "proved", "violating a !noundef promise is UB, and a UB source refines to anything"
 
+    # 7g. `ptrtoint` IS NEARLY AN IDENTITY once an address is a 64-bit term -- the instruction the
+    #     pointer-values work never connected to the capability it had just built.
+    pti = ("define i64 @pi(ptr %p, ptr %q) {\n  %a = ptrtoint ptr %p to i64\n"
+           "  %b = ptrtoint ptr %q to i64\n  %d = sub i64 %a, %b\n  ret i64 %d\n}\n")
+    assert mem_state_tv(z3, pti, pti, "pi")["status"] == "proved", "ptrtoint must be decidable"
+    #     Comparing a pointer and comparing its ptrtoint are the same question, so this proves...
+    via_int = ("define i1 @pe(ptr %p, ptr %q) {\n  %a = ptrtoint ptr %p to i64\n"
+               "  %b = ptrtoint ptr %q to i64\n  %c = icmp eq i64 %a, %b\n  ret i1 %c\n}\n")
+    via_ptr = "define i1 @pe(ptr %p, ptr %q) {\n  %c = icmp eq ptr %p, %q\n  ret i1 %c\n}\n"
+    assert mem_state_tv(z3, via_int, via_ptr, "pe")["status"] == "proved", \
+        "icmp on addresses and icmp on their ptrtoint are the same comparison"
+    #     ...while a WIDER target type would have to invent high bits, and declines.
+    wide = ("define i128 @pw(ptr %p) {\n  %a = ptrtoint ptr %p to i128\n  ret i128 %a\n}\n")
+    assert mem_state_tv(z3, wide, wide, "pw")["status"] == "unsupported", \
+        "ptrtoint to a type wider than an address must decline"
+
+    # 7h. AND THE DATALAYOUT DECIDES WHETHER `ptrtoint ptr to i32` IS A TRUNCATION AT ALL. This
+    #     model's addresses are 64 bits everywhere -- `null`, every gep, every loaded pointer -- so
+    #     on a module declaring `p:32` it is simply the wrong model. LLVM's own `or.ll` declares
+    #     exactly that, and there InstCombine folds `(ptrtoint A | ptrtoint B) == 0` to
+    #     `A == null && B == null`, which is CORRECT at 32 bits and looks unsound at 64: before
+    #     this decline the model REFUTED two sound real-world transforms (`or.ll` test27, test29),
+    #     which would have been the corpus's first refutations. Costs nothing measured -- no proof
+    #     in the corpus comes from that file.
+    p32 = ('target datalayout = "e-p:32:32:32"\n'
+           "define i32 @dl(ptr %p) {\n  %a = ptrtoint ptr %p to i32\n  ret i32 %a\n}\n")
+    d = mem_state_tv(z3, p32, p32, "dl")
+    assert d["status"] == "unsupported" and "pointer width" in d.get("reason", ""), \
+        ("a module with non-64-bit pointers must decline, not model them as 64", d)
+    #     ...and the identical function at the DEFAULT pointer width decides, so the decline turns
+    #     on the datalayout rather than on anything else in the text.
+    p64 = p32.replace('target datalayout = "e-p:32:32:32"\n', "")
+    assert mem_state_tv(z3, p64, p64, "dl")["status"] == "proved", \
+        "the same function must decide at the default 64-bit pointer width"
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "

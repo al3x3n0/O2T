@@ -235,6 +235,18 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         raise sem.Unsupported(f"function {func} not found")
     if len(fn.blocks) > 1:
         raise sem.Unsupported("multi-block")
+    # ADDRESSES ARE 64 BITS THROUGHOUT THIS MODEL -- `null`, every gep, every loaded pointer. On a
+    # module whose datalayout says otherwise that is not a cosmetic mismatch: with `p:32`,
+    # `ptrtoint ptr to i32` is EXACT, and InstCombine's fold of `(ptrtoint A | ptrtoint B) == 0`
+    # to `A == null && B == null` is correct -- while a 64-bit model reads the same instruction as
+    # a TRUNCATION and REFUTES a sound transform. Worse in the other direction: 64-bit gep
+    # arithmetic does not wrap where 32-bit arithmetic does, so two addresses that alias in
+    # reality can be modelled as distinct, and under-approximated aliasing is where false proofs
+    # come from. Declining costs nothing measured -- no proof in the corpus came from the one file
+    # that declares a narrower pointer. Parameterising the width is the real fix and its own change.
+    pb = ir.parse(module_text).ptr_bits
+    if pb != 64:
+        raise sem.Unsupported(f"module pointer width is {pb} bits, not 64")
     if bind is not None:
         env, addr, mem, mp = dict(bind[0]), dict(bind[1]), bind[2], bind[3]
         bound_apois = dict(bind[4])
@@ -357,6 +369,24 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 raise sem.Unsupported("freeze over a possibly-poison pointer (side unknown here)")
             addr[inst.result] = a
             apois[inst.result] = "false"
+            continue
+        if op == "ptrtoint" and inst.operands[0].type.kind == "ptr":
+            # An address IS a 64-bit term here, so `ptrtoint` is close to an identity -- the
+            # capability the pointer-values work built without ever connecting it to the
+            # instruction that most wants it. To a NARROWER integer it truncates, which loses
+            # information exactly as the real instruction does: two distinct addresses can share
+            # their low bits, so equalities downstream hold in more cases than reality. Like the
+            # pointer `icmp` above, that over-approximates -- it costs refutations and cannot
+            # manufacture proofs. Provenance is ignored for the same reason and in the same
+            # direction. A WIDER target type would have to invent high bits, so it declines.
+            w = inst.type.bits if inst.type.is_int() else None
+            if w is None:
+                raise sem.Unsupported(f"ptrtoint to {inst.type}")
+            if w > 64:
+                raise sem.Unsupported(f"ptrtoint to i{w} (wider than an address)")
+            a, ap = _ptr_term(inst.operands[0], addr, apois)
+            term = a if w == 64 else f"((_ extract {w - 1} 0) {a})"
+            env[inst.result] = (term, w, ap, "false")
             continue
         if op == "getelementptr":
             addr[inst.result] = _gep_address(inst, addr, env)

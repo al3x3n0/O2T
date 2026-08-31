@@ -394,6 +394,15 @@ class Module:
     def functions(self) -> list[Function]:
         return [Function(f) for f in self.raw.get("functions", [])]
 
+    @property
+    def ptr_bits(self) -> int:
+        """Address-space-0 pointer width from the module's datalayout, defaulting to 64.
+
+        NOT a formality: LLVM's own `or.ll` declares `p:32:32:32`, and there `ptrtoint ptr to i32`
+        is EXACT rather than a truncation -- which is what makes InstCombine's fold of it to
+        `icmp eq ptr %A, null` correct. A model that assumes 64 reads that fold as unsound."""
+        return int(self.raw.get("ptr_bits", 64))
+
     def function(self, name: str) -> Function | None:
         """Look a function up BY IDENTITY. A call site above the definition cannot be mistaken for
         the signature, and a name that is a substring of another (`foo` vs `foobar`) cannot collide --
