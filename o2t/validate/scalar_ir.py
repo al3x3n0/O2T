@@ -651,9 +651,15 @@ def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
         if inst.op == "ret":
             if not inst.operands:
                 raise sem.Unsupported("void return")
-            if not inst.operands[0].type.is_int():
+            # A FLOAT RETURN is returned as its BITS, the same view already taken of a float
+            # PARAMETER. Without it a function could take floats and compute over their bits and
+            # still be undecidable purely because it handed one back -- which is what stopped every
+            # `copysign` fold in LLVM's select.ll. Comparing two returned floats bit-for-bit is
+            # exact for the transforms this reaches, all of which are bit manipulations; nothing
+            # here reads the value as an FP NUMBER.
+            ret_width = sem.bit_width(inst.operands[0].type)
+            if ret_width is None:
                 raise sem.Unsupported("no scalar ret")
-            ret_width = sem.int_width(inst.operands[0].type)
             ret_term, _, ret_poison, ret_ub = _p_value(inst.operands[0], env, ret_width)
             break
         _p_instruction(inst, env, ctx)

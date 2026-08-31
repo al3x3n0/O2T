@@ -82,10 +82,13 @@ SHAPES = [
 def _new(text, fn):
     """Translate through the new stack: LLVM's parse + the shared semantics."""
     f = ir.parse(text).function(fn)
-    env = {p.name: (p.name, p.type.bits, "false", "false") for p in f.params if p.type.is_int()}
+    # Any parameter this model has a BIT view of -- integers and floating-point alike, the same
+    # rule `_translate_parsed` applies -- so a float parameter is a term here rather than a hole.
+    env = {p.name: (p.name, sem.bit_width(p.type), "false", "false")
+           for p in f.params if sem.bit_width(p.type) is not None}
     for i in f.blocks[0].instructions:
         if i.op == "ret":
-            return sem.value(i.operands[0], env, i.operands[0].type.bits)[:3]
+            return sem.value(i.operands[0], env, sem.bit_width(i.operands[0].type))[:3]
         sem.evaluate(i, env, {"side": "source", "fresh": None})
     raise sem.Unsupported("no ret")
 
@@ -152,6 +155,50 @@ def main() -> int:
         try:
             _new(src, "f")
             raise AssertionError(f"{why} must decline")
+        except sem.Unsupported:
+            pass
+
+    # 6) FLOATS ARE CARRIED AS BITS, AND ONLY WHERE BITS ARE EXACT. `fneg` and `llvm.copysign` are
+    #    defined BIT-WISE by LLVM -- a sign-bit flip and a sign-bit copy, with no rounding, no trap
+    #    and no special case for NaN or zero -- so modelling them on bitvectors is EXACT, not an
+    #    approximation. `select` and `freeze` over a float choose between bit patterns and need no
+    #    FP view either. That is the whole of what a bits-only model may claim.
+    fneg_t, fneg_w = _new("define float @f(float %x){\n %r = fneg float %x\n ret float %r\n}\n",
+                          "f")[:2]
+    assert fneg_w == 32 and "bvxor" in fneg_t and sem.const(1 << 31, 32) in fneg_t, \
+        ("fneg must be a sign-bit flip at the float's own width", fneg_t, fneg_w)
+    cs = _new("define float @f(float %x, float %y){\n"
+              " %r = call float @llvm.copysign.f32(float %x, float %y)\n ret float %r\n}\n"
+              "declare float @llvm.copysign.f32(float, float)\n", "f")[0]
+    assert "bvor" in cs and sem.const(1 << 31, 32) in cs and sem.const((1 << 31) - 1, 32) in cs, \
+        ("copysign must take the sign from one operand and every other bit from the other", cs)
+    #    A float CONSTANT is its IEEE bit pattern, taken from LLVM rather than from the printed
+    #    text: 1.0f is 0x3F800000. Reaching it as text ("float 1.000000e+00") is what made
+    #    `operand kind 'other_const'` its own decline bucket.
+    one = _new("define float @f(){\n ret float 1.0\n}\n", "f")[0]
+    assert one == sem.const(0x3F800000, 32), ("1.0f must be its bit pattern", one)
+    assert _new("define double @f(){\n ret double 1.0\n}\n", "f")[0] \
+        == sem.const(0x3FF0000000000000, 64), "1.0 as a double is its own 64-bit pattern"
+
+    # 7) AND THE CONTAINMENT THAT KEEPS THAT SOUND: nothing may read a float as an FP NUMBER. Every
+    #    operation that would round, compare numerically, or convert MUST still decline -- a bits
+    #    model has no honest answer for them (+0.0 and -0.0 differ in bits and compare equal; NaN
+    #    compares unequal to itself). If one of these ever starts being accepted without a real FP
+    #    theory behind it, that is a false-proof seam, not a new capability.
+    for body, why in ((" %r = fadd float %x, %y\n ret float %r", "fadd"),
+                      (" %r = fmul float %x, %y\n ret float %r", "fmul"),
+                      (" %r = fdiv float %x, %y\n ret float %r", "fdiv"),
+                      (" %r = frem float %x, %y\n ret float %r", "frem"),
+                      (" %c = fcmp oeq float %x, %y\n %r = select i1 %c, float %x, float %y\n"
+                       " ret float %r", "fcmp"),
+                      (" %i = fptosi float %x to i32\n %r = sitofp i32 %i to float\n"
+                       " ret float %r", "fptosi/sitofp"),
+                      (" %d = fpext float %x to double\n %r = fptrunc double %d to float\n"
+                       " ret float %r", "fpext/fptrunc")):
+        src = f"define float @f(float %x, float %y){{\n{body}\n}}\n"
+        try:
+            _new(src, "f")
+            raise AssertionError(f"{why} needs real FP semantics and must decline in a bits model")
         except sem.Unsupported:
             pass
 

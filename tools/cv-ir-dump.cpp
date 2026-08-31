@@ -194,6 +194,17 @@ std::string constantJson(const Constant *C) {
              ",\"elem\":" + constantJson(S) + ",\"type\":" + typeJson(C->getType()) + "}";
     }
   }
+  // A FLOATING-POINT CONSTANT, AS BITS. This model carries floats as opaque bitvectors, and a
+  // constant reached it only as the printed text ("float 1.000000e+00") -- unusable, and the
+  // reason `operand kind 'other_const'` is its own decline bucket. The IEEE bit pattern is what a
+  // bit-level fold (copysign, a sign-bit test) actually operates on, and LLVM already holds it.
+  // Emitted as a decimal string because a 64- or 128-bit pattern does not fit a JSON number.
+  if (auto *CFP = dyn_cast<ConstantFP>(C)) {
+    SmallString<40> Bits;
+    CFP->getValueAPF().bitcastToAPInt().toStringUnsigned(Bits, 10);
+    return "{\"kind\":\"float\",\"bits_value\":" + quote(std::string(Bits.c_str())) +
+           ",\"type\":" + typeJson(C->getType()) + "}";
+  }
   if (auto *GV = dyn_cast<GlobalValue>(C))
     return "{\"kind\":\"global\",\"name\":" + quote(valueName(GV)) +
            ",\"type\":" + typeJson(GV->getType()) + "}";

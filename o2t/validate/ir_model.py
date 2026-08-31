@@ -167,6 +167,17 @@ class Value:
         return int(v) if v is not None else None
 
     @property
+    def float_bits(self) -> int | None:
+        """A floating-point constant's IEEE BIT PATTERN, or None. This model carries floats as
+        opaque bitvectors, so the bits are the whole content of the constant -- and they are what a
+        bit-level fold (copysign, a sign-bit test) operates on. Decimal string on the wire because
+        a 64- or 128-bit pattern does not fit a JSON number."""
+        if self.kind != "float":
+            return None
+        b = self.raw.get("bits_value")
+        return int(b) if b is not None else None
+
+    @property
     def elements(self) -> list["Value"]:
         return [Value(e) for e in self.raw.get("elems", [])]
 

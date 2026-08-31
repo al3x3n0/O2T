@@ -121,6 +121,16 @@ def value(v: ir.Value, env: dict, width: int | None = None):
         if w is None:
             raise Unsupported("untyped poison")
         return f"poison_{w}", w, "true", "false"
+    if v.kind == "float":
+        # A float CONSTANT is its IEEE bit pattern -- exactly the view this model already takes of
+        # a float parameter, so a constant and a parameter are the same kind of term and bit-level
+        # folds can relate them. Nothing here reads it as a floating-point NUMBER; see the
+        # `bitcast` case for why that containment holds.
+        w = width if width is not None else bit_width(v.type)
+        bits = v.float_bits
+        if w is None or bits is None:
+            raise Unsupported("untyped float constant")
+        return const(bits, w), w, "false", "false"
     if v.kind == "zeroinit":
         w = width if width is not None else (v.type.bits if v.type and v.type.is_int() else None)
         if w is None:
@@ -252,7 +262,7 @@ def intrinsic_name(callee: str | None) -> str | None:
     for take in (2, 1):                      # `uadd.sat.i32` then `ctpop.i32`
         if len(parts) > take:
             cand = ".".join(parts[:take])
-            if cand in INTRINSICS or cand in MINMAX:
+            if cand in INTRINSICS or cand in MINMAX or cand == "copysign":
                 return cand
     return None
 
@@ -295,8 +305,23 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
                     1, smt_or([ap, bp]), smt_or([au, bu]))
         return
 
+    if op == "fneg":
+        # `fneg` FLIPS THE SIGN BIT and does nothing else -- LLVM defines it that way rather than
+        # as `0.0 - x`, so it does not round, does not trap, and treats NaN like any other pattern.
+        # Exact in a bits-only model for the same reason `copysign` is.
+        w = bit_width(inst.type)
+        if w is None:
+            raise Unsupported(f"fneg on {inst.type}")
+        a, _, ap, au = value(inst.operands[0], env, w)
+        env[dst] = (f"(bvxor {a} {const(1 << (w - 1), w)})", w, ap, au)
+        return
     if op == "select":
-        w = int_width(inst.type)
+        # A select over FLOATS is a choice between two bit patterns and needs no arithmetic, so the
+        # bit view is exact here rather than an approximation. This is where the `copysign` folds
+        # actually start: `select %ispos, float 1.0, float -1.0`.
+        w = bit_width(inst.type)
+        if w is None:
+            raise Unsupported(f"select on {inst.type}")
         c, _, cp, cu = value(inst.operands[0], env, 1)
         t, _, tp, tu = value(inst.operands[1], env, w)
         f, _, fp, fu = value(inst.operands[2], env, w)
@@ -344,7 +369,11 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
         # (a free constant) and UNIVERSAL on the source, which QF_BV cannot express -- so a
         # source-side freeze declines, even when the operand looks poison-free, because parameters
         # are modeled as definite while LLVM lets an argument be `undef` unless `noundef`.
-        w = int_width(inst.type)
+        # A freeze over a FLOAT is a freeze over its bits -- the choice it collapses is a choice
+        # of bit pattern, so nothing here needs an FP view either.
+        w = bit_width(inst.type)
+        if w is None:
+            raise Unsupported(f"freeze on {inst.type}")
         v, _, vp, vu = value(inst.operands[0], env, w)
         if ctx.get("side") != "target" or ctx.get("fresh") is None:
             # A source-side freeze is the IDENTITY exactly when its operand has no freedom to
@@ -384,6 +413,20 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
 
     if op == "call":
         intr = intrinsic_name(inst.callee)
+        if intr == "copysign":
+            # `llvm.copysign(a, b)` = a's magnitude with b's sign, and it is defined BIT-WISE --
+            # the sign bit is taken from b, every other bit from a, with no arithmetic and no
+            # special case for NaN or zero. So it is exact in a bits-only model rather than an
+            # approximation of it, which is why it can be modelled here while `fadd` cannot.
+            w = bit_width(inst.type)
+            if w is None:
+                raise Unsupported("copysign of a non-scalar type")
+            a, _, ap, au = value(inst.args[0], env, w)
+            b, _, bp, bu = value(inst.args[1], env, w)
+            sign = 1 << (w - 1)
+            env[dst] = (f"(bvor (bvand {a} {const(sign - 1, w)}) (bvand {b} {const(sign, w)}))",
+                        w, smt_or([ap, bp]), smt_or([au, bu]))
+            return
         if intr in MINMAX:
             w = int_width(inst.type)
             a, _, ap, au = value(inst.args[0], env, w)
