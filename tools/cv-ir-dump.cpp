@@ -100,7 +100,13 @@ std::string typeJson(Type *T) {
   if (auto *IT = dyn_cast<IntegerType>(T))
     return "{\"kind\":\"int\",\"bits\":" + std::to_string(IT->getBitWidth()) + "}";
   if (T->isPointerTy())
-    return "{\"kind\":\"ptr\"}";
+    // The ADDRESS SPACE comes with it. `ptr` and `ptr addrspace(1)` are different types with
+    // different rules -- most sharply, `null` is only guaranteed non-dereferenceable in address
+    // space 0 -- and LLVM's own InstCombine tests turn on the distinction (or.ll/select.ll carry
+    // `_as1` and `_neg` variants asserting a fold does NOT happen off address space 0). Emitting
+    // them identically leaves a validator unable to decline what it cannot model.
+    return "{\"kind\":\"ptr\",\"addrspace\":" +
+           std::to_string(cast<PointerType>(T)->getAddressSpace()) + "}";
   if (auto *VT = dyn_cast<VectorType>(T)) {
     bool scalable = isa<ScalableVectorType>(VT);
     unsigned n = VT->getElementCount().getKnownMinValue();

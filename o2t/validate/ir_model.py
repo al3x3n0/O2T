@@ -99,6 +99,13 @@ class Type:
         return self.raw.get("bits")
 
     @property
+    def addrspace(self) -> int:
+        """A pointer's address space (0 unless stated). NOT cosmetic: `null` is only guaranteed
+        non-dereferenceable in address space 0, so a fold that is sound on `ptr` need not be on
+        `ptr addrspace(1)` -- LLVM's own tests carry `_as1` variants asserting exactly that."""
+        return int(self.raw.get("addrspace", 0))
+
+    @property
     def elem(self) -> "Type | None":
         e = self.raw.get("elem")
         return Type(e) if e else None

@@ -30,6 +30,7 @@ occurred (argument promotion) prove, while an introduced dereference declines --
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 from o2t.validate import ir_model as ir
@@ -121,6 +122,41 @@ def _field_offsets(t):
     return offs, cur
 
 
+def _ptr_term(v, addr, apois=None):
+    """A pointer OPERAND -> its 64-bit address term (and, via `apois`, its poison), or a decline.
+
+    Pointers used to be first-class only when they were parameters (or geps of them): `addr` was
+    keyed by register name and populated from the signature alone. Everything else -- a `select`
+    between two pointers, a pointer loaded from memory, a global, an `alloca` -- fell outside, which
+    is why `getelementptr`, `ptrtoint`, "non-integer type ptr" and `alloca` all showed up in the
+    decline census as separate buckets for ONE missing capability.
+
+    `null` is address 0. A GLOBAL or an `alloca` still declines: those are distinct objects, and
+    giving them addresses means ASSERTING they do not alias what the caller passed in -- an
+    under-approximation of aliasing, which is the direction false proofs come from. That is a
+    separate change with its own teeth, deliberately not folded in here.
+
+    A pointer needs its own POISON term, not a guard: an address loaded out of memory is never
+    syntactically poison-free, so requiring that would decline every `load ptr` and defeat the point.
+    `apois` carries it alongside `addr`, defaulting to `false` for parameters and geps of them."""
+    # ADDRESS SPACE 0 ONLY. `null` is address 0 below, and that is a claim about address space 0:
+    # elsewhere null may be a perfectly good address, which is why LLVM's tests carry `_as1` and
+    # `_neg` variants asserting a fold does NOT happen there. This model has no notion of address
+    # spaces, so it declines rather than treating them alike -- the alternative is silently reading
+    # `ptr addrspace(1)` as `ptr`.
+    if v.type is not None and v.type.kind == "ptr" and v.type.addrspace != 0:
+        raise sem.Unsupported(f"pointer in address space {v.type.addrspace}")
+    if v.is_reg:
+        if v.name in addr:
+            return addr[v.name], (apois or {}).get(v.name, "false")
+        raise sem.Unsupported(f"pointer {v.name!r} has no known address")
+    if v.kind == "null" or (v.kind == "int" and v.int_value == 0):
+        return sem.const(0, 64), "false"
+    if v.is_poison:
+        return sem.const(0, 64), "true"
+    raise sem.Unsupported(f"pointer operand {v.kind}")
+
+
 def _gep_address(inst, addr, env):
     """`getelementptr` -> a new BYTE address. One traversal of the index list over the structured
     source type, replacing three separate text patterns and the struct-layout regex."""
@@ -178,6 +214,15 @@ def _signature(ll_text, func):
     return out
 
 
+def _ret_kind(ll_text, func):
+    """The return type as a comparable tag -- `('ptr', addrspace)` or `('int', bits)`."""
+    fn = ir.parse(ll_text).function(func)
+    if fn is None:
+        return None
+    t = fn.ret_type
+    return (t.kind, t.addrspace if t.kind == "ptr" else t.bits)
+
+
 def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
     """Symbolically execute a single-BB function over the memory array; return
     (ret_term|None, ret_width, final_mem_term, derefs, ret_poison, ub, final_poison_mem). Same model as the text reader it replaces:
@@ -192,6 +237,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         raise sem.Unsupported("multi-block")
     if bind is not None:
         env, addr, mem, mp = dict(bind[0]), dict(bind[1]), bind[2], bind[3]
+        bound_apois = dict(bind[4])
     else:
         sig = _signature(ll_text, func) or []
         env = {n: (n, w, "false", "false") for w, n in sig if w != "ptr"}
@@ -200,9 +246,16 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         # The initial memory is arbitrary but DEFINED -- the same reading `mem0` already had. Both
         # sides start from it, so anything neither writes cancels out of the comparison.
         mp = "((as const (Array (_ BitVec 64) Bool)) false)"
+        bound_apois = {}
     ret_term, ret_width = None, None
     ret_poison, ub = "false", []
     derefs = []
+    # Per-pointer poison, parallel to `addr` (default false). It must arrive WITH the bound
+    # addresses when a callee is inlined: a pointer argument that is poison in the caller is poison
+    # in the callee, and a frame that started this map empty read every argument as definitely-
+    # defined. That silently dropped the callee's poison-deref UB, so the same program written with
+    # the access inside a call and with it inlined by hand REFUTED against itself.
+    apois: dict = dict(bound_apois)
 
     for inst in fn.blocks[0].instructions:
         op = inst.op
@@ -210,6 +263,13 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             if not inst.operands:                       # `ret void`
                 break
             t = inst.operands[0].type
+            if t.kind == "ptr":
+                # A returned POINTER is its address, compared like any other 64-bit value. It was
+                # previously "non-integer return" -- one of the four labels that were really this
+                # one gap.
+                ret_term, ret_poison = _ptr_term(inst.operands[0], addr, apois)
+                ret_width = 64
+                break
             if not t.is_int():
                 raise sem.Unsupported("non-integer return")
             ret_width = t.bits
@@ -223,18 +283,72 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 raise sem.Unsupported("store width/target out of scope")
             vt, _, vp, vub = sem.value(val, env, w)
             ub.append(vub)
+            # Dereferencing a poison pointer is UB whichever way the access goes. The load path
+            # says the same thing; a store that did NOT say it left the TARGET looking defined
+            # where it is not, and a target that is secretly UB is the direction a false proof
+            # comes from -- it removes the very disjunct that should have refuted the pair.
+            ub.append(apois.get(ptr.name, "false"))
             derefs.append(addr[ptr.name])
             mem = _store_bytes(mem, addr[ptr.name], vt, w)
             mp = _store_poison(mp, addr[ptr.name], vp, w)      # the stored value keeps its poison
             continue
         if op == "load":
             ptr = inst.operands[0]
-            w = inst.type.bits if inst.type.is_int() else None
+            # A pointer-typed RESULT is loaded exactly like an i64 and then becomes an address in
+            # its own right, poison and all -- which is why pointers need a poison channel rather
+            # than a poison-free guard: `_load_poison` is never syntactically false, so a guard
+            # would decline every `load ptr` and there would be no point to any of this.
+            as_ptr = inst.type.kind == "ptr"
+            w = 64 if as_ptr else (inst.type.bits if inst.type.is_int() else None)
             if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
                 raise sem.Unsupported("load width/target out of scope")
-            derefs.append(addr[ptr.name])
-            env[inst.result] = (_load_bytes(mem, addr[ptr.name], w), w,
-                                _load_poison(mp, addr[ptr.name], w), "false")
+            base = addr[ptr.name]
+            ub.append(apois.get(ptr.name, "false"))     # dereferencing a poison pointer is UB
+            derefs.append(base)
+            if as_ptr:
+                addr[inst.result] = _load_bytes(mem, base, 64)
+                apois[inst.result] = _load_poison(mp, base, 64)
+                continue
+            env[inst.result] = (_load_bytes(mem, base, w), w,
+                                _load_poison(mp, base, w), "false")
+            continue
+        if op == "select" and inst.type.kind == "ptr":
+            c, _, cp, cub = sem.value(inst.operands[0], env, 1)
+            a, ap = _ptr_term(inst.operands[1], addr, apois)
+            b, bp = _ptr_term(inst.operands[2], addr, apois)
+            picks_a = f"(= {c} {sem.const(1, 1)})"
+            addr[inst.result] = f"(ite {picks_a} {a} {b})"
+            # the condition's poison always propagates; only the SELECTED arm's does -- the same
+            # rule the scalar and lane models apply, not a second reading of it
+            apois[inst.result] = si.smt_or([cp, f"(ite {picks_a} {ap} {bp})"])
+            ub.append(cub)
+            continue
+        if op == "icmp" and inst.operands[0].type.kind == "ptr":
+            if inst.pred not in sem.ICMP:
+                raise sem.Unsupported(f"icmp predicate {inst.pred!r}")
+            a, ap = _ptr_term(inst.operands[0], addr, apois)
+            b, bp = _ptr_term(inst.operands[1], addr, apois)
+            # Comparing ADDRESSES ignores provenance, which over-approximates aliasing (two
+            # pointers into different objects that happen to share an address compare equal here).
+            # That direction costs refutations and cannot manufacture proofs.
+            env[inst.result] = (f"(ite {sem.ICMP[inst.pred].format(a=a, b=b)} "
+                                f"{sem.const(1, 1)} {sem.const(0, 1)})", 1,
+                                si.smt_or([ap, bp]), "false")
+            continue
+        if op == "freeze" and inst.type.kind == "ptr":
+            # Freeze over a pointer: the address is whatever it was, and it is no longer poison.
+            # A source-side choice would need a quantifier this validator does not emit, so the
+            # only case decided here is the one where there is no freedom to collapse.
+            a, ap = _ptr_term(inst.operands[0], addr, apois)
+            if ap != "false":
+                # This validator does not know which SIDE it is translating, and the quantifier
+                # depends on it: a source-side choice is universal, a target-side one is free.
+                # Without that distinction the only sound answer is to decline whenever there is
+                # real freedom to collapse. `!noundef` on the producing load removes the freedom
+                # and is what makes the freeze.ll cases decidable.
+                raise sem.Unsupported("freeze over a possibly-poison pointer (side unknown here)")
+            addr[inst.result] = a
+            apois[inst.result] = "false"
             continue
         if op == "getelementptr":
             addr[inst.result] = _gep_address(inst, addr, env)
@@ -247,16 +361,18 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 cparams = _signature(module_text, callee.name) or []
                 if len(inst.args) != len(cparams):
                     raise sem.Unsupported("call arity mismatch")
-                cenv, caddr = {}, {}
+                cenv, caddr, capois = {}, {}, {}
                 for (kind, pname), a in zip(cparams, inst.args):
                     if kind == "ptr":
                         if not a.is_reg or a.name not in addr:
                             raise sem.Unsupported("pointer argument is not a known address")
                         caddr[pname] = addr[a.name]
+                        capois[pname] = apois.get(a.name, "false")
                     else:
                         cenv[pname] = sem.value(a, env, kind)
                 cret, cw, mem, cderefs, cp, cub, mp = _mem_translate(
-                    module_text, callee.name, module_text, (cenv, caddr, mem, mp), depth + 1)
+                    module_text, callee.name, module_text, (cenv, caddr, mem, mp, capois),
+                    depth + 1)
                 derefs.extend(cderefs)
                 ub.append(cub)
                 if inst.result is not None and not inst.type.kind == "void":
@@ -282,6 +398,14 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     refutation side is the corresponding guard)."""
     if _signature(before_ll, func) != _signature(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "signature changed"}
+    # The RETURN TYPE is part of the signature too, and only became able to differ silently once a
+    # returned pointer stopped declining: `ptr` and `i64` are both 64 bits here, so a pair whose
+    # sides return different types passed the width check below and got a verdict. Two functions
+    # returning the same 64 bits under different types then PROVED equivalent. Nothing in the
+    # corpus builds such a pair -- a fold does not change a return type -- but the model should
+    # not answer a question it was not asked.
+    if _ret_kind(before_ll, func) != _ret_kind(after_ll, func):
+        return {"status": "unsupported", "function": func, "reason": "return type changed"}
     try:
         rb, wb, mb, db, rbp, sub, mbp = _mem_translate(before_ll, func)
         ra, wa, ma, da, rap, tub, map_ = _mem_translate(after_ll, func)
@@ -300,9 +424,13 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     # the target may fault where the source is defined -- an unmodeled null-deref UB -- so DECLINE
     # rather than mis-prove. (`(and)` over an empty source deref-set is true, so any target deref with
     # an empty source set is flagged; a target deref matching a source deref on all inputs is unsat.)
+    new_deref_text = ""
     if da:
         new_deref = si.smt_or([si.smt_and([f"(not (= {a} {b}))" for b in db]) for a in da])
-        probe = "\n".join(["(set-logic QF_ABV)", *decls,
+        new_deref_text = new_deref
+        pdecls = decls + [f"(declare-const poison_{w} (_ BitVec {w}))"
+                          for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", new_deref)})]
+        probe = "\n".join(["(set-logic QF_ABV)", *pdecls,
                            f"(assert {new_deref})", "(check-sat)", ""])
         try:
             pout = subprocess.run([z3_bin, "-in"], input=probe, capture_output=True, text=True,
@@ -329,6 +457,13 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     mem_bad = si.smt_and([f"(not {spois})",
                           si.smt_or([tpois, f"(not (= {sbyte} {tbyte}))"])])
     refute = si.smt_and([f"(not {sub})", si.smt_or([tub, *ret_bad, mem_bad])])
+    # A literal `poison` operand is an ARBITRARY value with its poison bit set, spelled
+    # `poison_<width>` by the semantics layer -- and nothing here declared it, so any function
+    # containing one produced an undeclared symbol and came back a solver ERROR (or, via the
+    # new-deref probe, a spurious decline) instead of a verdict. `scalar_ir` closed this same gap;
+    # an unconstrained constant is the right declaration, the poison-ness being carried separately.
+    decls += [f"(declare-const poison_{w} (_ BitVec {w}))"
+              for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", refute + new_deref_text)})]
     smt = "\n".join(["(set-logic QF_ABV)", *decls,
                      f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:
