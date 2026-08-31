@@ -128,9 +128,12 @@ def _lanes_of(v, n, w, env, ctx=None):
         return [(sem.const(0, w), "false")] * n
     if v.kind == "splat":                      # every lane the same value
         elem = v.splat_elem
-        if elem is None or elem.kind != "int":
+        if elem is None or elem.kind not in ("int", "float"):
             raise sem.Unsupported("non-integer splat")
-        return [(sem.const(elem.int_value, w), "false")] * n
+        ev = elem.int_value if elem.kind == "int" else elem.float_bits
+        if ev is None:
+            raise sem.Unsupported("splat without a value")
+        return [(sem.const(ev, w), "false")] * n
     if v.kind == "vector":
         elems = v.elements
         if len(elems) != n:
@@ -139,6 +142,8 @@ def _lanes_of(v, n, w, env, ctx=None):
         for e in elems:
             if e.kind == "int":
                 out.append((sem.const(e.int_value, w), "false"))
+            elif e.kind == "float":          # a float element is its IEEE bit pattern
+                out.append((sem.const(e.float_bits, w), "false"))
             elif e.is_undef or e.is_poison:
                 out.append(_free(ctx, w, "poison" if e.is_poison else "undef"))
             else:
@@ -148,15 +153,22 @@ def _lanes_of(v, n, w, env, ctx=None):
         return [_free(ctx, w, "poison" if v.is_poison else "undef") for _ in range(n)]
     if v.kind == "int" and n == 1:
         return [(sem.const(v.int_value, w), "false")]
+    if v.kind == "float" and n == 1:
+        return [(sem.const(v.float_bits, w), "false")]
     raise sem.Unsupported(f"operand {v.kind}")
 
 
 def _vshape(t):
-    """(lanes, width) for a vector or scalar integer type."""
-    if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
-        return t.n, t.elem.bits
-    if t.is_int():
-        return 1, t.bits
+    """(lanes, width) for a vector or scalar type this model has a BIT view of.
+
+    A FLOATING-POINT lane is bits like any other -- the same view the scalar model takes -- and the
+    lane model only ever performs bit operations on it (`fneg`, `copysign`, `select`, `bitcast`,
+    an `icmp` on a bitcast result). Anything that would read a lane as an FP NUMBER is not modelled
+    here at all, which is what keeps the bit view exact rather than an approximation."""
+    if t.kind == "vector" and not t.scalable and t.elem and sem.bit_width(t.elem) is not None:
+        return t.n, sem.bit_width(t.elem)
+    if sem.bit_width(t) is not None:
+        return 1, sem.bit_width(t)
     raise sem.Unsupported(f"type {t}")
 
 
@@ -173,6 +185,10 @@ def _step(inst, env, ctx):
 
 def _vec_instr(inst, env, ctx=None):
     op = inst.op
+    # Fast-math flags are ignored on the source and DECLINED on the target -- see
+    # `semantics.FAST_MATH` for why that asymmetry is the sound one. The lane model has its own
+    # per-lane implementations, so it calls the shared check rather than re-deriving the rule.
+    sem.check_fast_math(inst, ctx)
     ub = ctx.setdefault("ub", []) if ctx is not None else []
     if op in sem.BIN:
         n, w = _vshape(inst.type)
@@ -190,6 +206,38 @@ def _vec_instr(inst, env, ctx=None):
                 # a poison DIVISOR is UB, not merely poison: it decides whether the division traps
                 ub.append(si.smt_or([bp, sem.own_ub(op, av, bv, w)]))
         env[inst.result] = (lanes, w)
+        return
+    if op == "bitcast":
+        # A bitcast REINTERPRETS bits and moves none of them. When the source and destination agree
+        # on lane count and lane width -- `<2 x float>` to `<2 x i32>` is the case every copysign
+        # fold opens with -- it is the IDENTITY on this model's lanes, because a lane is already
+        # just its bits. A bitcast that RESHAPES (a different lane count or width, e.g.
+        # `<2 x float>` to `i64`) would have to concatenate or split lanes and is a different job;
+        # it declines rather than being waved through.
+        sn, sw = _vshape(inst.operands[0].type)
+        dn, dw = _vshape(inst.type)
+        if (sn, sw) != (dn, dw):
+            raise sem.Unsupported(
+                f"bitcast reshapes {sn}x{sw} -> {dn}x{dw} (lane split/join not modelled)")
+        env[inst.result] = (list(_lanes_of(inst.operands[0], sn, sw, env, ctx)), dw)
+        return
+    if op == "fneg":
+        # A sign-bit flip per lane. LLVM defines `fneg` this way rather than as `0.0 - x`, so it
+        # neither rounds nor traps and treats NaN like any other pattern -- exact on bitvectors.
+        n, w = _vshape(inst.type)
+        a = _lanes_of(inst.operands[0], n, w, env, ctx)
+        env[inst.result] = ([(f"(bvxor {av} {sem.const(1 << (w - 1), w)})", ap) for av, ap in a], w)
+        return
+    if op == "call" and sem.intrinsic_name(inst.callee) == "copysign":
+        # Sign bit from the second operand, every other bit from the first -- again LLVM's own
+        # definition, with no special case for NaN or zero.
+        n, w = _vshape(inst.type)
+        a = _lanes_of(inst.args[0], n, w, env, ctx)
+        b = _lanes_of(inst.args[1], n, w, env, ctx)
+        sign = 1 << (w - 1)
+        env[inst.result] = ([(f"(bvor (bvand {a[i][0]} {sem.const(sign - 1, w)}) "
+                              f"(bvand {b[i][0]} {sem.const(sign, w)}))",
+                              si.smt_or([a[i][1], b[i][1]])) for i in range(n)], w)
         return
     if op == "icmp":
         if inst.pred not in sem.ICMP:
@@ -369,13 +417,14 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
     for p in fn.params:
         t = p.type
         nu = p.noundef                      # declared definite -> no flag, and freeze is the identity
-        if t.kind == "vector" and not t.scalable and t.elem and t.elem.is_int():
+        if t.kind == "vector" and not t.scalable and t.elem and sem.bit_width(t.elem) is not None:
+            ew = sem.bit_width(t.elem)       # a float lane is carried as bits, like a scalar one
             ls = [f"{p.name}!{i}" for i in range(t.n)]
-            decls += [(lane, t.elem.bits) for lane in ls]
-            env[p.name] = ([(lane, _flag(lane, nu)) for lane in ls], t.elem.bits)
-        elif t.is_int():
-            decls.append((p.name, t.bits))
-            env[p.name] = ([(p.name, _flag(p.name, nu))], t.bits)
+            decls += [(lane, ew) for lane in ls]
+            env[p.name] = ([(lane, _flag(lane, nu)) for lane in ls], ew)
+        elif sem.bit_width(t) is not None:
+            decls.append((p.name, sem.bit_width(t)))
+            env[p.name] = ([(p.name, _flag(p.name, nu))], sem.bit_width(t))
         else:
             raise sem.Unsupported(f"parameter type {t}")
     ctx["pflags"] = pflags

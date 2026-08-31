@@ -202,6 +202,27 @@ def main() -> int:
         except sem.Unsupported:
             pass
 
+    # 8) FAST-MATH FLAGS ARE IGNORED ON THE SOURCE AND DECLINED ON THE TARGET, and the asymmetry
+    #    is the whole point. FMF only ENLARGE a value's real behaviour set -- `nnan`/`ninf` make the
+    #    result POISON on a NaN or infinity, the rest license alternative results. On the SOURCE
+    #    that means reality has more behaviours than the model, and refining into a larger source
+    #    set is only easier, so a proof stays valid. On the TARGET refinement requires every target
+    #    behaviour to be a source one, so modelling the target SMALLER than it really is lets a pair
+    #    prove where reality refutes -- a false proof. Found because Alive2 refused to verify a
+    #    `select arcp nnan` fold it called an approximation, which is what prompted looking at all.
+    fneg_fm = "define float @f(float %x){\n %r = fneg nnan float %x\n ret float %r\n}\n"
+    fn = ir.parse(fneg_fm).function("f")
+    env = {"%x": ("%x", 32, "false", "false")}
+    sem.evaluate(fn.blocks[0].instructions[0], env, {"side": "source", "fresh": None})
+    assert "%r" in env, "a fast-math flag on the SOURCE is ignored, not declined"
+    try:
+        sem.evaluate(fn.blocks[0].instructions[0], {"%x": ("%x", 32, "false", "false")},
+                     {"side": "target", "fresh": None})
+        raise AssertionError("a fast-math flag on the TARGET must decline -- ignoring it models the "
+                             "target as more defined than it is, which is the false-proof direction")
+    except sem.Unsupported:
+        pass
+
     print(f"semantics_fixture OK: the shared semantics layer emits BYTE-IDENTICAL SMT to the text "
           f"path it replaces across {len(SHAPES)} shapes, all 10 intrinsic models, and every "
           "(op, flag) poison/UB combination -- so moving both tracks onto one reading of LLVM cannot "

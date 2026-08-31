@@ -239,6 +239,45 @@ def main() -> int:
     assert vec_tv(z3, and_zero, ret_zero, "g")["status"] == "proved", \
         "a single read of an undef-derived register must stay decided, not decline"
 
+    # FLOAT LANES ARE BITS, like a scalar float, and the lane model only ever does BIT operations
+    # on them -- `fneg` (a sign-bit flip), `llvm.copysign` (a sign-bit copy), `select`, and a
+    # lane-preserving `bitcast`. LLVM defines those bit-wise, with no rounding, no trap and no
+    # NaN/zero special case, so this is exact rather than an approximation of floating point.
+    fneg_s = ("define <2 x float> @v(<2 x float> %x) {\n"
+              "  %i = bitcast <2 x float> %x to <2 x i32>\n"
+              "  %m = xor <2 x i32> %i, <i32 -2147483648, i32 -2147483648>\n"
+              "  %r = bitcast <2 x i32> %m to <2 x float>\n  ret <2 x float> %r\n}\n")
+    fneg_t = ("define <2 x float> @v(<2 x float> %x) {\n"
+              "  %r = fneg <2 x float> %x\n  ret <2 x float> %r\n}\n")
+    assert vec_tv(z3, fneg_s, fneg_t, "v")["status"] == "proved", \
+        "flipping the sign bit of every lane IS fneg -- float lanes must be carried as bits"
+    cs_s = ("define <2 x float> @c(<2 x float> %a, <2 x float> %b) {\n"
+            "  %r = call <2 x float> @llvm.copysign.v2f32(<2 x float> %a, <2 x float> %b)\n"
+            "  ret <2 x float> %r\n}\n"
+            "declare <2 x float> @llvm.copysign.v2f32(<2 x float>, <2 x float>)\n")
+    assert vec_tv(z3, cs_s, cs_s, "c")["status"] == "proved", "copysign must be decidable per lane"
+    #    A bitcast that RESHAPES lanes (a different count or width) would have to split or join
+    #    them, and declines rather than being waved through as an identity.
+    resh = ("define i64 @r(<2 x float> %x) {\n  %i = bitcast <2 x float> %x to i64\n"
+            "  ret i64 %i\n}\n")
+    d = vec_tv(z3, resh, resh, "r")
+    assert d["status"] == "unsupported" and "reshape" in d.get("reason", ""), \
+        ("a lane-splitting/joining bitcast must decline, not pass as an identity", d)
+    #    FAST-MATH FLAGS: ignored on the source, DECLINED on the target. They only ENLARGE a value's
+    #    real behaviour set, so ignoring them shrinks whichever side they are on -- harmless for the
+    #    source, a false proof for the target. Alive2 refusing to verify a `select arcp nnan` fold
+    #    (calling it an approximation) is what prompted checking this at all.
+    fm_src = ("define <2 x float> @m(<2 x float> %x) {\n"
+              "  %r = fneg nnan <2 x float> %x\n  ret <2 x float> %r\n}\n")
+    plain = ("define <2 x float> @m(<2 x float> %x) {\n"
+             "  %r = fneg <2 x float> %x\n  ret <2 x float> %r\n}\n")
+    assert vec_tv(z3, fm_src, plain, "m")["status"] == "proved", \
+        "a fast-math flag on the SOURCE is ignored -- reality has more behaviours, which is safe"
+    d = vec_tv(z3, plain, fm_src, "m")
+    assert d["status"] == "unsupported" and "fast-math" in d.get("reason", ""), \
+        ("a fast-math flag on the TARGET must decline -- ignoring it models the target as more "
+         "defined than it is, and that is where a false proof comes from", d)
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "

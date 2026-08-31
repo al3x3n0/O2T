@@ -250,6 +250,31 @@ INTRINSICS = {
 }
 
 
+# Fast-math flags this model does not implement. LLVM's FMF only ever ENLARGE a value's real
+# behaviour set: `nnan`/`ninf` make the result POISON on a NaN or infinity, and `nsz`/`arcp`/
+# `contract`/`afn`/`reassoc` license alternative results. So ignoring them is not symmetric:
+#
+#   on the SOURCE  -- reality has MORE behaviours than the model, and a refinement into a larger
+#                     source set is only easier to satisfy, so a proof stays valid. Conservative.
+#   on the TARGET  -- reality has more behaviours than the model, and refinement requires every
+#                     TARGET behaviour to be a source one. Modelling the target smaller than it is
+#                     lets a pair prove where reality refutes. THAT IS A FALSE PROOF.
+#
+# Hence: ignored on the source, DECLINED on the target. The distinction needs the side, which both
+# translators already carry. (LLVM's InstCombine does not add fast-math flags a source lacked, so
+# this costs nothing measured -- no target in the corpus carries one.)
+FAST_MATH = {"nnan", "ninf", "nsz", "arcp", "contract", "afn", "reassoc", "fast"}
+
+
+def check_fast_math(inst, ctx) -> None:
+    """Decline a fast-math flag on the TARGET side; see FAST_MATH for why the source is safe."""
+    if ctx is None or ctx.get("side") != "target":
+        return
+    fm = FAST_MATH.intersection(inst.flags or ())
+    if fm:
+        raise Unsupported(f"fast-math flag(s) {sorted(fm)} on the target (not modelled)")
+
+
 def intrinsic_name(callee: str | None) -> str | None:
     """`@llvm.uadd.sat.i32` -> `uadd.sat`; None if this is not a modeled intrinsic call."""
     if not callee:
@@ -305,6 +330,7 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
                     1, smt_or([ap, bp]), smt_or([au, bu]))
         return
 
+    check_fast_math(inst, ctx)
     if op == "fneg":
         # `fneg` FLIPS THE SIGN BIT and does nothing else -- LLVM defines it that way rather than
         # as `0.0 - x`, so it does not round, does not trap, and treats NaN like any other pattern.
