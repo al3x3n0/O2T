@@ -46,21 +46,25 @@ from o2t.validate import semantics as sem
 # `Instruction.source_type` arrives structured, field offsets are a walk over `type.fields`, and the
 # three patterns collapse into one traversal of the index list.
 
-def _addr_off(addr, off):
-    return addr if off == 0 else f"(bvadd {addr} (_ bv{off} 64))"
+def _addr_off(addr, off, pw=64):
+    """Step an address by `off` BYTES, in the module's own pointer width. Doing this at a fixed 64
+    bits was the model's oldest wrong assumption: address arithmetic WRAPS at 2**pw, and computing
+    it wider silently keeps two addresses distinct that a narrower target makes equal -- which
+    under-approximates aliasing, the direction false proofs come from."""
+    return addr if off == 0 else f"(bvadd {addr} (_ bv{off} {pw}))"
 
 
-def _store_bytes(mem, addr, value, width):
+def _store_bytes(mem, addr, value, width, pw=64):
     for i in range(width // 8):
-        mem = f"(store {mem} {_addr_off(addr, i)} ((_ extract {i * 8 + 7} {i * 8}) {value}))"
+        mem = f"(store {mem} {_addr_off(addr, i, pw)} ((_ extract {i * 8 + 7} {i * 8}) {value}))"
     return mem
 
 
-def _load_bytes(mem, addr, width):
+def _load_bytes(mem, addr, width, pw=64):
     nb = width // 8
     if nb == 1:
         return f"(select {mem} {addr})"
-    parts = [f"(select {mem} {_addr_off(addr, i)})" for i in range(nb)]
+    parts = [f"(select {mem} {_addr_off(addr, i, pw)})" for i in range(nb)]
     return f"(concat {' '.join(reversed(parts))})"
 
 
@@ -71,28 +75,32 @@ def _load_bytes(mem, addr, width):
 # needed two whole-function guards to stay sound -- refuse to prove if the target could be poison
 # anywhere, refuse to refute if the source could.
 
-def _store_poison(mp, addr, poison, width):
+def _store_poison(mp, addr, poison, width, pw=64):
     for i in range(width // 8):
-        mp = f"(store {mp} {_addr_off(addr, i)} {poison})"
+        mp = f"(store {mp} {_addr_off(addr, i, pw)} {poison})"
     return mp
 
 
-def _load_poison(mp, addr, width):
+def _load_poison(mp, addr, width, pw=64):
     """A loaded value is poison if ANY byte it is assembled from is."""
-    return si.smt_or([f"(select {mp} {_addr_off(addr, i)})" for i in range(width // 8)])
+    return si.smt_or([f"(select {mp} {_addr_off(addr, i, pw)})" for i in range(width // 8)])
 
 
-def _idx64(v, env):
-    """A gep index operand -> a 64-bit SMT term (sign-extended: gep indices are signed)."""
+def _idx_term(v, env, pw=64):
+    """A gep index operand -> a term at the ADDRESS width (sign-extended: gep indices are signed).
+
+    An index wider than the address is truncated and one narrower is sign-extended, which is what
+    LLVM does -- the index is converted to the pointer's index-type width before scaling."""
     if v.is_reg:
         if v.name not in env:
             raise sem.Unsupported(f"gep index {v.name!r}")
         term, w, _, _ = env[v.name]
-        if w == 64:
+        if w == pw:
             return term
-        return f"((_ sign_extend {64 - w}) {term})" if w < 64 else f"((_ extract 63 0) {term})"
+        return (f"((_ sign_extend {pw - w}) {term})" if w < pw
+                else f"((_ extract {pw - 1} 0) {term})")
     if v.kind == "int":
-        return sem.const(v.int_value, 64)
+        return sem.const(v.int_value, pw)
     raise sem.Unsupported(f"gep index {v.kind}")
 
 
@@ -122,7 +130,7 @@ def _field_offsets(t):
     return offs, cur
 
 
-def _ptr_term(v, addr, apois=None):
+def _ptr_term(v, addr, apois=None, pw=64):
     """A pointer OPERAND -> its 64-bit address term (and, via `apois`, its poison), or a decline.
 
     Pointers used to be first-class only when they were parameters (or geps of them): `addr` was
@@ -151,13 +159,13 @@ def _ptr_term(v, addr, apois=None):
             return addr[v.name], (apois or {}).get(v.name, "false")
         raise sem.Unsupported(f"pointer {v.name!r} has no known address")
     if v.kind == "null" or (v.kind == "int" and v.int_value == 0):
-        return sem.const(0, 64), "false"
+        return sem.const(0, pw), "false"
     if v.is_poison:
-        return sem.const(0, 64), "true"
+        return sem.const(0, pw), "true"
     raise sem.Unsupported(f"pointer operand {v.kind}")
 
 
-def _gep_address(inst, addr, env):
+def _gep_address(inst, addr, env, pw=64):
     """`getelementptr` -> a new BYTE address. One traversal of the index list over the structured
     source type, replacing three separate text patterns and the struct-layout regex."""
     base = inst.operands[0]
@@ -171,7 +179,7 @@ def _gep_address(inst, addr, env):
     if not idxs:
         raise sem.Unsupported("gep without indices")
     # The first index strides over the source type itself.
-    cur = _scaled(cur, _idx64(idxs[0], env), _type_size(t))
+    cur = _scaled(cur, _idx_term(idxs[0], env, pw), _type_size(t), pw)
     for v in idxs[1:]:
         if t.kind == "struct":
             if v.kind != "int":
@@ -180,21 +188,21 @@ def _gep_address(inst, addr, env):
             offs, _ = _field_offsets(t)
             if k < 0 or k >= len(offs):
                 raise sem.Unsupported("struct field out of range")
-            cur = _addr_off(cur, offs[k])
+            cur = _addr_off(cur, offs[k], pw)
             t = t.fields[k]
         elif t.kind == "array":
-            cur = _scaled(cur, _idx64(v, env), _type_size(t.elem))
+            cur = _scaled(cur, _idx_term(v, env, pw), _type_size(t.elem), pw)
             t = t.elem
         else:
             raise sem.Unsupported(f"gep into {t}")
     return cur
 
 
-def _scaled(base, idx, stride):
-    if idx == sem.const(0, 64):          # a zero index moves nowhere; emit no term for it
+def _scaled(base, idx, stride, pw=64):
+    if idx == sem.const(0, pw):          # a zero index moves nowhere; emit no term for it
         return base
     return f"(bvadd {base} {idx})" if stride == 1 else \
-        f"(bvadd {base} (bvmul {idx} (_ bv{stride} 64)))"
+        f"(bvadd {base} (bvmul {idx} (_ bv{stride} {pw})))"
 
 
 _MAX_CALL_DEPTH = 6
@@ -235,18 +243,19 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         raise sem.Unsupported(f"function {func} not found")
     if len(fn.blocks) > 1:
         raise sem.Unsupported("multi-block")
-    # ADDRESSES ARE 64 BITS THROUGHOUT THIS MODEL -- `null`, every gep, every loaded pointer. On a
-    # module whose datalayout says otherwise that is not a cosmetic mismatch: with `p:32`,
-    # `ptrtoint ptr to i32` is EXACT, and InstCombine's fold of `(ptrtoint A | ptrtoint B) == 0`
-    # to `A == null && B == null` is correct -- while a 64-bit model reads the same instruction as
-    # a TRUNCATION and REFUTES a sound transform. Worse in the other direction: 64-bit gep
-    # arithmetic does not wrap where 32-bit arithmetic does, so two addresses that alias in
-    # reality can be modelled as distinct, and under-approximated aliasing is where false proofs
-    # come from. Declining costs nothing measured -- no proof in the corpus came from the one file
-    # that declares a narrower pointer. Parameterising the width is the real fix and its own change.
-    pb = ir.parse(module_text).ptr_bits
-    if pb != 64:
-        raise sem.Unsupported(f"module pointer width is {pb} bits, not 64")
+    # THE ADDRESS WIDTH COMES FROM THE MODULE'S DATALAYOUT, and every address term in this
+    # function is built at it: `null`, each gep, each loaded pointer, the memory array's own index
+    # sort. It used to be 64 everywhere, which is not a cosmetic mismatch on a module declaring
+    # `p:32`. There `ptrtoint ptr to i32` is EXACT rather than a truncation -- and a 64-bit model
+    # reads InstCombine's fold of `(ptrtoint A | ptrtoint B) == 0` to `A == null && B == null` as
+    # unsound and REFUTES it. The reverse direction is worse: address arithmetic WRAPS at 2**pw,
+    # so computing gep offsets wider keeps two addresses distinct that the real target makes equal,
+    # under-approximating aliasing -- where false proofs come from.
+    pw = ir.parse(module_text).ptr_bits
+    if pw % 8 or not 8 <= pw <= 64:
+        # The byte-addressed array wants whole bytes, and above 64 the gep index handling would
+        # need widening rather than truncation. Neither is hard; neither is exercised.
+        raise sem.Unsupported(f"unsupported pointer width {pw}")
     if bind is not None:
         env, addr, mem, mp = dict(bind[0]), dict(bind[1]), bind[2], bind[3]
         bound_apois = dict(bind[4])
@@ -257,7 +266,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         mem = "mem0"
         # The initial memory is arbitrary but DEFINED -- the same reading `mem0` already had. Both
         # sides start from it, so anything neither writes cancels out of the comparison.
-        mp = "((as const (Array (_ BitVec 64) Bool)) false)"
+        mp = f"((as const (Array (_ BitVec {pw}) Bool)) false)"
         bound_apois = {}
     ret_term, ret_width = None, None
     ret_poison, ub = "false", []
@@ -279,8 +288,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 # A returned POINTER is its address, compared like any other 64-bit value. It was
                 # previously "non-integer return" -- one of the four labels that were really this
                 # one gap.
-                ret_term, ret_poison = _ptr_term(inst.operands[0], addr, apois)
-                ret_width = 64
+                ret_term, ret_poison = _ptr_term(inst.operands[0], addr, apois, pw)
+                ret_width = pw
                 break
             if not t.is_int():
                 raise sem.Unsupported("non-integer return")
@@ -301,8 +310,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             # comes from -- it removes the very disjunct that should have refuted the pair.
             ub.append(apois.get(ptr.name, "false"))
             derefs.append(addr[ptr.name])
-            mem = _store_bytes(mem, addr[ptr.name], vt, w)
-            mp = _store_poison(mp, addr[ptr.name], vp, w)      # the stored value keeps its poison
+            mem = _store_bytes(mem, addr[ptr.name], vt, w, pw)
+            mp = _store_poison(mp, addr[ptr.name], vp, w, pw)  # the stored value keeps its poison
             continue
         if op == "load":
             ptr = inst.operands[0]
@@ -311,13 +320,13 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             # than a poison-free guard: `_load_poison` is never syntactically false, so a guard
             # would decline every `load ptr` and there would be no point to any of this.
             as_ptr = inst.type.kind == "ptr"
-            w = 64 if as_ptr else (inst.type.bits if inst.type.is_int() else None)
+            w = pw if as_ptr else (inst.type.bits if inst.type.is_int() else None)
             if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
                 raise sem.Unsupported("load width/target out of scope")
             base = addr[ptr.name]
             ub.append(apois.get(ptr.name, "false"))     # dereferencing a poison pointer is UB
             derefs.append(base)
-            lp = _load_poison(mp, base, w)
+            lp = _load_poison(mp, base, w, pw)
             # `!noundef` PROMISES the loaded value is neither undef nor poison, and makes it UB if
             # it ever is. Both halves matter: taking the result as definite WITHOUT the UB term
             # would leave a target that violates the promise looking defined, which is the
@@ -327,15 +336,15 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 ub.append(lp)
                 lp = "false"
             if as_ptr:
-                addr[inst.result] = _load_bytes(mem, base, 64)
+                addr[inst.result] = _load_bytes(mem, base, pw, pw)
                 apois[inst.result] = lp
                 continue
-            env[inst.result] = (_load_bytes(mem, base, w), w, lp, "false")
+            env[inst.result] = (_load_bytes(mem, base, w, pw), w, lp, "false")
             continue
         if op == "select" and inst.type.kind == "ptr":
             c, _, cp, cub = sem.value(inst.operands[0], env, 1)
-            a, ap = _ptr_term(inst.operands[1], addr, apois)
-            b, bp = _ptr_term(inst.operands[2], addr, apois)
+            a, ap = _ptr_term(inst.operands[1], addr, apois, pw)
+            b, bp = _ptr_term(inst.operands[2], addr, apois, pw)
             picks_a = f"(= {c} {sem.const(1, 1)})"
             addr[inst.result] = f"(ite {picks_a} {a} {b})"
             # the condition's poison always propagates; only the SELECTED arm's does -- the same
@@ -346,8 +355,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         if op == "icmp" and inst.operands[0].type.kind == "ptr":
             if inst.pred not in sem.ICMP:
                 raise sem.Unsupported(f"icmp predicate {inst.pred!r}")
-            a, ap = _ptr_term(inst.operands[0], addr, apois)
-            b, bp = _ptr_term(inst.operands[1], addr, apois)
+            a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
+            b, bp = _ptr_term(inst.operands[1], addr, apois, pw)
             # Comparing ADDRESSES ignores provenance, which over-approximates aliasing (two
             # pointers into different objects that happen to share an address compare equal here).
             # That direction costs refutations and cannot manufacture proofs.
@@ -359,7 +368,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             # Freeze over a pointer: the address is whatever it was, and it is no longer poison.
             # A source-side choice would need a quantifier this validator does not emit, so the
             # only case decided here is the one where there is no freedom to collapse.
-            a, ap = _ptr_term(inst.operands[0], addr, apois)
+            a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
             if ap != "false":
                 # This validator does not know which SIDE it is translating, and the quantifier
                 # depends on it: a source-side choice is universal, a target-side one is free.
@@ -382,14 +391,14 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             w = inst.type.bits if inst.type.is_int() else None
             if w is None:
                 raise sem.Unsupported(f"ptrtoint to {inst.type}")
-            if w > 64:
-                raise sem.Unsupported(f"ptrtoint to i{w} (wider than an address)")
-            a, ap = _ptr_term(inst.operands[0], addr, apois)
-            term = a if w == 64 else f"((_ extract {w - 1} 0) {a})"
+            if w > pw:
+                raise sem.Unsupported(f"ptrtoint to i{w} (wider than an i{pw} address)")
+            a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
+            term = a if w == pw else f"((_ extract {w - 1} 0) {a})"
             env[inst.result] = (term, w, ap, "false")
             continue
         if op == "getelementptr":
-            addr[inst.result] = _gep_address(inst, addr, env)
+            addr[inst.result] = _gep_address(inst, addr, env, pw)
             continue
         if op == "call" and not inst.indirect and sem.intrinsic_name(inst.callee) is None:
             callee = module.function(inst.callee) if inst.callee else None
@@ -452,9 +461,15 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     if wb != wa or (rb is None) != (ra is None):
         return {"status": "error", "function": func, "reason": "return kind changed"}
     sig = _signature(before_ll, func) or []
-    decls = ["(declare-const mem0 (Array (_ BitVec 64) (_ BitVec 8)))"]
+    # The two sides must agree on the address width before anything is compared -- the memory
+    # array's index sort and every pointer parameter are declared at it, so a pair whose halves
+    # disagree is not two spellings of one program.
+    pw, pw_after = ir.parse(before_ll).ptr_bits, ir.parse(after_ll).ptr_bits
+    if pw != pw_after:
+        return {"status": "unsupported", "function": func, "reason": "pointer width changed"}
+    decls = [f"(declare-const mem0 (Array (_ BitVec {pw}) (_ BitVec 8)))"]
     for w, n in sig:
-        decls.append(f"(declare-const {n} (_ BitVec {64 if w == 'ptr' else w}))")
+        decls.append(f"(declare-const {n} (_ BitVec {pw if w == 'ptr' else w}))")
 
     # NEW-DEREFERENCE guard: this model does not track pointer validity, so it is only sound when the
     # TARGET dereferences no address the SOURCE does not (store removal / reordering / load-hoisting
@@ -489,7 +504,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     ret_bad = ([si.smt_and([f"(not {rbp})", si.smt_or([rap, f"(not (= {rb} {ra}))"])])]
                if rb is not None else [])
     probe = "probe_addr"
-    decls.append(f"(declare-const {probe} (_ BitVec 64))")
+    decls.append(f"(declare-const {probe} (_ BitVec {pw}))")
     sbyte, tbyte = f"(select {mb} {probe})", f"(select {ma} {probe})"
     spois, tpois = f"(select {mbp} {probe})", f"(select {map_} {probe})"
     mem_bad = si.smt_and([f"(not {spois})",

@@ -239,24 +239,45 @@ def main() -> int:
     assert mem_state_tv(z3, wide, wide, "pw")["status"] == "unsupported", \
         "ptrtoint to a type wider than an address must decline"
 
-    # 7h. AND THE DATALAYOUT DECIDES WHETHER `ptrtoint ptr to i32` IS A TRUNCATION AT ALL. This
-    #     model's addresses are 64 bits everywhere -- `null`, every gep, every loaded pointer -- so
-    #     on a module declaring `p:32` it is simply the wrong model. LLVM's own `or.ll` declares
-    #     exactly that, and there InstCombine folds `(ptrtoint A | ptrtoint B) == 0` to
-    #     `A == null && B == null`, which is CORRECT at 32 bits and looks unsound at 64: before
-    #     this decline the model REFUTED two sound real-world transforms (`or.ll` test27, test29),
-    #     which would have been the corpus's first refutations. Costs nothing measured -- no proof
-    #     in the corpus comes from that file.
-    p32 = ('target datalayout = "e-p:32:32:32"\n'
-           "define i32 @dl(ptr %p) {\n  %a = ptrtoint ptr %p to i32\n  ret i32 %a\n}\n")
-    d = mem_state_tv(z3, p32, p32, "dl")
+    # 7h. THE DATALAYOUT DECIDES WHETHER `ptrtoint ptr to i32` IS A TRUNCATION AT ALL, and this
+    #     is the pair that shows the model reads it. LLVM's own `or.ll` declares `p:32:32:32` and
+    #     contains exactly this fold (test27): `(ptrtoint A | ptrtoint B) == 0` becomes
+    #     `A == null && B == null`. At 32-BIT pointers the ptrtoint is EXACT and the fold is
+    #     CORRECT. At 64-bit pointers the very same text truncates, and a pointer like
+    #     0x1_0000_0000 makes the source true where the target is false -- so it is genuinely
+    #     UNSOUND and must refute. Identical instructions, opposite verdicts, and nothing
+    #     distinguishes them but the datalayout line.
+    #
+    #     Before the width was read from the module, addresses were 64 bits everywhere and this
+    #     sound transform REFUTED -- it would have been the corpus's first refutation, and a false
+    #     one. The reverse direction is the dangerous one: address arithmetic wraps at 2**pw, so
+    #     computing gep offsets wider keeps two addresses distinct that the real target makes
+    #     equal, under-approximating aliasing -- where false proofs come from.
+    ptoi = ("define i1 @dl(ptr %A, ptr %B) {\n  %C1 = ptrtoint ptr %A to i32\n"
+            "  %C2 = ptrtoint ptr %B to i32\n  %D = or i32 %C1, %C2\n"
+            "  %E = icmp eq i32 %D, 0\n  ret i1 %E\n}\n")
+    folded = ("define i1 @dl(ptr %A, ptr %B) {\n  %1 = icmp eq ptr %A, null\n"
+              "  %2 = icmp eq ptr %B, null\n  %E = and i1 %1, %2\n  ret i1 %E\n}\n")
+    dl32 = 'target datalayout = "e-p:32:32:32"\n'
+    assert mem_state_tv(z3, dl32 + ptoi, dl32 + folded, "dl")["status"] == "proved", \
+        "at 32-bit pointers ptrtoint to i32 is exact and this real InstCombine fold is sound"
+    v = mem_state_tv(z3, ptoi, folded, "dl")
+    assert v["status"] == "refuted" and v.get("witness"), \
+        ("at 64-bit pointers the same text TRUNCATES and the fold is unsound -- it must refute "
+         "with a witness, or the width is not reaching the model", v)
+    #     A NARROW width is modelled, not merely tolerated: a gep at 16-bit pointers decides, and
+    #     its offsets wrap at 2**16 the way the real target's do.
+    gep = "define ptr @g(ptr %p, i64 %i) {\n  %q = getelementptr i8, ptr %p, i64 %i\n  ret ptr %q\n}\n"
+    dl16 = 'target datalayout = "e-p:16:16:16"\n'
+    assert mem_state_tv(z3, dl16 + gep, dl16 + gep, "g")["status"] == "proved", \
+        "a 16-bit pointer module must be modelled at 16 bits, not declined and not widened"
+    #     ...while a width this model does not handle declines rather than rounding to one it does.
+    #     (LLVM's parser rejects a non-byte-multiple width outright, so only the wide case is
+    #     reachable from real IR.)
+    dl128 = 'target datalayout = "e-p:128:128:128"\n'
+    d = mem_state_tv(z3, dl128 + gep, dl128 + gep, "g")
     assert d["status"] == "unsupported" and "pointer width" in d.get("reason", ""), \
-        ("a module with non-64-bit pointers must decline, not model them as 64", d)
-    #     ...and the identical function at the DEFAULT pointer width decides, so the decline turns
-    #     on the datalayout rather than on anything else in the text.
-    p64 = p32.replace('target datalayout = "e-p:32:32:32"\n', "")
-    assert mem_state_tv(z3, p64, p64, "dl")["status"] == "proved", \
-        "the same function must decide at the default 64-bit pointer width"
+        ("a pointer width past what the gep index handling covers must decline", d)
 
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
