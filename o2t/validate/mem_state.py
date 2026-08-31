@@ -46,6 +46,23 @@ from o2t.validate import semantics as sem
 # `Instruction.source_type` arrives structured, field offsets are a walk over `type.fields`, and the
 # three patterns collapse into one traversal of the index list.
 
+# --- why a non-byte-width access DECLINES, so nobody re-derives it -------------------------------
+# `store i1` / `load i1` look like the cheapest win in the decline census (i1 is everywhere in real
+# code), and they are not available to this representation at all. Memory here is an array of whole
+# BYTES. Alive2 tracks how many BITS of each byte were written, and the difference is observable:
+#
+#   store i1 %c, ptr %p ; %v = load i8, ptr %p     -- Alive2: %v is POISON
+#                                                     ("written with 1 bits", byte #0)
+#
+# so a byte written by an i1 store is PARTIALLY DEFINED. Modelling it as a zero-padded byte asserts
+# memory is more defined than reality: `store i8 0` and `store i1 false` would compare EQUAL, while
+# the second leaves the padding unwritten -- a false proof. Alive2 confirms the asymmetry directly:
+# `zext i1` REFINES the loaded byte, and the reverse does not verify. Taking the low bit on the load
+# side does not work either -- `load i1` and `trunc (load i8)` fail to verify in BOTH directions.
+#
+# So the whole non-byte-width bucket (i1, i4, i67, i177) is ONE job -- per-bit definedness in the
+# memory model -- not a small one, and not several. Declining is the sound answer until that exists.
+
 def _addr_off(addr, off, pw=64):
     """Step an address by `off` BYTES, in the module's own pointer width. Doing this at a fixed 64
     bits was the model's oldest wrong assumption: address arithmetic WRAPS at 2**pw, and computing

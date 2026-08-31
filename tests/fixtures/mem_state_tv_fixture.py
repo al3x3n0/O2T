@@ -279,6 +279,25 @@ def main() -> int:
     assert d["status"] == "unsupported" and "pointer width" in d.get("reason", ""), \
         ("a pointer width past what the gep index handling covers must decline", d)
 
+    # 7i. A NON-BYTE-WIDTH ACCESS MUST DECLINE, and this pins a decline rather than a capability.
+    #     `i1` memory reads as the cheapest entry in the decline census and is not available to a
+    #     byte array at all: Alive2 tracks how many BITS of a byte were written, and after
+    #     `store i1` a `load i8` of that byte is POISON ("written with 1 bits"). Modelling the byte
+    #     as zero-padded would make `store i8 0` and `store i1 false` compare equal -- a false
+    #     proof. Taking the low bit on the load side fails too: `load i1` and `trunc (load i8)` do
+    #     not verify in EITHER direction. Asserted so a later "obvious" fix has to confront this.
+    for f, why in ((("define void @w(i1 %c, ptr %p) {\n  store i1 %c, ptr %p\n  ret void\n}\n"),
+                    "store i1"),
+                   (("define i1 @w2(ptr %p) {\n  %v = load i1, ptr %p\n  ret i1 %v\n}\n"),
+                    "load i1"),
+                   (("define void @w3(i4 %c, ptr %p) {\n  store i4 %c, ptr %p\n  ret void\n}\n"),
+                    "store i4")):
+        fname = f.split("@")[1].split("(")[0]
+        d = mem_state_tv(z3, f, f, fname)
+        assert d["status"] == "unsupported", \
+            (f"a non-byte-width access ({why}) must decline -- a byte array cannot represent a "
+             "partially-written byte", d)
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "
