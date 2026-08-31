@@ -298,6 +298,52 @@ def main() -> int:
             (f"a non-byte-width access ({why}) must decline -- a byte array cannot represent a "
              "partially-written byte", d)
 
+    # 7j. ALLOCAS GET ADDRESSES, and the two facts asserted about them are simply TRUE of a fresh
+    #     object: never null, and never overlapping another one. Asserting a true fact is not an
+    #     approximation -- it moves the model TOWARDS reality, so the proofs it enables are right.
+    nn = ("define i1 @a1() {\n  %a = alloca i32\n  %r = icmp eq ptr %a, null\n  ret i1 %r\n}\n")
+    assert mem_state_tv(z3, nn, "define i1 @a1() {\n  ret i1 false\n}\n", "a1")["status"] \
+        == "proved", "an alloca is never null"
+    two = ("define i1 @a2() {\n  %a = alloca i32\n  %b = alloca i32\n"
+           "  %r = icmp eq ptr %a, %b\n  ret i1 %r\n}\n")
+    assert mem_state_tv(z3, two, "define i1 @a2() {\n  ret i1 false\n}\n", "a2")["status"] \
+        == "proved", "two allocas never overlap"
+    #     THE NON-WRAPPING FACT IS LOad-BEARING and was found by this pair refuting. Disjointness
+    #     written only as `a + size <= b OR b + size <= a` is SATISFIABLE WITH a == b: near the top
+    #     of the address space `a + 4` wraps below `a`, so the solver produced an "overlap-free"
+    #     model in which two allocas were the same address. A real object never wraps.
+    #
+    #     What is NOT asserted matters as much. Allocas are not ORDERED, so this must not prove:
+    ordd = ("define i1 @a3() {\n  %a = alloca i32\n  %b = alloca i32\n"
+            "  %r = icmp ult ptr %a, %b\n  ret i1 %r\n}\n")
+    assert mem_state_tv(z3, ordd, "define i1 @a3() {\n  ret i1 true\n}\n", "a3")["status"] \
+        != "proved", "nothing orders two allocas -- claiming one is below the other must not prove"
+    #     ...and an alloca compared with a pointer of UNKNOWN PROVENANCE DECLINES. They really are
+    #     distinct, but the caller's object extents are unknown so the fact cannot be stated; left
+    #     alone the solver aliases them and the pair refutes. LLVM folds exactly this comparison
+    #     using alias analysis, so refuting would be a FALSE REFUTATION on real code, not a missed
+    #     proof -- the one outcome this corpus has never produced.
+    vs_p = ("define i1 @a4(ptr %p) {\n  %a = alloca i32\n  %r = icmp eq ptr %a, %p\n"
+            "  ret i1 %r\n}\n")
+    d = mem_state_tv(z3, vs_p, "define i1 @a4(ptr %p) {\n  ret i1 false\n}\n", "a4")
+    assert d["status"] == "unsupported", \
+        ("an alloca vs an unknown pointer must decline, never refute a sound fold", d)
+    #     ACCESS through an alloca declines, including through a gep off one. Alloca memory is dead
+    #     at return, so it must not join the final-memory comparison -- and EXCLUDING bytes from
+    #     that comparison is the shape that hides a real difference. Keeping alloca bytes out of
+    #     memory entirely leaves nothing to exclude.
+    for f, why in (("define void @a5() {\n  %a = alloca i32\n  store i32 1, ptr %a\n  ret void\n}\n",
+                    "store"),
+                   ("define i32 @a6() {\n  %a = alloca i32\n  %v = load i32, ptr %a\n  ret i32 %v\n}\n",
+                    "load"),
+                   ("define void @a7() {\n  %a = alloca [4 x i32]\n"
+                    "  %g = getelementptr [4 x i32], ptr %a, i64 0, i64 1\n"
+                    "  store i32 1, ptr %g\n  ret void\n}\n", "store via a gep off one")):
+        fname = f.split("@")[1].split("(")[0]
+        d = mem_state_tv(z3, f, f, fname)
+        assert d["status"] == "unsupported" and "alloca" in d.get("reason", ""), \
+            (f"{why} through an alloca must decline -- its bytes are not modelled", d)
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "

@@ -294,6 +294,11 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
     # defined. That silently dropped the callee's poison-deref UB, so the same program written with
     # the access inside a call and with it inlined by hand REFUTED against itself.
     apois: dict = dict(bound_apois)
+    # Allocas get real addresses, and every register carrying one is tracked so that ACCESS through
+    # them can be declined -- see the alloca handler for why that restriction is what keeps this
+    # increment sound.
+    allocas: list = []                   # [(symbol, size in bytes)] for this function
+    stack: set = set()                   # registers holding an alloca-derived address
 
     for inst in fn.blocks[0].instructions:
         op = inst.op
@@ -319,6 +324,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             w = val.type.bits if val.type.is_int() else None
             if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
                 raise sem.Unsupported("store width/target out of scope")
+            if ptr.name in stack:
+                raise sem.Unsupported("store to an alloca (its bytes are not modelled)")
             vt, _, vp, vub = sem.value(val, env, w)
             ub.append(vub)
             # Dereferencing a poison pointer is UB whichever way the access goes. The load path
@@ -340,6 +347,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             w = pw if as_ptr else (inst.type.bits if inst.type.is_int() else None)
             if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
                 raise sem.Unsupported("load width/target out of scope")
+            if ptr.name in stack:
+                raise sem.Unsupported("load from an alloca (its bytes are not modelled)")
             base = addr[ptr.name]
             ub.append(apois.get(ptr.name, "false"))     # dereferencing a poison pointer is UB
             derefs.append(base)
@@ -362,6 +371,9 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             c, _, cp, cub = sem.value(inst.operands[0], env, 1)
             a, ap = _ptr_term(inst.operands[1], addr, apois, pw)
             b, bp = _ptr_term(inst.operands[2], addr, apois, pw)
+            for src_op in (inst.operands[1], inst.operands[2]):
+                if src_op.is_reg and src_op.name in stack:
+                    stack.add(inst.result)
             picks_a = f"(= {c} {sem.const(1, 1)})"
             addr[inst.result] = f"(ite {picks_a} {a} {b})"
             # the condition's poison always propagates; only the SELECTED arm's does -- the same
@@ -372,6 +384,18 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         if op == "icmp" and inst.operands[0].type.kind == "ptr":
             if inst.pred not in sem.ICMP:
                 raise sem.Unsupported(f"icmp predicate {inst.pred!r}")
+            # COMPARING AN ALLOCA WITH SOMETHING THAT IS NOT ONE HAS NO STATED ANSWER HERE. The
+            # facts asserted about an alloca cover null (never) and another alloca (never equal);
+            # against a POINTER PARAMETER the model deliberately says nothing, because the caller's
+            # object extents are unknown. Left alone the solver is free to alias them and the pair
+            # REFUTES -- and LLVM really does fold such a comparison using alias analysis, so this
+            # would manufacture a false refutation on real code rather than a missed proof.
+            # Declining keeps the over-approximation from becoming a wrong verdict.
+            def _stacky(o):
+                return o.is_reg and o.name in stack
+            lhs, rhs = inst.operands[0], inst.operands[1]
+            if _stacky(lhs) != _stacky(rhs) and not (lhs.kind == "null" or rhs.kind == "null"):
+                raise sem.Unsupported("icmp between an alloca and a pointer of unknown provenance")
             a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
             b, bp = _ptr_term(inst.operands[1], addr, apois, pw)
             # Comparing ADDRESSES ignores provenance, which over-approximates aliasing (two
@@ -414,7 +438,37 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             term = a if w == pw else f"((_ extract {w - 1} 0) {a})"
             env[inst.result] = (term, w, ap, "false")
             continue
+        if op == "alloca":
+            # AN ALLOCA IS A FRESH OBJECT, and the two facts these folds turn on are simply TRUE of
+            # it: its address is never null, and distinct allocas never overlap. Asserting a true
+            # fact is not an approximation -- it narrows the model TOWARDS reality, and the proofs
+            # it enables are correct. (Disjointness from a POINTER PARAMETER is a different matter:
+            # the caller's object extents are unknown, so it cannot be stated exactly and is simply
+            # LEFT UNSAID. The solver may then alias them, which over-approximates -- it costs
+            # refutations and cannot manufacture proofs, the same trade the pointer `icmp` makes.)
+            #
+            # ACCESS through an alloca is DECLINED below, deliberately. Alloca memory is dead at
+            # return, so it must not take part in the final-memory comparison -- and excluding
+            # bytes from that comparison is exactly the shape that hides a real difference. Keeping
+            # alloca bytes out of memory entirely leaves nothing to exclude. The folds this reaches
+            # are pure address reasoning; the ones that store need the external-call clobber they
+            # are really waiting on anyway.
+            if inst.alloc_type is None:
+                raise sem.Unsupported("alloca without an allocated type")
+            # An alloca always carries an element-count operand; only the constant-1 case has a
+            # size this model can state, and the size is what disjointness is written in terms of.
+            n_elems = inst.operands[0] if inst.operands else None
+            if n_elems is not None and not (n_elems.kind == "int" and n_elems.int_value == 1):
+                raise sem.Unsupported("alloca with a non-unit element count")
+            sym = f"alloca_{func}_{str(inst.result).lstrip('%').replace('.', '_')}"
+            allocas.append((sym, _type_size(inst.alloc_type)))
+            addr[inst.result] = sym
+            stack.add(inst.result)
+            continue
         if op == "getelementptr":
+            base = inst.operands[0]
+            if base.is_reg and base.name in stack:
+                stack.add(inst.result)
             addr[inst.result] = _gep_address(inst, addr, env, pw)
             continue
         if op == "call" and not inst.indirect and sem.intrinsic_name(inst.callee) is None:
@@ -434,9 +488,10 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                         capois[pname] = apois.get(a.name, "false")
                     else:
                         cenv[pname] = sem.value(a, env, kind)
-                cret, cw, mem, cderefs, cp, cub, mp = _mem_translate(
+                cret, cw, mem, cderefs, cp, cub, mp, calloc = _mem_translate(
                     module_text, callee.name, module_text, (cenv, caddr, mem, mp, capois),
                     depth + 1)
+                allocas.extend(calloc)   # an inlined callee's allocas are objects here too
                 derefs.extend(cderefs)
                 ub.append(cub)
                 if inst.result is not None and not inst.type.kind == "void":
@@ -447,7 +502,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         sem.evaluate(inst, env, {})                     # scalar op; alloca/other shapes decline here
     # UB is a whole-function property: a div-by-zero anywhere is UB even if its result is dead.
     ub += [v[3] for v in env.values()]
-    return ret_term, ret_width, mem, derefs, ret_poison, si.smt_or(ub), mp
+    return ret_term, ret_width, mem, derefs, ret_poison, si.smt_or(ub), mp, allocas
 
 
 def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
@@ -471,8 +526,8 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     if _ret_kind(before_ll, func) != _ret_kind(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "return type changed"}
     try:
-        rb, wb, mb, db, rbp, sub, mbp = _mem_translate(before_ll, func)
-        ra, wa, ma, da, rap, tub, map_ = _mem_translate(after_ll, func)
+        rb, wb, mb, db, rbp, sub, mbp, alc_b = _mem_translate(before_ll, func)
+        ra, wa, ma, da, rap, tub, map_, alc_a = _mem_translate(after_ll, func)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if wb != wa or (rb is None) != (ra is None):
@@ -488,6 +543,34 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     for w, n in sig:
         decls.append(f"(declare-const {n} (_ BitVec {pw if w == 'ptr' else w}))")
 
+    # ALLOCA FACTS, asserted as ASSUMPTIONS on both queries. Each alloca is named after the
+    # function and its result register, so the two sides agree on which object is which; an alloca
+    # only one side has simply carries its own facts. Two facts, both TRUE of a fresh object:
+    # its address is not null, and distinct objects do not overlap. Nothing is said about a
+    # POINTER PARAMETER -- the caller's extents are unknown, so the solver stays free to alias
+    # them, which over-approximates in the direction that costs refutations, never proofs.
+    alloc_all = {n: sz for n, sz in [*alc_b, *alc_a]}
+    for n in alloc_all:
+        decls.append(f"(declare-const {n} (_ BitVec {pw}))")
+    facts = []
+    for n, sz in alloc_all.items():
+        # Not null...
+        facts.append(f"(not (= {n} {sem.const(0, pw)}))")
+        # ...and the object does not WRAP the address space. Without this the disjointness below
+        # is satisfiable while two allocas are EQUAL: at a = c = 2**pw - 2, `a + 4` wraps to 2 and
+        # `a + 4 <= c` holds, so the solver reported an overlap-free model in which %a and %c are
+        # the same address, and test40 (`icmp eq` between distinct allocas) REFUTED. A real object
+        # never wraps, so saying it is a true fact, not a convenience.
+        facts.append(f"(bvule {n} (bvadd {n} {sem.const(sz, pw)}))")
+    names = sorted(alloc_all)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            # Disjoint byte ranges: a + size(a) <= b  OR  b + size(b) <= a, unsigned.
+            facts.append(si.smt_or([
+                f"(bvule (bvadd {a} {sem.const(alloc_all[a], pw)}) {b})",
+                f"(bvule (bvadd {b} {sem.const(alloc_all[b], pw)}) {a})"]))
+    assume = si.smt_and(facts) if facts else "true"
+
     # NEW-DEREFERENCE guard: this model does not track pointer validity, so it is only sound when the
     # TARGET dereferences no address the SOURCE does not (store removal / reordering / load-hoisting
     # where the load already occurred). If some target address can differ from EVERY source address,
@@ -501,7 +584,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         pdecls = decls + [f"(declare-const poison_{w} (_ BitVec {w}))"
                           for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", new_deref)})]
         probe = "\n".join(["(set-logic QF_ABV)", *pdecls,
-                           f"(assert {new_deref})", "(check-sat)", ""])
+                           f"(assert {assume})", f"(assert {new_deref})", "(check-sat)", ""])
         try:
             pout = subprocess.run([z3_bin, "-in"], input=probe, capture_output=True, text=True,
                                   timeout=timeout).stdout
@@ -535,7 +618,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     decls += [f"(declare-const poison_{w} (_ BitVec {w}))"
               for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", refute + new_deref_text)})]
     smt = "\n".join(["(set-logic QF_ABV)", *decls,
-                     f"(assert {refute})", "(check-sat)", "(get-model)", ""])
+                     f"(assert {assume})", f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:
         out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
                              timeout=timeout).stdout
