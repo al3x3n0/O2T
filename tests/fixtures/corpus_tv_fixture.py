@@ -175,6 +175,68 @@ def main() -> int:
                                  "q")["status"] == "refuted", \
         "bswap must not be modelled as the identity"
 
+    # 9. FP CONVERSIONS ARE UNINTERPRETED FUNCTIONS -- the weakest honest model, not a claim about
+    #    IEEE semantics. Every `fptosi` fold in LLVM's tests has the fold on the INTEGER side
+    #    (`%conv = fptosi float %x to i32` then an `icmp` against `%i +/- 1`), so what they need is
+    #    that the conversion is SOME deterministic function of its operand -- not which one.
+    conv = ("define i32 @c(float %x){\n %a = fptosi float %x to i32\n"
+            " %b = fptosi float %x to i32\n %r = sub i32 %a, %b\n ret i32 %r\n}\n")
+    assert si.validate_transform(z3, conv, "define i32 @c(float %x){\n ret i32 0\n}\n",
+                                 "c")["status"] == "proved", \
+        "the same conversion of the same operand must be the same value"
+    #    ...but the model must NOT know WHICH value. If any particular constant became provable,
+    #    the uninterpreted function has quietly been given semantics it does not have.
+    only_a = "define i32 @c(float %x){\n %a = fptosi float %x to i32\n ret i32 %a\n}\n"
+    assert si.validate_transform(z3, only_a, "define i32 @c(float %x){\n ret i32 1\n}\n",
+                                 "c")["status"] != "proved", \
+        "an uninterpreted conversion must not be provably equal to any particular constant"
+    #    ...and two DIFFERENT operands must not be assumed to convert alike.
+    two = ("define i32 @d(float %x, float %y){\n %a = fptosi float %x to i32\n"
+           " %b = fptosi float %y to i32\n %r = sub i32 %a, %b\n ret i32 %r\n}\n")
+    assert si.validate_transform(z3, two, "define i32 @d(float %x, float %y){\n ret i32 0\n}\n",
+                                 "d")["status"] != "proved", \
+        "different operands must not be assumed to convert to the same value"
+    #    THE ASSERTIONS ABOVE ARE NOT ENOUGH ON THEIR OWN -- they pass for a WRONG CONCRETE model
+    #    just as happily as for an uninterpreted one (checked: modelling `fptosi` as the identity
+    #    on the bits satisfies every one of them). What separates the two is that a concrete model
+    #    RELATES the conversion to the operand's bits, and an uninterpreted one must not: nothing
+    #    may connect `fptosi %x` to `bitcast %x`.
+    rel = ("define i1 @e(float %x){\n %a = fptosi float %x to i32\n"
+           " %b = bitcast float %x to i32\n %c = icmp eq i32 %a, %b\n ret i1 %c\n}\n")
+    assert si.validate_transform(z3, rel, "define i1 @e(float %x){\n ret i1 true\n}\n",
+                                 "e")["status"] != "proved", \
+        ("a conversion must not be provably related to its operand's BITS -- if this proves, the "
+         "uninterpreted function has been given a concrete meaning it does not have")
+    #    ...and the POISON predicate needs its own tooth for the same reason. `fptosi` is poison
+    #    when the value does not fit or is NaN, so a TARGET that introduces one is not
+    #    unconditionally defined. `icmp eq %a, %a` is true for any DEFINED %a, so without the
+    #    poison predicate this proves against `true` -- and a target that can be poison where the
+    #    source never is, is exactly the false-proof direction.
+    #    The operand is `noundef` DELIBERATELY: with a plain parameter the operand's OWN poison
+    #    already blocks the proof, so the test would pass whether or not the conversion contributes
+    #    any poison of its own -- it would gate nothing. Pinning the operand definite leaves the
+    #    conversion's poison as the only thing that can stop it.
+    #    A REFUTATION MUST NEVER COME OUT OF AN UNINTERPRETED FUNCTION. The asymmetry is the whole
+    #    reason one is usable here: it permits EVERY function, so `unsat` holds for the real
+    #    conversion too, while `sat` may be a witness using a function the real one never realises.
+    #    This is a REAL LLVM fold (`fpext` preserves the sign bit, so testing the sign of the
+    #    widened double IS testing the sign of the float). The model cannot know that -- it must
+    #    DECLINE, and reporting a miscompile here would be a false refutation, which is exactly
+    #    what happened before this guard: two of them on LLVM's own tests.
+    sgn = ("define i1 @g(float %x){\n %f = fpext float %x to double\n"
+           " %b = bitcast double %f to i64\n %r = icmp slt i64 %b, 0\n ret i1 %r\n}\n")
+    sgn_t = ("define i1 @g(float %x){\n %b = bitcast float %x to i32\n"
+             " %r = icmp slt i32 %b, 0\n ret i1 %r\n}\n")
+    v = si.validate_transform(z3, sgn, sgn_t, "g")
+    assert v["status"] == "unsupported" and v.get("guard") == "uninterpreted-fp", \
+        ("a fold that turns on real FP semantics must DECLINE, never be refuted", v)
+
+    pois = ("define i1 @f(float noundef %x){\n %a = fptosi float %x to i32\n"
+            " %c = icmp eq i32 %a, %a\n ret i1 %c\n}\n")
+    assert si.validate_transform(z3, "define i1 @f(float noundef %x){\n ret i1 true\n}\n", pois,
+                                 "f")["status"] != "proved", \
+        ("a target whose conversion may be poison must not prove against an always-true source")
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "

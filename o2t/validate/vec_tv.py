@@ -550,6 +550,9 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
     if wb != wa:
         return {"status": "error", "function": func, "reason": "lane width changed"}
     ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]
+    # The shared semantics layer can introduce constant-expression and uninterpreted-conversion
+    # symbols wherever it is called; every validator that calls it owes their declarations.
+    ds += si.sem_extra_decls(f"(not (= {rb} {ra}))")
     smt = "\n".join(["(set-logic QF_BV)", *ds, f"(assert (not (= {rb} {ra})))", "(check-sat)",
                      "(get-model)", ""])
     try:
@@ -602,6 +605,8 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     src_fresh = [(n, w) for n, w in fresh if n.endswith("_source")]
     tgt_fresh = [(n, w) for n, w in fresh if not n.endswith("_source")]
     ds = [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(set(decls))]
+    # The shared semantics layer can introduce constant-expression and uninterpreted-conversion
+    # symbols wherever it is called; every validator that calls it owes their declarations.
     ds += [f"(declare-const {n} (_ BitVec {w}))" for n, w in tgt_fresh]
     # one SHARED Bool per poison-capable parameter lane: it is part of the input, not a choice
     # either side makes, so it is free in the refutation and needs no quantifier.
@@ -650,6 +655,7 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     if src_fresh:
         binders = " ".join(f"({n} (_ BitVec {w}))" for n, w in src_fresh)
         refute = f"(forall ({binders}) {refute})"
+    ds += si.sem_extra_decls(refute)          # after `refute` exists, not before it
     logic = "BV" if src_fresh else "QF_BV"
     smt = "\n".join([f"(set-logic {logic})", *ds, f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:

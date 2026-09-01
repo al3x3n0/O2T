@@ -219,6 +219,16 @@ def wall_backstop(timeout, rlimit):
     return max(timeout or 0, RLIMIT_WALL_BACKSTOP)
 
 
+def sem_extra_decls(*terms) -> list[str]:
+    """Declarations for the symbols the SHARED semantics layer can introduce anywhere it is called:
+    constant expressions whose value LLVM could not compute, and the uninterpreted FP conversions.
+
+    Every validator that calls into `semantics` owes these. Only the scalar one emitted them, so a
+    `store i32 ptrtoint (ptr @g to i32), ptr %p` came back from the memory model as a solver ERROR
+    ("unknown constant cexpr_...") instead of a verdict."""
+    return sem.const_expr_decls(*terms) + sem.uf_decls(*terms)
+
+
 def with_rlimit(smt: str, rlimit: int | None) -> str:
     """Insert `(set-option :rlimit N)` after the logic line, where z3 requires it."""
     if not rlimit:
@@ -258,7 +268,11 @@ def _smt(decls, goal, get_model=False, forall=()):
     let the solver CHOOSE the source's value to make the two differ, which manufactures false
     REFUTATIONS. Quantifying costs the quantifier-free logic -- `BV` is still decidable, and an
     `unknown` from the solver is reported as such rather than guessed at."""
-    logic = "BV" if forall else "QF_BV"
+    # UNINTERPRETED FUNCTIONS need the logic to say so: QF_BV has none, and z3 answers
+    # "logic does not support" rather than guessing. Widened only when one is actually present, so
+    # every query that did not use them keeps the exact logic it had.
+    uf = "UF" if ("(uf_" in goal or "(ufp_" in goal) else ""
+    logic = f"{uf}BV" if forall else f"QF_{uf}BV"
     if forall:
         binders = " ".join(f"({n} (_ BitVec {w}))" for n, w in forall)
         goal = f"(forall ({binders}) {goal})"
@@ -411,7 +425,9 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
               for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", refute)})]
     # ...and one for every CONSTANT EXPRESSION whose value LLVM could not compute. Unconstrained,
     # because a fold involving a global's address must hold for every address it could have.
-    decls += sem.const_expr_decls(refute)
+    # ...and the symbols the shared semantics layer can introduce: constant expressions LLVM could
+    # not compute, and the uninterpreted FP conversions. See `sem_extra_decls`.
+    decls += sem_extra_decls(refute)
     smt = _smt(decls, refute, get_model=True, forall=src_fresh)
     try:
         head, out = _query(z3_bin, smt, timeout, rlimit)
@@ -420,6 +436,19 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     if head == "unsat":
         verdict = {"status": "proved", "function": func}
     elif head == "sat":
+        # A REFUTATION CANNOT BE TRUSTED ONCE AN UNINTERPRETED FUNCTION IS IN THE QUERY, and the
+        # asymmetry is the whole point of using one. A UF permits EVERY function, so:
+        #   unsat  -- holds for every function, therefore for the real conversion. Trustworthy.
+        #   sat    -- the witness may use a function the REAL conversion never realises. NOT a
+        #             miscompile, just something this model cannot see.
+        # `signbit_bitcast_fpext` is exactly that: `fpext` preserves the sign bit, so testing the
+        # sign of the widened double IS testing the sign of the float. The model does not know
+        # that, invents a conversion that flips it, and reports a sound LLVM fold as a miscompile.
+        # Two false refutations on LLVM's own tests, where the corpus had had none.
+        if "(uf_" in refute or "(ufp_" in refute:
+            return {"status": "unsupported", "function": func, "guard": "uninterpreted-fp",
+                    "reason": "refutation depends on an uninterpreted FP conversion (the witness "
+                              "may use a function the real one never realises)"}
         verdict = {"status": "refuted", "function": func, "witness": out}
     elif head == "unknown":
         # The DETERMINISTIC budget ran out. Reported as `timeout` because it is the same outcome --

@@ -304,6 +304,55 @@ def const_expr_sym(text: str, w: int) -> str:
     return f"cexpr_{hashlib.sha256(text.encode()).hexdigest()[:12]}_{w}"
 
 
+# --- floating point as UNINTERPRETED FUNCTIONS -----------------------------------------------
+# The FP conversions are the largest decline cluster, and opening them shows the folds do not
+# actually depend on floating-point semantics. All ten `fptosi` functions have this shape:
+#
+#     %conv = fptosi float %x to i32 ; %dec = sub nsw i32 %i, 1 ; icmp sgt i32 %conv, %dec
+#
+# The fold is entirely on the INTEGER side -- `%conv` is just *some* i32, and the transform never
+# inspects its provenance. So what is needed is not a float theory but the weakest honest model of
+# the instruction: an UNKNOWN function of its operand. An uninterpreted function is exactly that.
+#
+# Why it is sound rather than a shortcut: it permits EVERY function, so it is an over-approximation
+# of the real conversion. Anything proved under it holds for the real one. What it costs is
+# refutations that depend on the actual numeric result -- and a fold that needs those is a fold this
+# model should decline, not one it should guess at. Crucially the SAME operand yields the SAME
+# result on both sides, which is the property these folds turn on.
+#
+# It also does not claim IEEE semantics anywhere, so the containment that keeps the bit-level float
+# work exact (see FAST_MATH and the fixture) is not weakened: nothing here reads a float as a NUMBER.
+FP_UNINTERPRETED = {"fptosi", "fptoui", "sitofp", "uitofp", "fpext", "fptrunc"}
+
+_UF_RE = __import__("re").compile(r"\b(uf_[a-z]+_\d+_\d+)\b")
+_UFP_RE = __import__("re").compile(r"\b(ufp_[a-z]+_\d+_\d+)\b")
+
+
+def uf_name(op: str, src_w: int, dst_w: int) -> str:
+    return f"uf_{op}_{src_w}_{dst_w}"
+
+
+def uf_decls(*terms) -> list[str]:
+    """`(declare-fun ...)` for every uninterpreted FP conversion appearing in these terms.
+
+    Two per operation: the VALUE it produces, and whether it is POISON -- `fptosi` is poison when
+    the value does not fit the destination or is NaN, and modelling it as always-defined would make
+    a target look more defined than it is, which is where false proofs come from."""
+    out, seen = [], {}
+    for t in terms:
+        for m in _UF_RE.finditer(t or ""):
+            seen[m.group(1)] = None
+        for m in _UFP_RE.finditer(t or ""):
+            seen[m.group(1)] = None
+    for n in sorted(seen):
+        _, _, sw, dw = n.split("_")
+        if n.startswith("ufp_"):
+            out.append(f"(declare-fun {n} ((_ BitVec {sw})) Bool)")
+        else:
+            out.append(f"(declare-fun {n} ((_ BitVec {sw})) (_ BitVec {dw}))")
+    return out
+
+
 def const_expr_decls(*terms) -> list[str]:
     """`(declare-const ...)` for every constant-expression symbol appearing in these terms."""
     seen = {}
@@ -411,6 +460,18 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
         env[dst] = (f"(ite {picks_t} {t} {f})", w, smt_or([cp, arm]), smt_or([cu, tu, fu]))
         return
 
+    if op in FP_UNINTERPRETED:
+        sw = bit_width(inst.operands[0].type)
+        dw = bit_width(inst.type)
+        if sw is None or dw is None:
+            raise Unsupported(f"{op} between types this model has no bit view of")
+        a, _, ap, au = value(inst.operands[0], env, sw)
+        n = uf_name(op, sw, dw)
+        # Poison: `fptosi` is poison when the value does not fit or is NaN, and the others have
+        # their own edges. Carried as a second uninterpreted predicate over the SAME operand, so the
+        # two sides agree on when it fires without this model claiming to know when that is.
+        env[dst] = (f"({n} {a})", dw, smt_or([ap, f"(ufp_{op}_{sw}_{dw} {a})"]), au)
+        return
     if op in ("zext", "sext", "trunc"):
         src = inst.src_type or inst.operands[0].type
         src_w, dst_w = int_width(src), int_width(inst.type)

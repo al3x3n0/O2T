@@ -584,6 +584,7 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         new_deref_text = new_deref
         pdecls = decls + [f"(declare-const poison_{w} (_ BitVec {w}))"
                           for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", new_deref)})]
+        pdecls += sem.const_expr_decls(new_deref) + sem.uf_decls(new_deref)
         probe = "\n".join(["(set-logic QF_ABV)", *pdecls,
                            f"(assert {assume})", f"(assert {new_deref})", "(check-sat)", ""])
         try:
@@ -618,6 +619,13 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     # an unconstrained constant is the right declaration, the poison-ness being carried separately.
     decls += [f"(declare-const poison_{w} (_ BitVec {w}))"
               for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", refute + new_deref_text)})]
+    # ...and the symbols the SHARED semantics layer can introduce from anywhere it is called. A
+    # CONSTANT EXPRESSION reaches here through any `sem.value` -- `store i32 ptrtoint (ptr @g to
+    # i32), ptr %p` is enough -- and this model declared none of them, so such a function came back
+    # a solver ERROR ("unknown constant cexpr_...") rather than a verdict. Every validator that
+    # calls into `semantics` owes these declarations, not just the scalar one.
+    decls += sem.const_expr_decls(refute, new_deref_text)
+    decls += sem.uf_decls(refute, new_deref_text)
     smt = "\n".join(["(set-logic QF_ABV)", *decls,
                      f"(assert {assume})", f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:

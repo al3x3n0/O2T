@@ -344,6 +344,18 @@ def main() -> int:
         assert d["status"] == "unsupported" and "alloca" in d.get("reason", ""), \
             (f"{why} through an alloca must decline -- its bytes are not modelled", d)
 
+    # 7k. EVERY VALIDATOR THAT CALLS THE SHARED SEMANTICS LAYER OWES ITS DECLARATIONS. A constant
+    #     expression LLVM cannot compute becomes a symbol, and it reaches this model through any
+    #     `sem.value` -- a single `store i32 ptrtoint (ptr @g to i32), ptr %p` is enough. Only the
+    #     SCALAR validator declared such symbols, so this model returned a solver ERROR ("unknown
+    #     constant cexpr_...") instead of a verdict. Not a wrong answer, but not an answer at all,
+    #     and the same shape applies to the uninterpreted FP conversions.
+    ce = ("@g = external global i32\n"
+          "define void @ce(ptr %p) {\n  store i32 ptrtoint (ptr @g to i32), ptr %p\n"
+          "  ret void\n}\n")
+    assert mem_state_tv(z3, ce, ce, "ce")["status"] == "proved", \
+        "a constant expression stored through a pointer must reach a VERDICT, not a solver error"
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "

@@ -203,16 +203,25 @@ def main() -> int:
                       (" %r = frem float %x, %y\n ret float %r", "frem"),
                       (" %c = fcmp oeq float %x, %y\n %r = select i1 %c, float %x, float %y\n"
                        " ret float %r", "fcmp"),
-                      (" %i = fptosi float %x to i32\n %r = sitofp i32 %i to float\n"
-                       " ret float %r", "fptosi/sitofp"),
-                      (" %d = fpext float %x to double\n %r = fptrunc double %d to float\n"
-                       " ret float %r", "fpext/fptrunc")):
+                      ):
         src = f"define float @f(float %x, float %y){{\n{body}\n}}\n"
         try:
             _new(src, "f")
             raise AssertionError(f"{why} needs real FP semantics and must decline in a bits model")
         except sem.Unsupported:
             pass
+
+    #    THE CONVERSIONS ARE THE EXCEPTION, AND FOR A REASON WORTH STATING. They are modelled as
+    #    UNINTERPRETED FUNCTIONS -- an unknown function of the operand -- which is the WEAKEST
+    #    honest model, not a claim about IEEE semantics. It permits every function, so it
+    #    over-approximates the real conversion, and anything proved under it holds for the real one.
+    #    Nothing here reads a float as a NUMBER, so the containment above is intact. The behavioural
+    #    teeth live in `corpus_tv_fixture` (they need a solver); here, only that the term is built.
+    convt = _new("define i32 @c(float %x){\n %a = fptosi float %x to i32\n ret i32 %a\n}\n", "c")[0]
+    assert convt.startswith("(uf_fptosi_32_32 "), \
+        ("a conversion must be an application of an uninterpreted function of its operand", convt)
+    assert sem.uf_decls(convt) == ["(declare-fun uf_fptosi_32_32 ((_ BitVec 32)) (_ BitVec 32))"], \
+        ("the declaration must follow the term that uses it", sem.uf_decls(convt))
 
     # 8) FAST-MATH FLAGS ARE IGNORED ON THE SOURCE AND DECLINED ON THE TARGET, and the asymmetry
     #    is the whole point. FMF only ENLARGE a value's real behaviour set -- `nnan`/`ninf` make the
