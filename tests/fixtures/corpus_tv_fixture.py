@@ -95,6 +95,47 @@ def main() -> int:
     assert broken["opt_ok"] is False and broken["functions"] == [] and broken["counts"] == {}, \
         ("a file opt cannot process must be flagged opt_ok=False, not reported as empty", broken)
 
+    # 5. THE SOLVER BUDGET IS DETERMINISTIC, NOT WALL-CLOCK. A wall-clock timeout makes a verdict
+    #    depend on what else the machine is doing, and that was measured, not feared: the
+    #    `icmp.ll test_sdiv_pos_*` family took 2.5s in one run and over 15s in another on
+    #    BYTE-IDENTICAL query text (same sha256), flipping between `proved` and `timeout` and moving
+    #    the corpus total by seven functions. z3's `rlimit` counts SOLVER WORK instead, so the same
+    #    query gets the same verdict on a busy machine as on an idle one -- which is also what makes
+    #    it safe to run a sweep in parallel with anything else.
+    assert "(set-option :rlimit 500)" in si.with_rlimit("(set-logic QF_BV)\n(check-sat)\n", 500), \
+        "the budget must be injected after the logic line, where z3 accepts it"
+    assert ":rlimit" not in si.with_rlimit("(set-logic QF_BV)\n(check-sat)\n", 0), \
+        "a zero/None budget must leave the query untouched (pure wall-clock behaviour)"
+    #    A budget too small to finish must yield NO VERDICT -- never a wrong one. `unknown` is
+    #    reported as `timeout` because it is the same outcome callers already treat as a sound
+    #    non-answer, and unlike a wall-clock timeout it happens at the same point on every machine.
+    starved = si.validate_transform(z3, src, good_opt, "t", timeout=30, rlimit=1)
+    assert starved["status"] == "timeout", \
+        ("an exhausted deterministic budget must be a non-answer, not a verdict", starved)
+    #    ...and the DEFAULT budget still decides the same pair, so the guard above is not simply
+    #    disabling the validator.
+    assert si.validate_transform(z3, src, good_opt, "t", timeout=30)["status"] == "proved", \
+        "the default budget must still decide an ordinary function"
+    #    The starving budget must not turn a REFUTATION into a proof either -- the direction that
+    #    would matter most if `unknown` were ever mapped to `unsat`.
+    st2 = si.validate_transform(z3, src, bad_opt, "t", timeout=30, rlimit=1)
+    assert st2["status"] != "proved", \
+        ("an exhausted budget must never report a proof", st2)
+
+    # 6. PARALLELISM MUST NOT CHANGE A VERDICT, and that is the whole reason it waited for the
+    #    deterministic budget. Functions are independent solver queries, so a sweep is embarrassingly
+    #    parallel -- but under a WALL-CLOCK budget contention alone flipped `proved` into `timeout`
+    #    (the `test_sdiv_pos_*` family moved the corpus total by seven functions between runs of
+    #    byte-identical query text). Asserted on the real corpus file: same verdicts, every function.
+    seq = validate_file(z3, CORPUS.read_text(), opt, jobs=1)
+    par = validate_file(z3, CORPUS.read_text(), opt, jobs=8)
+    sm = {f["function"]: f["status"] for f in seq["functions"]}
+    pm = {f["function"]: f["status"] for f in par["functions"]}
+    assert sm == pm, ("running functions in parallel must give the identical verdict for every one",
+                      {k: (sm.get(k), pm.get(k)) for k in set(sm) | set(pm) if sm.get(k) != pm.get(k)})
+    assert [f["function"] for f in seq["functions"]] == [f["function"] for f in par["functions"]], \
+        "the parallel run must also preserve function ORDER, so reports stay comparable"
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "

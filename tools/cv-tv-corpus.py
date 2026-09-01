@@ -11,6 +11,7 @@ undef/UB) -- and any disagreement (a possible false proof) is reported and exits
 """
 import argparse
 import json
+import os
 import shutil
 import sys
 from collections import Counter
@@ -65,7 +66,17 @@ def main(argv=None) -> int:
     ap.add_argument("ll", type=Path, nargs="+", help="LLVM .ll file(s)")
     ap.add_argument("--z3-bin", default="z3")
     ap.add_argument("--opt-bin", default="opt")
-    ap.add_argument("--timeout", type=int, default=15, help="per-function z3 timeout (s)")
+    ap.add_argument("--timeout", type=int, default=15,
+                    help="per-function WALL-CLOCK backstop (s); rlimit is what normally decides")
+    ap.add_argument("--jobs", "-j", type=int, default=1,
+                    help="validate this many functions in parallel. Safe ONLY because the solver "
+                         "budget is deterministic (see --rlimit): with a wall-clock budget, "
+                         "contention alone flips proved into timeout. 0 uses every core.")
+    ap.add_argument("--rlimit", type=int, default=None,
+                    help="per-query DETERMINISTIC solver budget (z3 rlimit units). Unlike a "
+                         "wall-clock timeout this gives the same verdict on a busy machine as on "
+                         "an idle one, so a sweep is reproducible and may run in parallel. "
+                         "0 disables it and restores pure wall-clock behaviour.")
     ap.add_argument("--report", type=Path)
     ap.add_argument("--show", choices=["refuted", "unsupported", "timeout", "error", "all"],
                     help="also list function names in this status")
@@ -85,7 +96,9 @@ def main(argv=None) -> int:
     total = Counter()
     files, vacuous, skipped = [], 0, []
     for path in args.ll:
-        r = validate_file(z3, path.read_text(), opt, timeout=args.timeout)
+        jobs = (os.cpu_count() or 1) if args.jobs == 0 else args.jobs
+        r = validate_file(z3, path.read_text(), opt, timeout=args.timeout, rlimit=args.rlimit,
+                          jobs=jobs)
         # A WHOLE-FILE `opt` FAILURE MUST NOT READ AS "NOTHING TO DO". `validate_file` records it
         # as `opt_ok: False` and returns no functions, and this loop used to print the resulting
         # empty count dict and move on -- so a file whose every function vanished looked exactly

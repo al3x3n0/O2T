@@ -521,7 +521,7 @@ def _signature_scal(ll_text, func):
 
 
 def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
-            cross_check: bool = False, extra_solvers=()) -> dict:
+            cross_check: bool = False, extra_solvers=(), rlimit: int = si.DEFAULT_RLIMIT) -> dict:
     """TV an element-wise scalable-vector function at one SYMBOLIC lane. Because element-wise ops do not
     cross lanes, proving the lanes equal for an unconstrained lane index proves it for ALL lanes.
     `cross_check` replays the decided query through a second, independent solver."""
@@ -541,8 +541,8 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
     smt = "\n".join(["(set-logic QF_BV)", *ds, f"(assert (not (= {rb} {ra})))", "(check-sat)",
                      "(get-model)", ""])
     try:
-        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
-                             timeout=timeout).stdout
+        out = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(smt, rlimit),
+                             capture_output=True, text=True, timeout=si.wall_backstop(timeout, rlimit)).stdout
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
@@ -562,11 +562,13 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
             return {"status": "unsupported", "function": func, "guard": "poison-risk",
                     "reason": "value mismatch under possible poison (lane model lacks poison refinement)"}
         return {"status": "refuted", "function": func, "witness": out, **xc}
+    if head == "unknown":                     # deterministic budget exhausted -- no verdict
+        return {"status": "timeout", "function": func, "reason": "rlimit exhausted"}
     return {"status": "error", "function": func, "reason": head}
 
 
 def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
-           cross_check: bool = False, extra_solvers=()) -> dict:
+           cross_check: bool = False, extra_solvers=(), rlimit: int = si.DEFAULT_RLIMIT) -> dict:
     """TV a vector function lane-by-lane. Proved iff every result lane agrees for all inputs.
     `cross_check` replays the decided query through a second, independent solver."""
     if _signature(before_ll, func) != _signature(after_ll, func):
@@ -639,8 +641,8 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     logic = "BV" if src_fresh else "QF_BV"
     smt = "\n".join([f"(set-logic {logic})", *ds, f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:
-        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
-                             timeout=timeout).stdout
+        out = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(smt, rlimit),
+                             capture_output=True, text=True, timeout=si.wall_backstop(timeout, rlimit)).stdout
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
@@ -650,4 +652,6 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
         return {"status": "proved", "function": func, **xc}
     if head == "sat":
         return {"status": "refuted", "function": func, "witness": out, **xc}
+    if head == "unknown":                     # deterministic budget exhausted -- no verdict
+        return {"status": "timeout", "function": func, "reason": "rlimit exhausted"}
     return {"status": "error", "function": func, "reason": head}

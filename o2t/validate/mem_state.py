@@ -506,7 +506,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
 
 
 def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
-                 cross_check: bool = False, extra_solvers=()) -> dict:
+                 cross_check: bool = False, extra_solvers=(),
+                 rlimit: int = si.DEFAULT_RLIMIT) -> dict:
     """TV a pointer-side-effect function over its memory state. Proved iff the return value AND the
     final memory state agree for all initial memories and arguments; refuted on a witness.
 
@@ -586,8 +587,8 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         probe = "\n".join(["(set-logic QF_ABV)", *pdecls,
                            f"(assert {assume})", f"(assert {new_deref})", "(check-sat)", ""])
         try:
-            pout = subprocess.run([z3_bin, "-in"], input=probe, capture_output=True, text=True,
-                                  timeout=timeout).stdout
+            pout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(probe, rlimit),
+                                  capture_output=True, text=True, timeout=si.wall_backstop(timeout, rlimit)).stdout
         except subprocess.TimeoutExpired:
             return {"status": "timeout", "function": func}
         if (pout.strip().splitlines() or ["error"])[0].strip() != "unsat":
@@ -620,8 +621,8 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     smt = "\n".join(["(set-logic QF_ABV)", *decls,
                      f"(assert {assume})", f"(assert {refute})", "(check-sat)", "(get-model)", ""])
     try:
-        out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
-                             timeout=timeout).stdout
+        out = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(smt, rlimit),
+                             capture_output=True, text=True, timeout=si.wall_backstop(timeout, rlimit)).stdout
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     head = out.strip().splitlines()[0].strip() if out.strip() else "error"
@@ -631,4 +632,6 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         return {"status": "proved", "function": func, **xc}
     if head == "sat":
         return {"status": "refuted", "function": func, "witness": out, **xc}
+    if head == "unknown":                     # deterministic budget exhausted -- no verdict
+        return {"status": "timeout", "function": func, "reason": "rlimit exhausted"}
     return {"status": "error", "function": func, "reason": head}

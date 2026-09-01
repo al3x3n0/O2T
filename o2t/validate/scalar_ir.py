@@ -184,11 +184,60 @@ def run_instcombine(src_text, opt_bin="opt"):
             or run_passes(src_text, "instcombine<no-verify-fixpoint>", opt_bin))
 
 
-def _query(z3_bin, smt, timeout):
-    """Run one SMT-LIB2 query through z3; return (first-result-line, full stdout). A timeout raises
-    subprocess.TimeoutExpired so the caller can decline rather than guess."""
-    out = subprocess.run([z3_bin, "-in"], input=smt, capture_output=True, text=True,
-                         timeout=timeout).stdout
+# --- the solver budget -----------------------------------------------------------------------
+# A WALL-CLOCK budget makes a verdict depend on what else the machine is doing, and that is not a
+# theoretical worry: the `icmp.ll test_sdiv_pos_*` family was seen taking 2.5s in one run and over
+# 15s in another on BYTE-IDENTICAL query text (same sha256), flipping between `proved` and
+# `timeout` and moving the corpus total by seven functions. A sweep is then not reproducible, and
+# nothing else may run beside it -- which also rules out running it in parallel with itself.
+#
+# z3's `rlimit` counts SOLVER WORK instead, so the same query gets the same verdict on a busy
+# machine as on an idle one. It becomes the budget that DECIDES; the wall clock stays only as a
+# backstop against a genuine hang, generous enough that it should never be what fires.
+#
+# Exceeding it returns `unknown`, which callers map to the same "no verdict" outcome a timeout had.
+# Calibrated against the hardest thing in the corpus that still SUCCEEDS, not chosen to feel
+# generous: `icmp.ll test_sdiv_pos_ugt` proves at 7,027,220 units (and took 31s of wall clock doing
+# it, well past the 15s budget the sweep gives it -- so today it proves only on a fast enough
+# machine). 10M keeps that one and leaves headroom; anything past it becomes a DETERMINISTIC
+# non-answer instead of a coin flip. An easy function costs 12-1,583 units, so the budget is
+# nowhere near ordinary work.
+DEFAULT_RLIMIT = 10_000_000
+
+# When the deterministic budget decides, the WALL CLOCK MUST NOT FIRE FIRST or the flakiness comes
+# straight back: `test_sdiv_pos_ugt` spends its 7M units over ~31s, so a 15s subprocess timeout
+# would still cut it off on a slow machine and not on a fast one. The backstop therefore becomes a
+# genuine hang-guard rather than a budget. It costs wall time on the hard tail -- which is what
+# parallelism is for, since a deterministic budget is exactly what makes parallel runs safe.
+RLIMIT_WALL_BACKSTOP = 300
+
+
+def wall_backstop(timeout, rlimit):
+    """The subprocess timeout to use: a hang-guard when `rlimit` decides, else the caller's."""
+    if not rlimit:
+        return timeout
+    return max(timeout or 0, RLIMIT_WALL_BACKSTOP)
+
+
+def with_rlimit(smt: str, rlimit: int | None) -> str:
+    """Insert `(set-option :rlimit N)` after the logic line, where z3 requires it."""
+    if not rlimit:
+        return smt
+    lines = smt.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith("(set-logic"):
+            lines.insert(i + 1, f"(set-option :rlimit {rlimit})")
+            return "\n".join(lines)
+    return f"(set-option :rlimit {rlimit})\n" + smt
+
+
+def _query(z3_bin, smt, timeout, rlimit=None):
+    """Run one SMT-LIB2 query through z3; return (first-result-line, full stdout).
+
+    `rlimit` is the deterministic budget (see DEFAULT_RLIMIT); `timeout` is the wall-clock backstop
+    and raising `subprocess.TimeoutExpired` still lets a caller decline rather than guess."""
+    out = subprocess.run([z3_bin, "-in"], input=with_rlimit(smt, rlimit), capture_output=True,
+                         text=True, timeout=wall_backstop(timeout, rlimit)).stdout
     return (out.strip().splitlines()[0].strip() if out.strip() else "error"), out
 
 
@@ -236,7 +285,8 @@ def cross_check_smt(smt, expect, z3_bin=None, extra_solvers=()):
 
 
 def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops=None,
-                       check_vacuity=True, cross_check=False, extra_solvers=()):
+                       check_vacuity=True, cross_check=False, extra_solvers=(),
+                       rlimit=DEFAULT_RLIMIT):
     """Translate before/after and prove the returned value equal for all inputs -- a closed-loop
     translation validation for ANY value-preserving scalar pass (instcombine, reassociate,
     early-cse, gvn, ...). Returns a verdict dict (status proved|refuted|unsupported|error|timeout).
@@ -364,13 +414,18 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     decls += sem.const_expr_decls(refute)
     smt = _smt(decls, refute, get_model=True, forall=src_fresh)
     try:
-        head, out = _query(z3_bin, smt, timeout)
+        head, out = _query(z3_bin, smt, timeout, rlimit)
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     if head == "unsat":
         verdict = {"status": "proved", "function": func}
     elif head == "sat":
         verdict = {"status": "refuted", "function": func, "witness": out}
+    elif head == "unknown":
+        # The DETERMINISTIC budget ran out. Reported as `timeout` because it is the same outcome --
+        # no verdict -- and callers already treat that as a sound non-answer. Unlike a wall-clock
+        # timeout it happens at the same point on every machine.
+        return {"status": "timeout", "function": func, "reason": "rlimit exhausted"}
     else:
         return {"status": "error", "function": func, "reason": head}
 
@@ -380,7 +435,7 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
         defined = smt_and([f"(not {su})", f"(not {sp})"])
         vdecls = decls + [f"(declare-const {n} (_ BitVec {w}))" for n, w in src_fresh]
         try:
-            dhead, _ = _query(z3_bin, _smt(vdecls, defined), timeout)
+            dhead, _ = _query(z3_bin, _smt(vdecls, defined), timeout, rlimit)
         except subprocess.TimeoutExpired:
             dhead = "timeout"
         verdict["vacuous"] = {"sat": False, "unsat": True}.get(dhead)   # None: inconclusive probe
