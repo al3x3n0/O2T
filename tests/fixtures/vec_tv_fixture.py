@@ -278,6 +278,28 @@ def main() -> int:
         ("a fast-math flag on the TARGET must decline -- ignoring it models the target as more "
          "defined than it is, and that is where a false proof comes from", d)
 
+    # MIN/MAX INTRINSICS PER LANE. `llvm.smin/smax/umin/umax` are the TARGET of a whole family of
+    # InstCombine folds -- it canonicalises an `icmp`+`select` pair into one -- so the lane model
+    # could translate every such SOURCE and none of their targets, and the whole family declined.
+    # The comparison table is the shared `sem.MINMAX` the scalar model uses, not a second reading.
+    for intr, pred, arm in (("smin", "slt", "a"), ("smax", "sgt", "a"),
+                            ("umin", "ult", "a"), ("umax", "ugt", "a")):
+        src = (f"define <2 x i32> @m(<2 x i32> %a, <2 x i32> %b) {{\n"
+               f"  %c = icmp {pred} <2 x i32> %a, %b\n"
+               f"  %r = select <2 x i1> %c, <2 x i32> %{arm}, <2 x i32> %b\n"
+               f"  ret <2 x i32> %r\n}}\n")
+        tgt = (f"define <2 x i32> @m(<2 x i32> %a, <2 x i32> %b) {{\n"
+               f"  %r = call <2 x i32> @llvm.{intr}.v2i32(<2 x i32> %a, <2 x i32> %b)\n"
+               f"  ret <2 x i32> %r\n}}\n"
+               f"declare <2 x i32> @llvm.{intr}.v2i32(<2 x i32>, <2 x i32>)\n")
+        assert vec_tv(z3, src, tgt, "m")["status"] == "proved", \
+            f"the icmp+select form of {intr} must prove against the intrinsic"
+        # ...and the WRONG intrinsic must refute, so the four are not modelled interchangeably.
+        other = {"smin": "smax", "smax": "smin", "umin": "umax", "umax": "umin"}[intr]
+        wrong = tgt.replace(intr, other)
+        assert vec_tv(z3, src, wrong, "m")["status"] == "refuted", \
+            f"{intr} folded to {other} must refute -- the predicates must not be interchangeable"
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "

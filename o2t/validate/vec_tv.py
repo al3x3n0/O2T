@@ -228,6 +228,18 @@ def _vec_instr(inst, env, ctx=None):
         a = _lanes_of(inst.operands[0], n, w, env, ctx)
         env[inst.result] = ([(f"(bvxor {av} {sem.const(1 << (w - 1), w)})", ap) for av, ap in a], w)
         return
+    if op == "call" and sem.intrinsic_name(inst.callee) in sem.MINMAX:
+        # `llvm.smin/smax/umin/umax` per lane. These are the TARGET of a whole family of folds --
+        # InstCombine canonicalises an `icmp`+`select` pair into one of them -- so the lane model
+        # could translate every such source and none of their targets. The comparison table is the
+        # SHARED one the scalar model uses (`sem.MINMAX`), not a second reading of it.
+        intr = sem.intrinsic_name(inst.callee)
+        n, w = _vshape(inst.type)
+        a = _lanes_of(inst.args[0], n, w, env, ctx)
+        b = _lanes_of(inst.args[1], n, w, env, ctx)
+        env[inst.result] = ([(f"(ite ({sem.MINMAX[intr]} {a[i][0]} {b[i][0]}) {a[i][0]} {b[i][0]})",
+                              si.smt_or([a[i][1], b[i][1]])) for i in range(n)], w)
+        return
     if op == "call" and sem.intrinsic_name(inst.callee) == "copysign":
         # Sign bit from the second operand, every other bit from the first -- again LLVM's own
         # definition, with no special case for NaN or zero.
