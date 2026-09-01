@@ -597,8 +597,16 @@ def _p_multiblock(fn, params, env, ctx):
             raise sem.Unsupported("empty block")
         if term.op == "ret":
             succ[b.name] = []
-        elif term.op == "br":
-            succ[b.name] = list(term.successors)
+        elif term.op in ("br", "switch"):
+            # A switch's successors include the default and every case target, WITH DUPLICATES when
+            # several cases name one block. Deduplicated here so a block is not treated as its own
+            # predecessor twice; the duplication is preserved where it matters, in the edge
+            # condition below, which ORs the case values together.
+            seen, uniq = set(), []
+            for x in term.successors:
+                if x not in seen:
+                    seen.add(x); uniq.append(x)
+            succ[b.name] = uniq
         else:
             raise sem.Unsupported(f"terminator {term.op!r}")
     preds = {lab: [] for lab in order}
@@ -639,6 +647,25 @@ def _p_multiblock(fn, params, env, ctx):
                     w = sem.int_width(term.operands[0].type)
                     rt, _, rp, _ = _p_value(term.operands[0], env, w)
                     rets.append((rt, rp, w, path[lab]))
+            elif term.op == "switch":
+                # A MULTI-WAY BRANCH. Each case contributes `cond == value` to the edge reaching its
+                # block, and SEVERAL CASES MAY REACH THE SAME BLOCK -- so the conditions ACCUMULATE
+                # as a disjunction instead of the last one winning. The default is taken when no
+                # case matches, which is the negation of all of them together.
+                w = sem.int_width(term.operands[0].type)
+                cv, _, cvp, _ = _p_value(term.operands[0], env, w)
+                if cvp != "false":                 # switching on POISON poisons the whole result
+                    branch_poison.append(f"(and {path[lab]} {cvp})")
+                matched = []
+                for val, blk in term.cases:
+                    hit = f"(= {cv} {sem.const(val, w)})"
+                    matched.append(hit)
+                    prev = edge.get((lab, blk))
+                    edge[(lab, blk)] = hit if prev is None else smt_or([prev, hit])
+                default = term.successors[0]
+                none_hit = "true" if not matched else f"(not {smt_or(matched)})"
+                prev = edge.get((lab, default))
+                edge[(lab, default)] = none_hit if prev is None else smt_or([prev, none_hit])
             elif term.conditional:
                 cv, _, cvp, _ = _p_value(term.operands[0], env, 1)
                 if cvp != "false":                     # branching on POISON poisons the whole result

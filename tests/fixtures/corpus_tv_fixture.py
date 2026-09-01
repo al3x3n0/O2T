@@ -282,6 +282,38 @@ def main() -> int:
     assert d["status"] not in ("proved", "refuted"), \
         ("a void source against a value-returning target must not be given a verdict", d)
 
+    # 11. `switch` IS A MULTI-WAY BRANCH, and the part that is not merely "more successors" is that
+    #     SEVERAL CASES MAY NAME THE SAME BLOCK. The edge condition reaching a block must then
+    #     ACCUMULATE as a disjunction rather than the last case winning, and the default is taken
+    #     when none matched -- the negation of all of them together.
+    sw = ("define i32 @s(i32 %v) {\n  switch i32 %v, label %d [ i32 1, label %a\n"
+          "                                          i32 2, label %a ]\n"
+          "d:\n  ret i32 0\n"
+          "a:\n  ret i32 7\n}\n")
+    assert si.validate_transform(z3, sw, sw, "s")["status"] == "proved", \
+        "a switch with two cases reaching one block must be decidable"
+    #     The equivalent chain of comparisons proves against it -- which is only true if BOTH cases
+    #     reach %a. If the edge condition were assigned rather than accumulated, only `%v == 2`
+    #     would reach it and this would refute.
+    #     THREE distinct targets are needed to see the accumulation at all: with only a case block
+    #     and a default, the return chain falls through to the other block, so dropping one case
+    #     changes nothing and a two-target test gates nothing (checked -- it did not).
+    sw3 = ("define i32 @s3(i32 %v) {\n  switch i32 %v, label %d [ i32 1, label %a\n"
+           "                                            i32 2, label %a\n"
+           "                                            i32 3, label %b ]\n"
+           "d:\n  ret i32 0\n  a:\n  ret i32 7\n  b:\n  ret i32 9\n}\n")
+    chain = ("define i32 @s3(i32 %v) {\n  %c1 = icmp eq i32 %v, 1\n  %c2 = icmp eq i32 %v, 2\n"
+             "  %c3 = icmp eq i32 %v, 3\n  %hit = or i1 %c1, %c2\n"
+             "  %r0 = select i1 %c3, i32 9, i32 0\n  %r = select i1 %hit, i32 7, i32 %r0\n"
+             "  ret i32 %r\n}\n")
+    assert si.validate_transform(z3, sw3, chain, "s3")["status"] == "proved", \
+        ("both cases must reach their shared block -- an assigned rather than accumulated edge "
+         "condition drops the first, and %v == 1 then takes the wrong arm")
+    #     ...and the default must be exactly "no case matched": claiming %v == 3 lands on %a fails.
+    wrong = chain.replace("icmp eq i32 %v, 2", "icmp eq i32 %v, 4")
+    assert si.validate_transform(z3, sw3, wrong, "s3")["status"] == "refuted", \
+        "a value matching no case must take the default"
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "

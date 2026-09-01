@@ -287,6 +287,12 @@ class Instruction:
         return list(self.raw.get("successors", ()))
 
     @property
+    def cases(self) -> list[tuple[int, str]]:
+        """A switch's `(value, block)` pairs, excluding the default. SEVERAL CASES MAY NAME THE
+        SAME BLOCK, which is why an edge condition has to accumulate rather than be assigned."""
+        return [(int(c["value"]), c["block"]) for c in self.raw.get("cases", ())]
+
+    @property
     def conditional(self) -> bool:
         return bool(self.raw.get("conditional"))
 

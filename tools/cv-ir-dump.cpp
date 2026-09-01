@@ -365,6 +365,28 @@ std::string instJson(const Instruction &I) {
     }
     s += "]";
   }
+  // A SWITCH is a multi-way branch, and its successors are emitted the same way a branch's are so
+  // a consumer need not re-derive them from the operand list. `cases` pairs each successor after
+  // the default with the value that selects it -- and SEVERAL CASES MAY NAME THE SAME LABEL, which
+  // is why the edge condition reaching a block has to be a disjunction rather than one condition.
+  if (const auto *SI2 = dyn_cast<SwitchInst>(&I)) {
+    s += ",\"successors\":[";
+    for (unsigned i = 0; i < SI2->getNumSuccessors(); ++i) {
+      if (i) s += ",";
+      s += quote(blockLabel(SI2->getSuccessor(i)));
+    }
+    s += "],\"cases\":[";
+    bool firstC = true;
+    for (const auto &C : SI2->cases()) {
+      if (!firstC) s += ",";
+      firstC = false;
+      SmallString<40> V;
+      C.getCaseValue()->getValue().toStringSigned(V, 10);
+      s += "{\"value\":" + quote(std::string(V.c_str())) +
+           ",\"block\":" + quote(blockLabel(C.getCaseSuccessor())) + "}";
+    }
+    s += "]";
+  }
   if (const auto *CastI = dyn_cast<CastInst>(&I))
     s += ",\"src_type\":" + typeJson(CastI->getSrcTy());
 
