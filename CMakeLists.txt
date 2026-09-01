@@ -105,7 +105,10 @@ if(O2T_BUILD_IR_DUMP)
     target_include_directories(cv-ir-dump SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
     separate_arguments(O2T_IR_DUMP_DEFS NATIVE_COMMAND "${LLVM_DEFINITIONS}")
     target_compile_options(cv-ir-dump PRIVATE ${O2T_IR_DUMP_DEFS} -Wall -Wextra)
-    llvm_map_components_to_libnames(O2T_IR_DUMP_LIBS support core asmparser)
+    # `analysis` is for ConstantFoldConstant: a COMPUTABLE constant expression must be
+    # evaluated rather than handed to a validator as an opaque symbol, or a fold that
+    # depends on its value cannot be proved and would be refuted instead.
+    llvm_map_components_to_libnames(O2T_IR_DUMP_LIBS support core asmparser analysis)
     target_link_libraries(cv-ir-dump PRIVATE ${O2T_IR_DUMP_LIBS})
 endif()
 

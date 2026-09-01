@@ -121,6 +121,17 @@ def value(v: ir.Value, env: dict, width: int | None = None):
         if w is None:
             raise Unsupported("untyped poison")
         return f"poison_{w}", w, "true", "false"
+    if v.kind == "const_expr":
+        # A CONSTANT EXPRESSION LLVM COULD NOT COMPUTE -- `ptrtoint (ptr @g to i32)`. Its value is
+        # FIXED but unknown, and a transform involving it has to be valid for EVERY address the
+        # global could have, so an unconstrained constant is the correct reading rather than a
+        # weakening of it. Keyed by the printed text, so the two sides agree on the same
+        # expression and disagree on different ones. No alignment or non-null facts are asserted
+        # about it, which over-approximates: that costs refutations, never proofs.
+        w = width if width is not None else bit_width(v.type)
+        if w is None:
+            raise Unsupported("untyped constant expression")
+        return const_expr_sym(v.const_expr_text, w), w, "false", "false"
     if v.kind == "float":
         # A float CONSTANT is its IEEE bit pattern -- exactly the view this model already takes of
         # a float parameter, so a constant and a parameter are the same kind of term and bit-level
@@ -264,6 +275,25 @@ INTRINSICS = {
 # translators already carry. (LLVM's InstCombine does not add fast-math flags a source lacked, so
 # this costs nothing measured -- no target in the corpus carries one.)
 FAST_MATH = {"nnan", "ninf", "nsz", "arcp", "contract", "afn", "reassoc", "fast"}
+
+_CEXPR_RE = __import__("re").compile(r"\bcexpr_[0-9a-f]{12}_(\d+)\b")
+
+
+def const_expr_sym(text: str, w: int) -> str:
+    """A stable SMT name for a constant expression's unknown value. The digest is over the printed
+    text, so the SAME expression on both sides is the same symbol -- which is what lets a pair that
+    merely carries one through prove -- while two different expressions stay independent."""
+    import hashlib
+    return f"cexpr_{hashlib.sha256(text.encode()).hexdigest()[:12]}_{w}"
+
+
+def const_expr_decls(*terms) -> list[str]:
+    """`(declare-const ...)` for every constant-expression symbol appearing in these terms."""
+    seen = {}
+    for t in terms:
+        for m in _CEXPR_RE.finditer(t or ""):
+            seen[m.group(0)] = int(m.group(1))
+    return [f"(declare-const {n} (_ BitVec {w}))" for n, w in sorted(seen.items())]
 
 
 def check_fast_math(inst, ctx) -> None:

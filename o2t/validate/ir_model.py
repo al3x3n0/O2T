@@ -167,6 +167,13 @@ class Value:
         return int(v) if v is not None else None
 
     @property
+    def const_expr_text(self) -> str | None:
+        """The printed form of a CONSTANT EXPRESSION whose value LLVM could not compute -- one that
+        depends on an address no compiler knows, like `ptrtoint (ptr @g to i32)`. Anything LLVM
+        could evaluate has already been folded to an ordinary constant by the dumper."""
+        return self.raw.get("text") if self.kind == "const_expr" else None
+
+    @property
     def float_bits(self) -> int | None:
         """A floating-point constant's IEEE BIT PATTERN, or None. This model carries floats as
         opaque bitvectors, so the bits are the whole content of the constant -- and they are what a

@@ -223,6 +223,28 @@ def main() -> int:
     except sem.Unsupported:
         pass
 
+    # 9) CONSTANT EXPRESSIONS: FOLD WHAT LLVM CAN COMPUTE, SYMBOLISE ONLY WHAT IT CANNOT. These are
+    #    two different things wearing one label. `bitcast (<2 x i32> <i32 1, i32 -1> to i64)` is a
+    #    fixed number, and InstCombine EVALUATES it -- icmp.ll test12 folds to `xor %A, true`. Hand
+    #    a validator an opaque symbol for that and the fold cannot be proved, so it REFUTES a sound
+    #    transform. The dumper therefore folds first, and only what survives becomes a symbol.
+    folded = _new("define i64 @f(){\n ret i64 bitcast (<2 x i32> <i32 1, i32 -1> to i64)\n}\n", "f")[0]
+    assert folded == sem.const(-4294967295 & ((1 << 64) - 1), 64), \
+        ("a computable constant expression must arrive already evaluated, not as a symbol", folded)
+    #    What is left depends on an address no compiler knows. Its value is FIXED but unknown, and a
+    #    transform involving it must hold for EVERY address the global could have -- so an
+    #    unconstrained constant is the correct reading. Keyed by the printed text, so the SAME
+    #    expression on both sides is the same symbol and a pair merely carrying it through proves.
+    ce = "define i32 @f(i32 %x){\n %r = sub i32 %x, ptrtoint (ptr @g to i32)\n ret i32 %r\n}\n" \
+         "@g = external global i32\n"
+    t1 = _new(ce, "f")[0]
+    assert "cexpr_" in t1, ("an uncomputable constant expression must become a symbol", t1)
+    assert _new(ce, "f")[0] == t1, "the same expression must yield the same symbol"
+    #    ...and two DIFFERENT expressions must stay independent, or the model would be asserting an
+    #    equality between two addresses it knows nothing about.
+    ce2 = ce.replace("@g", "@h")
+    assert _new(ce2, "f")[0] != t1, "different constant expressions must not share a symbol"
+
     print(f"semantics_fixture OK: the shared semantics layer emits BYTE-IDENTICAL SMT to the text "
           f"path it replaces across {len(SHAPES)} shapes, all 10 intrinsic models, and every "
           "(op, flag) poison/UB combination -- so moving both tracks onto one reading of LLVM cannot "

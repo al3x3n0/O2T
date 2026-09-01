@@ -31,7 +31,9 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/AsmParser/Parser.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstIterator.h"
@@ -93,6 +95,8 @@ std::string blockLabel(const BasicBlock *BB) {
   std::string s = valueName(BB);
   return s.empty() || s[0] != '%' ? s : s.substr(1);
 }
+
+const DataLayout *DL = nullptr;   // set in main; needed to fold constant expressions
 
 std::string typeJson(Type *T) {
   if (T->isVoidTy())
@@ -193,6 +197,26 @@ std::string constantJson(const Constant *C) {
       return "{\"kind\":\"splat\",\"scalable\":" + std::string(scalable ? "true" : "false") +
              ",\"elem\":" + constantJson(S) + ",\"type\":" + typeJson(C->getType()) + "}";
     }
+  }
+  // A CONSTANT EXPRESSION. Two very different things arrive here. Some are COMPUTABLE --
+  // `bitcast (<2 x i32> <i32 1, i32 -1> to i64)` is a fixed number LLVM can evaluate, and
+  // InstCombine does evaluate it (icmp.ll test12 folds to `xor %A, true`). Those must be FOLDED,
+  // not symbolised: a model that made test12's constant opaque could not prove the fold and would
+  // REFUTE a sound transform. So fold first, and re-enter with whatever comes back.
+  if (auto *CE = dyn_cast<ConstantExpr>(C)) {
+    Constant *F = ConstantFoldConstant(CE, *DL);
+    if (F && F != C)
+      return constantJson(F);
+    // What is left genuinely depends on an address no compiler knows -- `ptrtoint (ptr @g to i32)`.
+    // It is a FIXED but UNKNOWN value, and a fold involving it must be valid for EVERY address it
+    // could have, so an unconstrained symbol keyed by the expression's text is the right reading
+    // rather than a weakening of it. (No alignment or non-null facts are asserted about it, which
+    // over-approximates: it costs refutations, not proofs.)
+    std::string t;
+    raw_string_ostream ts(t);
+    CE->printAsOperand(ts, false);
+    return "{\"kind\":\"const_expr\",\"text\":" + quote(ts.str()) +
+           ",\"type\":" + typeJson(C->getType()) + "}";
   }
   // A FLOATING-POINT CONSTANT, AS BITS. This model carries floats as opaque bitvectors, and a
   // constant reached it only as the printed text ("float 1.000000e+00") -- unusable, and the
@@ -436,6 +460,7 @@ int main(int argc, char **argv) {
   // what makes InstCombine's fold to `icmp eq ptr %A, null` correct. A model that assumes 64-bit
   // addresses reads that fold as unsound and REFUTES it. Emitting the real width lets a validator
   // decline what it cannot represent instead of inventing a disagreement.
+  DL = &M->getDataLayout();
   std::string out = "{\"ptr_bits\":" +
                     std::to_string(M->getDataLayout().getPointerSizeInBits(0)) +
                     ",\"functions\":[";

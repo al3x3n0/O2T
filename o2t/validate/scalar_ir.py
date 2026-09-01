@@ -359,6 +359,9 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     # and its poison-ness is already carried separately.
     decls += [f"(declare-const poison_{w} (_ BitVec {w}))"
               for w in sorted({int(m) for m in re.findall(r"\bpoison_(\d+)\b", refute)})]
+    # ...and one for every CONSTANT EXPRESSION whose value LLVM could not compute. Unconstrained,
+    # because a fold involving a global's address must hold for every address it could have.
+    decls += sem.const_expr_decls(refute)
     smt = _smt(decls, refute, get_model=True, forall=src_fresh)
     try:
         head, out = _query(z3_bin, smt, timeout)
