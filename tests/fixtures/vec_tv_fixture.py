@@ -320,6 +320,52 @@ def main() -> int:
     assert vec_tv(z3, cz, cz, "c")["status"] == "proved", \
         "a vector cttz with an immarg flag must be decidable"
 
+    # MULTI-BLOCK VECTORS: scalar control flow, lane-shaped values. Every multi-block vector fold
+    # in LLVM's tests is this shape -- `br i1 %c` on a plain i1, a vector `phi` at the join, one
+    # element-wise op, `ret` -- so the CFG needs no lane reasoning and is NOT re-derived here: the
+    # lane model calls the SAME `cfg_structure` and `branch_edges` the scalar model does.
+    diamond = ("define <2 x i32> @d(i1 %c) {\nentry:\n  br i1 %c, label %final, label %delay\n"
+               "delay:\n  br label %final\n"
+               "final:\n  %A = phi <2 x i32> [ <i32 1000, i32 1000>, %entry ], "
+               "[ <i32 10, i32 10>, %delay ]\n"
+               "  %v = add <2 x i32> <i32 123, i32 123>, %A\n  ret <2 x i32> %v\n}\n")
+    folded = ("define <2 x i32> @d(i1 %c) {\nentry:\n  br i1 %c, label %final, label %delay\n"
+              "delay:\n  br label %final\n"
+              "final:\n  %A = phi <2 x i32> [ <i32 1123, i32 1123>, %entry ], "
+              "[ <i32 133, i32 133>, %delay ]\n  ret <2 x i32> %A\n}\n")
+    assert vec_tv(z3, diamond, folded, "d")["status"] == "proved", \
+        "folding the add into both phi arms must prove"
+    #   ...and getting ONE arm wrong must refute, so the phi's per-predecessor conditions are real.
+    wrong = folded.replace("<i32 133, i32 133>", "<i32 134, i32 134>")
+    assert vec_tv(z3, diamond, wrong, "d")["status"] == "refuted", \
+        "a wrong value on one incoming edge must refute"
+    #   THE PER-LANE PART MUST BE PER LANE: give the two lanes different values and a model that
+    #   treated the vector as one wide value would not notice a swap.
+    asym = diamond.replace("<i32 1000, i32 1000>", "<i32 1000, i32 2000>")
+    asym_ok = folded.replace("<i32 1123, i32 1123>", "<i32 1123, i32 2123>")
+    assert vec_tv(z3, asym, asym_ok, "d")["status"] == "proved", "lanes fold independently"
+    asym_swap = folded.replace("<i32 1123, i32 1123>", "<i32 2123, i32 1123>")
+    assert vec_tv(z3, asym, asym_swap, "d")["status"] == "refuted", \
+        "swapping the two lanes' results must refute"
+    #   TWO RETURN BLOCKS exercise a different path -- combining returns by path condition -- and
+    #   the diamond above does NOT reach it, having a single `ret`. Checked: reversing the lane
+    #   order inside that combination passed every assertion above, because the loop never ran.
+    two_ret = ("define <2 x i32> @r(i1 %c) {\nentry:\n  br i1 %c, label %a, label %b\n"
+               "a:\n  ret <2 x i32> <i32 1, i32 2>\n"
+               "b:\n  ret <2 x i32> <i32 3, i32 4>\n}\n")
+    sel2 = ("define <2 x i32> @r(i1 %c) {\nentry:\n"
+            "  %r = select i1 %c, <2 x i32> <i32 1, i32 2>, <2 x i32> <i32 3, i32 4>\n"
+            "  ret <2 x i32> %r\n}\n")
+    assert vec_tv(z3, two_ret, sel2, "r")["status"] == "proved", \
+        "returns from two blocks must combine by path condition"
+    assert vec_tv(z3, two_ret, sel2.replace("<i32 1, i32 2>", "<i32 2, i32 1>"),
+                  "r")["status"] == "refuted", \
+        "swapping the lanes of one arm must refute -- the combination is per lane and ordered"
+
+    #   The model also declines a VECTOR branch condition, but that guard is UNREACHABLE from real
+    #   IR and is therefore not asserted here: LLVM's own parser rejects `br <2 x i1> ...` with
+    #   "branch condition must have 'i1' type", so no such module can be built to test it.
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "

@@ -578,13 +578,13 @@ def _p_instruction(inst, env, ctx):
         raise
 
 
-def _p_multiblock(fn, params, env, ctx):
-    """Symbolically execute an ACYCLIC CFG. Each block carries a path condition, a `phi` lowers to an
-    `ite` over its predecessors' reached-from conditions, and returns are combined by path condition.
-    Sound by scope: div/rem decline (so whole-function UB stays `false` and needs no path
-    conditioning), and a back-edge declines. A conditional branch on a POISON condition is undefined
-    behaviour, so its poison is accumulated into the result -- discarding it caused a false
-    REFUTATION the CFG fuzzer found."""
+def cfg_structure(fn):
+    """(order, binfo, succ, preds) for an ACYCLIC single-function CFG, or a decline.
+
+    Shared by every validator that walks blocks. The CONTROL FLOW does not depend on whether the
+    values flowing through it are scalars or lanes, so this must not be written twice -- a duplicate
+    model at a seam like this is what round 6 of the 2026-07 review found a false proof inside.
+    `div/rem` declines here so whole-function UB stays `false` and needs no path conditioning."""
     order = [b.name for b in fn.blocks]
     binfo = {b.name: b for b in fn.blocks}
     succ = {}
@@ -599,9 +599,9 @@ def _p_multiblock(fn, params, env, ctx):
             succ[b.name] = []
         elif term.op in ("br", "switch"):
             # A switch's successors include the default and every case target, WITH DUPLICATES when
-            # several cases name one block. Deduplicated here so a block is not treated as its own
+            # several cases name one block. Deduplicated so a block is not treated as its own
             # predecessor twice; the duplication is preserved where it matters, in the edge
-            # condition below, which ORs the case values together.
+            # conditions, which OR the case values together.
             seen, uniq = set(), []
             for x in term.successors:
                 if x not in seen:
@@ -615,6 +615,43 @@ def _p_multiblock(fn, params, env, ctx):
             if s not in preds:
                 raise sem.Unsupported(f"branch to unknown block %{s}")
             preds[s].append(lab)
+    return order, binfo, succ, preds
+
+
+def branch_edges(term, cond_term, width, edge, lab):
+    """Record the edge conditions leaving `lab`, given its branch/switch condition as a term.
+
+    The RULES live here once: a conditional branch splits on the condition; a SWITCH contributes
+    `cond == value` to each case's block and ACCUMULATES when several cases name one block, with the
+    default taken exactly when none matched. Getting the accumulation wrong drops a case silently,
+    which is why it is not restated per validator."""
+    if term.op == "switch":
+        matched = []
+        for val, blk in term.cases:
+            hit = f"(= {cond_term} {sem.const(val, width)})"
+            matched.append(hit)
+            prev = edge.get((lab, blk))
+            edge[(lab, blk)] = hit if prev is None else smt_or([prev, hit])
+        default = term.successors[0]
+        none_hit = "true" if not matched else f"(not {smt_or(matched)})"
+        prev = edge.get((lab, default))
+        edge[(lab, default)] = none_hit if prev is None else smt_or([prev, none_hit])
+    elif term.conditional:
+        cb = _bool_of(cond_term, 1)
+        edge[(lab, term.successors[0])] = cb
+        edge[(lab, term.successors[1])] = f"(not {cb})"
+    else:
+        edge[(lab, term.successors[0])] = "true"
+
+
+def _p_multiblock(fn, params, env, ctx):
+    """Symbolically execute an ACYCLIC CFG. Each block carries a path condition, a `phi` lowers to an
+    `ite` over its predecessors' reached-from conditions, and returns are combined by path condition.
+    Sound by scope: div/rem decline (so whole-function UB stays `false` and needs no path
+    conditioning), and a back-edge declines. A conditional branch on a POISON condition is undefined
+    behaviour, so its poison is accumulated into the result -- discarding it caused a false
+    REFUTATION the CFG fuzzer found."""
+    order, binfo, succ, preds = cfg_structure(fn)
 
     path, edge, rets, branch_poison = {order[0]: "true"}, {}, [], []
     done, todo, progress = set(), list(order), True
@@ -647,34 +684,19 @@ def _p_multiblock(fn, params, env, ctx):
                     w = sem.int_width(term.operands[0].type)
                     rt, _, rp, _ = _p_value(term.operands[0], env, w)
                     rets.append((rt, rp, w, path[lab]))
-            elif term.op == "switch":
-                # A MULTI-WAY BRANCH. Each case contributes `cond == value` to the edge reaching its
-                # block, and SEVERAL CASES MAY REACH THE SAME BLOCK -- so the conditions ACCUMULATE
-                # as a disjunction instead of the last one winning. The default is taken when no
-                # case matches, which is the negation of all of them together.
-                w = sem.int_width(term.operands[0].type)
-                cv, _, cvp, _ = _p_value(term.operands[0], env, w)
-                if cvp != "false":                 # switching on POISON poisons the whole result
-                    branch_poison.append(f"(and {path[lab]} {cvp})")
-                matched = []
-                for val, blk in term.cases:
-                    hit = f"(= {cv} {sem.const(val, w)})"
-                    matched.append(hit)
-                    prev = edge.get((lab, blk))
-                    edge[(lab, blk)] = hit if prev is None else smt_or([prev, hit])
-                default = term.successors[0]
-                none_hit = "true" if not matched else f"(not {smt_or(matched)})"
-                prev = edge.get((lab, default))
-                edge[(lab, default)] = none_hit if prev is None else smt_or([prev, none_hit])
-            elif term.conditional:
-                cv, _, cvp, _ = _p_value(term.operands[0], env, 1)
-                if cvp != "false":                     # branching on POISON poisons the whole result
-                    branch_poison.append(f"(and {path[lab]} {cvp})")
-                cb = _bool_of(cv, 1)
-                edge[(lab, term.successors[0])] = cb
-                edge[(lab, term.successors[1])] = f"(not {cb})"
             else:
-                edge[(lab, term.successors[0])] = "true"
+                # Branch/switch conditions and their POISON go through the shared rules. Branching
+                # on poison is undefined behaviour, so its poison joins the result -- discarding it
+                # caused a false REFUTATION the CFG fuzzer found.
+                cv = cvp = None
+                if term.op == "switch" or term.conditional:
+                    w = sem.int_width(term.operands[0].type) if term.op == "switch" else 1
+                    cv, _, cvp, _ = _p_value(term.operands[0], env, w)
+                    if cvp != "false":
+                        branch_poison.append(f"(and {path[lab]} {cvp})")
+                else:
+                    w = 1
+                branch_edges(term, cv, w, edge, lab)
             done.add(lab); todo.remove(lab); progress = True
     if todo:
         raise sem.Unsupported("cyclic CFG (loop) -- not modeled")

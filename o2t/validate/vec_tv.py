@@ -440,8 +440,6 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
     fn = module.function(func)
     if fn is None or fn.is_declaration:
         raise sem.Unsupported(f"function {func} not found")
-    if len(fn.blocks) > 1:
-        raise sem.Unsupported("multi-block")
     env, decls, pflags = {}, [], []
     ctx = {"side": side, "fresh": fresh, "ub": [], "undef_regs": set(), "undef_reads": {},
            "effects": effects, "module": module}
@@ -469,6 +467,8 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
         else:
             raise sem.Unsupported(f"parameter type {t}")
     ctx["pflags"] = pflags
+    if len(fn.blocks) > 1:
+        return _v_multiblock(fn, env, decls, pflags, ctx)
     for inst in fn.blocks[0].instructions:
         if inst.op == "ret":
             if not inst.operands:
@@ -478,6 +478,74 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
                     si.smt_or(ctx["ub"]), pflags)
         _step(inst, env, ctx)
     raise sem.Unsupported("no vector/scalar ret")
+
+
+def _v_multiblock(fn, env, decls, pflags, ctx):
+    """An ACYCLIC CFG whose CONTROL FLOW is scalar and whose VALUES are lanes.
+
+    That is the shape every multi-block vector fold in LLVM's tests has: `br i1 %c` on a plain i1, a
+    vector `phi` at the join, one element-wise op, `ret`. So the control flow needs no lane reasoning
+    -- and it is NOT re-derived here. `cfg_structure` and `branch_edges` are the SAME functions the
+    scalar model uses, which is what stops the switch's edge accumulation and the terminator rules
+    from drifting apart; a duplicate model at exactly this kind of seam is what round 6 of the
+    2026-07 review found a false proof inside.
+
+    Only the VALUES are per-lane: a `phi` becomes a lane-wise `ite` over its predecessors'
+    reached-from conditions, and the returns combine the same way."""
+    order, binfo, succ, preds = si.cfg_structure(fn)
+    path, edge, rets, branch_poison = {order[0]: "true"}, {}, [], []
+    done, todo, progress = set(), list(order), True
+    while todo and progress:
+        progress = False
+        for lab in list(todo):
+            if lab != order[0] and any(p not in done for p in preds[lab]):
+                continue
+            if lab != order[0]:
+                parts = [f"(and {path[p]} {edge[(p, lab)]})" for p in preds[lab]]
+                path[lab] = parts[0] if len(parts) == 1 else "(or " + " ".join(parts) + ")"
+            body = binfo[lab].instructions
+            for inst in body[:-1]:
+                if inst.op == "phi":
+                    n, w = _vshape(inst.type)
+                    acc = None
+                    for value, plab in inst.incoming:
+                        ls = _lanes_of(value, n, w, env, ctx)
+                        rf = f"(and {path.get(plab, 'false')} {edge.get((plab, lab), 'false')})"
+                        acc = list(ls) if acc is None else \
+                            [(f"(ite {rf} {a[0]} {b[0]})", f"(ite {rf} {a[1]} {b[1]})")
+                             for a, b in zip(ls, acc)]
+                    env[inst.result] = (acc, w)
+                    continue
+                _step(inst, env, ctx)
+            term = body[-1]
+            if term.op == "ret":
+                if not term.operands:
+                    raise sem.Unsupported("no vector/scalar ret")
+                n, w = _vshape(term.operands[0].type)
+                rets.append((_lanes_of(term.operands[0], n, w, env, ctx), w, path[lab]))
+            else:
+                cv, cw = None, 1
+                if term.op == "switch" or term.conditional:
+                    cn, cw = _vshape(term.operands[0].type)
+                    if cn != 1:
+                        raise sem.Unsupported("branching on a vector condition")
+                    (cv, cvp), = _lanes_of(term.operands[0], 1, cw, env, ctx)
+                    if cvp != "false":   # branching on POISON is UB -- the same rule as the scalar path
+                        branch_poison.append(f"(and {path[lab]} {cvp})")
+                si.branch_edges(term, cv, cw, edge, lab)
+            done.add(lab); todo.remove(lab); progress = True
+    if todo:
+        raise sem.Unsupported("cyclic CFG (loop) -- not modeled")
+    if not rets:
+        raise sem.Unsupported("no vector/scalar ret")
+    w = rets[0][1]
+    lanes = rets[-1][0]
+    for rl, _, pc in reversed(rets[:-1]):
+        lanes = [(f"(ite {pc} {a[0]} {b[0]})", f"(ite {pc} {a[1]} {b[1]})")
+                 for a, b in zip(rl, lanes)]
+    if branch_poison:
+        lanes = [(t, si.smt_or([p, *branch_poison])) for t, p in lanes]
+    return lanes, w, decls, si.smt_or(ctx["ub"]), pflags
 
 
 # --- the scalable-vector model, over the same parse ----------------------------------------------
