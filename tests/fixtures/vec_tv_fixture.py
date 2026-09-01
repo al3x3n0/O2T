@@ -300,6 +300,26 @@ def main() -> int:
         assert vec_tv(z3, src, wrong, "m")["status"] == "refuted", \
             f"{intr} folded to {other} must refute -- the predicates must not be interchangeable"
 
+    # ELEMENT-WISE INTRINSICS PER LANE, through the SHARED scalar models. Each was already
+    # modelled for scalars and simply never reached the lane model, so any fold whose target is the
+    # vector form declined on its last instruction. Asserted against the hand-written lane-wise
+    # equivalent, so the per-lane application is checked and not merely that something came back.
+    bs = ("define <2 x i32> @b(<2 x i32> %x) {\n"
+          "  %r = call <2 x i32> @llvm.bswap.v2i32(<2 x i32> %x)\n  ret <2 x i32> %r\n}\n"
+          "declare <2 x i32> @llvm.bswap.v2i32(<2 x i32>)\n")
+    assert vec_tv(z3, bs, bs, "b")["status"] == "proved", "a vector bswap must be decidable"
+    #   ...and it must be a real permutation per lane, not the identity.
+    assert vec_tv(z3, bs, "define <2 x i32> @b(<2 x i32> %x) {\n  ret <2 x i32> %x\n}\n",
+                  "b")["status"] == "refuted", "a vector bswap is not the identity"
+    #   AN IMMARG FLAG IS SCALAR BESIDE A VECTOR OPERAND -- one flag for the whole operation, not
+    #   one per lane -- so it is read once and given to every lane. `cttz(%v, i1 true)` says zero
+    #   is POISON, and getting that wrong per-lane would change which lanes are poison.
+    cz = ("define <2 x i8> @c(<2 x i8> %x) {\n"
+          "  %r = call <2 x i8> @llvm.cttz.v2i8(<2 x i8> %x, i1 true)\n  ret <2 x i8> %r\n}\n"
+          "declare <2 x i8> @llvm.cttz.v2i8(<2 x i8>, i1)\n")
+    assert vec_tv(z3, cz, cz, "c")["status"] == "proved", \
+        "a vector cttz with an immarg flag must be decidable"
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "

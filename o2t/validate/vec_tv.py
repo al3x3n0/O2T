@@ -228,6 +228,35 @@ def _vec_instr(inst, env, ctx=None):
         a = _lanes_of(inst.operands[0], n, w, env, ctx)
         env[inst.result] = ([(f"(bvxor {av} {sem.const(1 << (w - 1), w)})", ap) for av, ap in a], w)
         return
+    if op == "call" and sem.intrinsic_name(inst.callee) in sem.INTRINSICS:
+        # The ELEMENT-WISE intrinsics, applied per lane through the SHARED models -- `ctpop`,
+        # `abs`, `ctlz`/`cttz`, the funnel shifts, the saturating adds, `bswap`, `bitreverse`. Each
+        # was already modelled for scalars and simply never reached the lane model, so a fold whose
+        # target is the vector form declined on its last instruction.
+        #
+        # An `immarg` flag (`llvm.cttz(%v, i1 true)`, `llvm.abs(%v, i1 true)`) is SCALAR beside a
+        # vector operand -- it is one flag for the whole operation, not one per lane -- so it is
+        # read once and handed to every lane.
+        intr = sem.intrinsic_name(inst.callee)
+        n, w = _vshape(inst.type)
+        per_lane = []
+        for a in inst.args:
+            if a.type is not None and a.type.kind == "vector":
+                per_lane.append(_lanes_of(a, n, w, env, ctx))
+            else:                                  # a scalar immarg: the same for every lane
+                sv = sem.value(a, env, sem.bit_width(a.type))
+                per_lane.append([(sv[0], sv[2])] * n)
+        lanes = []
+        for i in range(n):
+            ops = [(col[i][0], w if inst.args[k].type.kind == "vector"
+                    else sem.bit_width(inst.args[k].type), col[i][1], "false")
+                   for k, col in enumerate(per_lane)]
+            t, tw, tp, tu = sem.INTRINSICS[intr](ops, w)
+            lanes.append((t, tp))
+            if tu != "false":
+                ub.append(tu)
+        env[inst.result] = (lanes, w)
+        return
     if op == "call" and sem.intrinsic_name(inst.callee) in sem.MINMAX:
         # `llvm.smin/smax/umin/umax` per lane. These are the TARGET of a whole family of folds --
         # InstCombine canonicalises an `icmp`+`select` pair into one of them -- so the lane model
