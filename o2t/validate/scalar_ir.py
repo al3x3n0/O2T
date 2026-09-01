@@ -412,10 +412,14 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     # be dropped: where the source already passes poison the callee may observe anything.
     # `not su` still covers everything -- a source with UB refines to any behaviour, observable
     # effects included.
-    refute = smt_and([f"(not {su})",
-                      smt_or([tu,
-                              smt_and([f"(not {sp})", smt_or([tp, f"(not (= {r0} {r1}))"])]),
-                              *eff_differs])])
+    # A VOID function has no value clause -- its whole observable behaviour is the effects and UB.
+    # A pair whose sides disagree about returning a value at all needs no check HERE: a void return
+    # has width None and a value return has a number, so the `w0 != w1` signature check above has
+    # already turned it away. (An explicit guard was written and then removed -- ablating it changed
+    # nothing, because it could never fire.)
+    value_clause = ([smt_and([f"(not {sp})", smt_or([tp, f"(not (= {r0} {r1}))"])])]
+                    if r0 is not None and r1 is not None else [])
+    refute = smt_and([f"(not {su})", smt_or([tu, *value_clause, *eff_differs])])
     # A literal `poison` operand denotes an ARBITRARY value whose poison bit is set, and the
     # semantics layer spells that value `poison_<width>` -- but nothing declared it, so any function
     # containing one produced an undeclared symbol and came back as a solver ERROR rather than a
@@ -629,11 +633,12 @@ def _p_multiblock(fn, params, env, ctx):
                 _p_instruction(inst, env, ctx)
             term = body[-1]
             if term.op == "ret":
-                if not term.operands:
-                    raise sem.Unsupported("void return")
-                w = sem.int_width(term.operands[0].type)
-                rt, _, rp, _ = _p_value(term.operands[0], env, w)
-                rets.append((rt, rp, w, path[lab]))
+                if not term.operands:            # `ret void` -- no value, but the block IS finished
+                    rets.append((None, "false", None, path[lab]))
+                else:
+                    w = sem.int_width(term.operands[0].type)
+                    rt, _, rp, _ = _p_value(term.operands[0], env, w)
+                    rets.append((rt, rp, w, path[lab]))
             elif term.conditional:
                 cv, _, cvp, _ = _p_value(term.operands[0], env, 1)
                 if cvp != "false":                     # branching on POISON poisons the whole result
@@ -649,6 +654,11 @@ def _p_multiblock(fn, params, env, ctx):
     if not rets:
         raise sem.Unsupported("no scalar ret")
     w = rets[0][2]
+    if w is None:                              # every path returns void -- see the note above
+        if any(r[2] is not None for r in rets):
+            raise sem.Unsupported("some paths return a value and some do not")
+        poison = smt_or([r[1] for r in rets]) if branch_poison else "false"
+        return params, None, None, smt_or([poison, *branch_poison]), "false"
     term, poison = rets[-1][0], rets[-1][1]
     for rt, rp, _, pc in reversed(rets[:-1]):
         term, poison = f"(ite {pc} {rt} {term})", f"(ite {pc} {rp} {poison})"
@@ -734,10 +744,17 @@ def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
     ctx["mem"] = {"cell": {}, "val": {}}
     ret_term = ret_width = None
     ret_poison = ret_ub = "false"
+    saw_ret = False                  # distinguishes "returned void" from "never reached a ret"
     for inst in fn.blocks[0].instructions:
         if inst.op == "ret":
             if not inst.operands:
-                raise sem.Unsupported("void return")
+                # A VOID RETURN IS NOT AN ABSENCE OF BEHAVIOUR, it just moves all of it elsewhere:
+                # into the OBSERVABLE CALLS this model already tracks as effects, and into UB.
+                # Anything else a void function could do -- writing through a pointer the caller can
+                # see -- is not silently missed, it DECLINES ("store to a non-local/escaped
+                # pointer"). So the obligation is the same one minus the value clause.
+                ret_term, ret_width, saw_ret = None, None, True
+                break
             # A FLOAT RETURN is returned as its BITS, the same view already taken of a float
             # PARAMETER. Without it a function could take floats and compute over their bits and
             # still be undecidable purely because it handed one back -- which is what stopped every
@@ -748,9 +765,10 @@ def _translate_parsed(module, func, extra_ops=None, bindings=None, _depth=0,
             if ret_width is None:
                 raise sem.Unsupported("no scalar ret")
             ret_term, _, ret_poison, ret_ub = _p_value(inst.operands[0], env, ret_width)
+            saw_ret = True
             break
         _p_instruction(inst, env, ctx)
-    if ret_term is None:
+    if not saw_ret:
         raise sem.Unsupported("no scalar ret")
     # UB is a whole-function property: a div-by-zero anywhere is UB even if its result is dead.
     func_ub = smt_or([ret_ub, *(v[3] for v in env.values())])

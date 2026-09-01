@@ -237,6 +237,51 @@ def main() -> int:
                                  "f")["status"] != "proved", \
         ("a target whose conversion may be poison must not prove against an always-true source")
 
+    # 10. A VOID RETURN IS NOT AN ABSENCE OF BEHAVIOUR -- it moves all of it into the OBSERVABLE
+    #     CALLS this model already tracks, and into UB. Declining such a function was not
+    #     conservative, it simply refused every fold whose subject writes nothing and returns
+    #     nothing. Anything else a void function could do (writing through a pointer the caller can
+    #     see) still DECLINES rather than being missed: "store to a non-local/escaped pointer".
+    ud = "declare void @use_i32(i32)\n"
+    vsrc = (ud + "define void @v(i32 %x) {\n  %f = freeze i32 %x\n"
+            "  call void @use_i32(i32 %f)\n  ret void\n}\n")
+    assert si.validate_transform(z3, vsrc, vsrc, "v")["status"] == "proved", \
+        "a void function whose behaviour is its calls must be decidable"
+    #     THE OBLIGATION IS ENTIRELY THE EFFECTS, so each way of breaking them must REFUTE --
+    #     otherwise a void function would prove against anything at all, which is the failure mode
+    #     that matters here.
+    wrong_arg = (ud + "define void @v(i32 %x) {\n  call void @use_i32(i32 0)\n  ret void\n}\n")
+    assert si.validate_transform(z3, vsrc, wrong_arg, "v")["status"] == "refuted", \
+        "passing a different value to an observable call must refute"
+    dropped = ud + "define void @v(i32 %x) {\n  ret void\n}\n"
+    assert si.validate_transform(z3, vsrc, dropped, "v")["status"] != "proved", \
+        "dropping an observable call must not prove"
+    added = (ud + "define void @v(i32 %x) {\n  call void @use_i32(i32 %x)\n"
+             "  call void @use_i32(i32 %x)\n  ret void\n}\n")
+    assert si.validate_transform(z3, vsrc, added, "v")["status"] != "proved", \
+        "adding an observable call must not prove"
+    #     ...and a pair whose sides DISAGREE about returning a value at all must not be answered.
+    #     The signature check compares PARAMETERS, so it does not catch this on its own -- and once
+    #     void returns are allowed, one side having a value clause and the other not is a shape the
+    #     refutation cannot express rather than a verdict it can reach.
+    #     THE MULTI-BLOCK void path needs its own teeth: nothing in the corpus reaches it (the one
+    #     function that would decline on loops first), and a first attempt at it reported a plainly
+    #     ACYCLIC function as a "cyclic CFG" -- the `ret void` case skipped the block-completion
+    #     bookkeeping, so the worklist never drained.
+    mb = (ud + "define void @m(i1 %c, i32 %x) {\nentry:\n  br i1 %c, label %a, label %b\n"
+          "a:\n  call void @use_i32(i32 %x)\n  ret void\n"
+          "b:\n  call void @use_i32(i32 %x)\n  ret void\n}\n")
+    assert si.validate_transform(z3, mb, mb, "m")["status"] == "proved", \
+        "a multi-block function where every path returns void must be decided, not read as cyclic"
+    mb_bad = mb.replace("b:\n  call void @use_i32(i32 %x)", "b:\n  call void @use_i32(i32 0)")
+    assert si.validate_transform(z3, mb, mb_bad, "m")["status"] == "refuted", \
+        "changing one arm's call argument must refute"
+
+    val_ret = (ud + "define i32 @v(i32 %x) {\n  call void @use_i32(i32 %x)\n  ret i32 %x\n}\n")
+    d = si.validate_transform(z3, vsrc, val_ret, "v")
+    assert d["status"] not in ("proved", "refuted"), \
+        ("a void source against a value-returning target must not be given a verdict", d)
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "
