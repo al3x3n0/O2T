@@ -249,8 +249,25 @@ def _i_s_sat(ops, w, sub):
 
 # Note: `bswap` is deliberately NOT built in -- it is the worked example for the lli-gated
 # self-enrichment path (enrich_fixture), which demonstrates growing the vocabulary from outside.
+def _i_bswap(ops, w):
+    """`llvm.bswap` reverses BYTES. A permutation of bits -- no arithmetic, nothing to approximate."""
+    if w % 16 or w < 16:
+        raise Unsupported(f"bswap on i{w} (LLVM requires a multiple of 16 bits)")
+    v, _, p, u = ops[0]
+    parts = [f"((_ extract {i * 8 + 7} {i * 8}) {v})" for i in range(w // 8)]
+    return f"(concat {' '.join(parts)})", w, p, u          # low byte first == reversed order
+
+
+def _i_bitreverse(ops, w):
+    """`llvm.bitreverse` reverses BITS. Also a pure permutation."""
+    v, _, p, u = ops[0]
+    bits = [f"((_ extract {i} {i}) {v})" for i in range(w)]
+    return f"(concat {' '.join(bits)})", w, p, u           # bit 0 becomes the top bit
+
+
 INTRINSICS = {
     "ctpop": _i_ctpop, "abs": _i_abs,
+    "bswap": _i_bswap, "bitreverse": _i_bitreverse,
     "ctlz": lambda ops, w: _i_ctz(ops, w, leading=True),
     "cttz": lambda ops, w: _i_ctz(ops, w, leading=False),
     "fshl": lambda ops, w: _i_funnel(ops, w, right=False),
@@ -314,11 +331,17 @@ def intrinsic_name(callee: str | None) -> str | None:
         return None
     body = name[len("llvm."):]
     parts = body.split(".")
-    for take in (2, 1):                      # `uadd.sat.i32` then `ctpop.i32`
+    # `uadd.sat.i32` then `ctpop.i32` -- and finally the WHOLE body, for the intrinsics that carry
+    # NO type suffix at all. `llvm.assume` is the one that matters: it splits to a single part, so a
+    # loop that only ever looks at a PREFIX of a longer name never matched it and it was reported as
+    # an unmodelled call.
+    for take in (2, 1):
         if len(parts) > take:
             cand = ".".join(parts[:take])
-            if cand in INTRINSICS or cand in MINMAX or cand == "copysign":
+            if cand in INTRINSICS or cand in MINMAX or cand in ("copysign", "assume"):
                 return cand
+    if body in INTRINSICS or body in MINMAX or body in ("copysign", "assume"):
+        return body
     return None
 
 
@@ -488,6 +511,20 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
             a, _, ap, au = value(inst.args[0], env, w)
             b, _, bp, bu = value(inst.args[1], env, w)
             env[dst] = (f"(ite ({MINMAX[intr]} {a} {b}) {a} {b})", w, smt_or([ap, bp]), smt_or([au, bu]))
+            return
+        if intr == "assume":
+            # `llvm.assume(i1 %c)` does not "do something unknown" -- it ESTABLISHES that %c holds,
+            # and the behaviour is undefined where it does not. So the exact model is a UB term,
+            # `(not c) or poison(c)`, and it is EXACT rather than an approximation.
+            #
+            # Treating it as an opaque effect instead DROPS the fact, and a target simplified USING
+            # the assumption is then refuted on precisely the inputs the assumption excluded -- three
+            # false refutations in LLVM's own tests. The UB has to reach the function's `ub`, and a
+            # void call has no result to carry it, so it is parked under a reserved name that cannot
+            # collide with an SSA register (LLVM has no `%` in `__assume`-prefixed temporaries here).
+            c, _, cp, cu = value(inst.args[0], env, 1)
+            cond_ub = smt_or([f"(not (= {c} {const(1, 1)}))", cp, cu])
+            env[f"__assume{len(env)}"] = (const(0, 1), 1, "false", cond_ub)
             return
         if intr in INTRINSICS:
             w = int_width(inst.type)

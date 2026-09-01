@@ -136,6 +136,45 @@ def main() -> int:
     assert [f["function"] for f in seq["functions"]] == [f["function"] for f in par["functions"]], \
         "the parallel run must also preserve function ORDER, so reports stay comparable"
 
+    # 7. `llvm.assume` ESTABLISHES ITS ARGUMENT -- a UB term, not an opaque effect. Treated as
+    #    "something unknown" the fact is DROPPED, and a target simplified USING the assumption is
+    #    refuted on exactly the inputs the assumption excluded (three false refutations in LLVM's
+    #    own tests). The model is `(not c) or poison(c)`, and it must reach the function's UB even
+    #    though a void call has no result to carry it.
+    dec = "declare void @llvm.assume(i1)\n"
+    asm = ("define i8 @a(i1 %c, i8 %x, i8 %y) {\n  call void @llvm.assume(i1 %c)\n"
+           "  %s = select i1 %c, i8 %x, i8 %y\n  ret i8 %s\n}\n" + dec)
+    asm_t = ("define i8 @a(i1 %c, i8 %x, i8 %y) {\n  call void @llvm.assume(i1 %c)\n"
+             "  ret i8 %x\n}\n" + dec)
+    assert si.validate_transform(z3, asm, asm_t, "a")["status"] == "proved", \
+        "a target simplified USING the assumption must prove, not be refuted on excluded inputs"
+    #    ...and WITHOUT the assume the identical simplification is a miscompile and must refute, so
+    #    the assertion above turns on the assumption rather than on anything else in the pair.
+    no_a = ("define i8 @a(i1 %c, i8 %x, i8 %y) {\n"
+            "  %s = select i1 %c, i8 %x, i8 %y\n  ret i8 %s\n}\n")
+    assert si.validate_transform(z3, no_a,
+                                 "define i8 @a(i1 %c, i8 %x, i8 %y) {\n  ret i8 %x\n}\n",
+                                 "a")["status"] == "refuted", \
+        "without the assumption, returning %x unconditionally is a miscompile"
+
+    # 8. `llvm.bswap` / `llvm.bitreverse` are PERMUTATIONS of bits -- no arithmetic, so exact.
+    for intr, w in (("bswap", 32), ("bitreverse", 64)):
+        d = f"declare i{w} @llvm.{intr}.i{w}(i{w})\n"
+        p_src = (f"define i1 @p(i{w} %x, i{w} %y) {{\n"
+                 f"  %a = call i{w} @llvm.{intr}.i{w}(i{w} %x)\n"
+                 f"  %b = call i{w} @llvm.{intr}.i{w}(i{w} %y)\n"
+                 f"  %c = icmp eq i{w} %a, %b\n  ret i1 %c\n}}\n" + d)
+        p_tgt = f"define i1 @p(i{w} %x, i{w} %y) {{\n  %c = icmp eq i{w} %x, %y\n  ret i1 %c\n}}\n"
+        assert si.validate_transform(z3, p_src, p_tgt, "p")["status"] == "proved", \
+            f"{intr} is injective, so comparing its results is comparing its inputs"
+    #    ...and it must be a real permutation, not the identity -- otherwise the injectivity
+    #    assertions above would pass for a model that did nothing at all.
+    idb = ("define i32 @q(i32 %x) {\n  %a = call i32 @llvm.bswap.i32(i32 %x)\n  ret i32 %a\n}\n"
+           "declare i32 @llvm.bswap.i32(i32)\n")
+    assert si.validate_transform(z3, idb, "define i32 @q(i32 %x) {\n  ret i32 %x\n}\n",
+                                 "q")["status"] == "refuted", \
+        "bswap must not be modelled as the identity"
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "

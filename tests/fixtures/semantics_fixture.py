@@ -124,9 +124,21 @@ def main() -> int:
         "usub.sat": [("A", w, "pa", "ua"), ("B", w, "pb", "ub")],
         "sadd.sat": [("A", w, "pa", "ua"), ("B", w, "pb", "ub")],
         "ssub.sat": [("A", w, "pa", "ua"), ("B", w, "pb", "ub")],
+        "bswap": [("A", w, "pa", "ua")],
+        "bitreverse": [("A", w, "pa", "ua")],
     }
     assert set(arg_sets) == set(sem.INTRINSICS), "every modeled intrinsic must be differentiated"
+    #    The drift check compares against the TEXT-PATH builder it was relocated from, so it applies
+    #    only to intrinsics that HAVE such a counterpart. One modelled here for the first time has
+    #    none, and copying it back into the old table to satisfy this would create the very second
+    #    model the check exists to catch. Those are covered by behavioural assertions further down
+    #    (a permutation must not be the identity, and must be injective).
     for name, ops in arg_sets.items():
+        if name not in si._INTRINSICS:
+            assert name in ("bswap", "bitreverse"), \
+                (f"{name} has no text-path counterpart -- give it behavioural teeth and list it "
+                 "here deliberately, rather than letting it slip past the drift check", name)
+            continue
         assert si._INTRINSICS[name](ops, w) == sem.INTRINSICS[name](ops, w), \
             (f"intrinsic model drift: {name}", name)
 
@@ -244,6 +256,15 @@ def main() -> int:
     #    equality between two addresses it knows nothing about.
     ce2 = ce.replace("@g", "@h")
     assert _new(ce2, "f")[0] != t1, "different constant expressions must not share a symbol"
+
+    # 10) INTRINSIC NAMES WITH NO TYPE SUFFIX still have to resolve. `llvm.assume` splits into a
+    #     single part, so a lookup that only ever inspects a PREFIX of a longer name never matched
+    #     it -- and it was reported as an unmodelled call, which is how its semantics went missing.
+    assert sem.intrinsic_name("@llvm.assume") == "assume", \
+        "an intrinsic with no type suffix must still be recognised"
+    assert sem.intrinsic_name("@llvm.ctpop.i32") == "ctpop", "suffixed intrinsics still resolve"
+    assert sem.intrinsic_name("@llvm.smin.v2i32") == "smin", "vector intrinsics still resolve"
+    assert sem.intrinsic_name("@not_an_intrinsic") is None, "a plain call is not an intrinsic"
 
     print(f"semantics_fixture OK: the shared semantics layer emits BYTE-IDENTICAL SMT to the text "
           f"path it replaces across {len(SHAPES)} shapes, all 10 intrinsic models, and every "
