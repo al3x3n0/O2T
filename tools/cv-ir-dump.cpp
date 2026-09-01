@@ -461,7 +461,25 @@ int main(int argc, char **argv) {
   // addresses reads that fold as unsound and REFUTES it. Emitting the real width lets a validator
   // decline what it cannot represent instead of inventing a disagreement.
   DL = &M->getDataLayout();
-  std::string out = "{\"ptr_bits\":" +
+  // MODULE-LEVEL GLOBALS, WITH THEIR SIZES. A validator can only state that two objects do not
+  // overlap if it knows how big they are -- address inequality is not enough, since a 4-byte store
+  // at `@G1` and one at `@G1 + 1` are distinct addresses that still collide.
+  std::string globals = "[";
+  bool firstG = true;
+  for (const GlobalVariable &GV : M->globals()) {
+    if (!firstG) globals += ",";
+    firstG = false;
+    uint64_t sz = GV.getValueType()->isSized()
+                      ? DL->getTypeAllocSize(GV.getValueType()).getFixedValue() : 0;
+    // `constant` matters: a MUTABLE global's contents at entry are arbitrary (a caller may have
+    // written it), but a CONSTANT one's are fixed and LLVM folds using them. A model that gives
+    // both arbitrary contents is right about the first and wrong about the second.
+    globals += "{\"name\":" + quote(valueName(&GV)) +
+               ",\"bytes\":" + std::to_string(sz) +
+               ",\"constant\":" + (GV.isConstant() ? "true" : "false") + "}";
+  }
+  globals += "]";
+  std::string out = "{\"globals\":" + globals + ",\"ptr_bits\":" +
                     std::to_string(M->getDataLayout().getPointerSizeInBits(0)) +
                     ",\"functions\":[";
   bool first = true;

@@ -147,7 +147,7 @@ def _field_offsets(t):
     return offs, cur
 
 
-def _ptr_term(v, addr, apois=None, pw=64):
+def _ptr_term(v, addr, apois=None, pw=64, used_globals=None, const_globals=frozenset()):
     """A pointer OPERAND -> its 64-bit address term (and, via `apois`, its poison), or a decline.
 
     Pointers used to be first-class only when they were parameters (or geps of them): `addr` was
@@ -175,11 +175,50 @@ def _ptr_term(v, addr, apois=None, pw=64):
         if v.name in addr:
             return addr[v.name], (apois or {}).get(v.name, "false")
         raise sem.Unsupported(f"pointer {v.name!r} has no known address")
+    if v.kind == "global":
+        # A GLOBAL IS AN OBJECT WITH AN ADDRESS -- unknown, but fixed, non-null, and not overlapping
+        # any other global or alloca. Those facts are asserted by the driver.
+        #
+        # WHAT IS DELIBERATELY NOT ASSERTED is disjointness from a POINTER PARAMETER, and here the
+        # reason differs from the alloca case: a caller may legitimately pass `&g`, so a global and
+        # a parameter really CAN alias. Claiming otherwise would be asserting a falsehood, not
+        # merely over-approximating. Left free, the solver may alias them, which costs refutations
+        # and cannot manufacture proofs.
+        if used_globals is None:
+            raise sem.Unsupported("pointer operand global")
+        # A `constant` GLOBAL DECLINES. Its contents are fixed and LLVM folds using them --
+        # `@glbl = constant i32 10` makes `load i32, ptr @glbl` be 10, which is what collapses
+        # `select (icmp eq %ptr, @glbl), %A, 10` to `10`. This model gives every global ARBITRARY
+        # contents, which is right for a mutable one (a caller may have written it) and wrong here:
+        # the extra behaviours are exactly what turned that sound fold into a FALSE REFUTATION.
+        # Reading initialisers would decide it properly and is not built.
+        if v.name in const_globals:
+            raise sem.Unsupported(f"load through the constant global {v.name} (initialiser not "
+                                  "modelled, and its contents are NOT arbitrary)")
+        used_globals.add(v.name)
+        return f"glob_{str(v.name).lstrip('@').replace('.', '_')}", "false"
     if v.kind == "null" or (v.kind == "int" and v.int_value == 0):
         return sem.const(0, pw), "false"
     if v.is_poison:
         return sem.const(0, pw), "true"
     raise sem.Unsupported(f"pointer operand {v.kind}")
+
+
+def _access_target(ptr, addr, apois, pw, used_globals, stack, const_globals):
+    """The ADDRESS a load/store goes through, or a decline.
+
+    A pointer operand here is usually a register, but it can also name a GLOBAL directly --
+    `store i32 %a, ptr @G` is ordinary IR, and requiring a register turned every such function away
+    before the global's address was ever considered."""
+    if ptr.is_reg:
+        if ptr.name not in addr:
+            raise sem.Unsupported("store width/target out of scope")
+        if ptr.name in stack:
+            raise sem.Unsupported("access through an alloca (its bytes are not modelled)")
+        return addr[ptr.name], apois.get(ptr.name, "false")
+    if ptr.kind == "global":
+        return _ptr_term(ptr, addr, apois, pw, used_globals, const_globals)
+    raise sem.Unsupported(f"access through a {ptr.kind} pointer")
 
 
 def _gep_address(inst, addr, env, pw=64):
@@ -298,6 +337,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
     # them can be declined -- see the alloca handler for why that restriction is what keeps this
     # increment sound.
     allocas: list = []                   # [(symbol, size in bytes)] for this function
+    used_globals: set = set()            # global variables this function actually touches
+    const_globals = ir.parse(module_text).constant_globals
     stack: set = set()                   # registers holding an alloca-derived address
 
     for inst in fn.blocks[0].instructions:
@@ -310,7 +351,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 # A returned POINTER is its address, compared like any other 64-bit value. It was
                 # previously "non-integer return" -- one of the four labels that were really this
                 # one gap.
-                ret_term, ret_poison = _ptr_term(inst.operands[0], addr, apois, pw)
+                ret_term, ret_poison = _ptr_term(inst.operands[0], addr, apois, pw, used_globals, const_globals)
                 ret_width = pw
                 break
             if not t.is_int():
@@ -321,21 +362,28 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             break
         if op == "store":
             val, ptr = inst.operands[0], inst.operands[1]
-            w = val.type.bits if val.type.is_int() else None
-            if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
+            # A stored POINTER is its address bytes, exactly as `load ptr` reads them back. The two
+            # were asymmetric -- a pointer could be loaded out of memory but not put into it -- for
+            # no reason beyond this branch only ever looking at integers.
+            st_ptr = val.type is not None and val.type.kind == "ptr"
+            w = pw if st_ptr else (val.type.bits if val.type.is_int() else None)
+            if w is None or w % 8:
                 raise sem.Unsupported("store width/target out of scope")
-            if ptr.name in stack:
-                raise sem.Unsupported("store to an alloca (its bytes are not modelled)")
-            vt, _, vp, vub = sem.value(val, env, w)
+            base, base_p = _access_target(ptr, addr, apois, pw, used_globals, stack, const_globals)
+            if st_ptr:
+                vt, vp = _ptr_term(val, addr, apois, pw, used_globals, const_globals)
+                vub = "false"
+            else:
+                vt, _, vp, vub = sem.value(val, env, w)
             ub.append(vub)
             # Dereferencing a poison pointer is UB whichever way the access goes. The load path
             # says the same thing; a store that did NOT say it left the TARGET looking defined
             # where it is not, and a target that is secretly UB is the direction a false proof
             # comes from -- it removes the very disjunct that should have refuted the pair.
-            ub.append(apois.get(ptr.name, "false"))
-            derefs.append(addr[ptr.name])
-            mem = _store_bytes(mem, addr[ptr.name], vt, w, pw)
-            mp = _store_poison(mp, addr[ptr.name], vp, w, pw)  # the stored value keeps its poison
+            ub.append(base_p)
+            derefs.append(base)
+            mem = _store_bytes(mem, base, vt, w, pw)
+            mp = _store_poison(mp, base, vp, w, pw)            # the stored value keeps its poison
             continue
         if op == "load":
             ptr = inst.operands[0]
@@ -345,12 +393,10 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             # would decline every `load ptr` and there would be no point to any of this.
             as_ptr = inst.type.kind == "ptr"
             w = pw if as_ptr else (inst.type.bits if inst.type.is_int() else None)
-            if w is None or w % 8 or not ptr.is_reg or ptr.name not in addr:
+            if w is None or w % 8:
                 raise sem.Unsupported("load width/target out of scope")
-            if ptr.name in stack:
-                raise sem.Unsupported("load from an alloca (its bytes are not modelled)")
-            base = addr[ptr.name]
-            ub.append(apois.get(ptr.name, "false"))     # dereferencing a poison pointer is UB
+            base, base_p = _access_target(ptr, addr, apois, pw, used_globals, stack, const_globals)
+            ub.append(base_p)                           # dereferencing a poison pointer is UB
             derefs.append(base)
             lp = _load_poison(mp, base, w, pw)
             # `!noundef` PROMISES the loaded value is neither undef nor poison, and makes it UB if
@@ -369,8 +415,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             continue
         if op == "select" and inst.type.kind == "ptr":
             c, _, cp, cub = sem.value(inst.operands[0], env, 1)
-            a, ap = _ptr_term(inst.operands[1], addr, apois, pw)
-            b, bp = _ptr_term(inst.operands[2], addr, apois, pw)
+            a, ap = _ptr_term(inst.operands[1], addr, apois, pw, used_globals, const_globals)
+            b, bp = _ptr_term(inst.operands[2], addr, apois, pw, used_globals, const_globals)
             for src_op in (inst.operands[1], inst.operands[2]):
                 if src_op.is_reg and src_op.name in stack:
                     stack.add(inst.result)
@@ -396,8 +442,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             lhs, rhs = inst.operands[0], inst.operands[1]
             if _stacky(lhs) != _stacky(rhs) and not (lhs.kind == "null" or rhs.kind == "null"):
                 raise sem.Unsupported("icmp between an alloca and a pointer of unknown provenance")
-            a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
-            b, bp = _ptr_term(inst.operands[1], addr, apois, pw)
+            a, ap = _ptr_term(inst.operands[0], addr, apois, pw, used_globals, const_globals)
+            b, bp = _ptr_term(inst.operands[1], addr, apois, pw, used_globals, const_globals)
             # Comparing ADDRESSES ignores provenance, which over-approximates aliasing (two
             # pointers into different objects that happen to share an address compare equal here).
             # That direction costs refutations and cannot manufacture proofs.
@@ -409,7 +455,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             # Freeze over a pointer: the address is whatever it was, and it is no longer poison.
             # A source-side choice would need a quantifier this validator does not emit, so the
             # only case decided here is the one where there is no freedom to collapse.
-            a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
+            a, ap = _ptr_term(inst.operands[0], addr, apois, pw, used_globals, const_globals)
             if ap != "false":
                 # This validator does not know which SIDE it is translating, and the quantifier
                 # depends on it: a source-side choice is universal, a target-side one is free.
@@ -434,7 +480,7 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                 raise sem.Unsupported(f"ptrtoint to {inst.type}")
             if w > pw:
                 raise sem.Unsupported(f"ptrtoint to i{w} (wider than an i{pw} address)")
-            a, ap = _ptr_term(inst.operands[0], addr, apois, pw)
+            a, ap = _ptr_term(inst.operands[0], addr, apois, pw, used_globals, const_globals)
             term = a if w == pw else f"((_ extract {w - 1} 0) {a})"
             env[inst.result] = (term, w, ap, "false")
             continue
@@ -469,6 +515,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
             base = inst.operands[0]
             if base.is_reg and base.name in stack:
                 stack.add(inst.result)
+            if base.kind == "global":        # a gep off a global starts from the global's address
+                addr[base.name] = _ptr_term(base, addr, apois, pw, used_globals, const_globals)[0]
             addr[inst.result] = _gep_address(inst, addr, env, pw)
             continue
         if op == "call" and not inst.indirect and sem.intrinsic_name(inst.callee) is None:
@@ -488,10 +536,11 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
                         capois[pname] = apois.get(a.name, "false")
                     else:
                         cenv[pname] = sem.value(a, env, kind)
-                cret, cw, mem, cderefs, cp, cub, mp, calloc = _mem_translate(
+                cret, cw, mem, cderefs, cp, cub, mp, calloc, cglob = _mem_translate(
                     module_text, callee.name, module_text, (cenv, caddr, mem, mp, capois),
                     depth + 1)
                 allocas.extend(calloc)   # an inlined callee's allocas are objects here too
+                used_globals |= cglob
                 derefs.extend(cderefs)
                 ub.append(cub)
                 if inst.result is not None and not inst.type.kind == "void":
@@ -502,7 +551,8 @@ def _mem_translate(ll_text, func, module_text=None, bind=None, depth=0):
         sem.evaluate(inst, env, {})                     # scalar op; alloca/other shapes decline here
     # UB is a whole-function property: a div-by-zero anywhere is UB even if its result is dead.
     ub += [v[3] for v in env.values()]
-    return ret_term, ret_width, mem, derefs, ret_poison, si.smt_or(ub), mp, allocas
+    return (ret_term, ret_width, mem, derefs, ret_poison, si.smt_or(ub), mp, allocas,
+            used_globals)
 
 
 def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int = 15,
@@ -527,8 +577,8 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     if _ret_kind(before_ll, func) != _ret_kind(after_ll, func):
         return {"status": "unsupported", "function": func, "reason": "return type changed"}
     try:
-        rb, wb, mb, db, rbp, sub, mbp, alc_b = _mem_translate(before_ll, func)
-        ra, wa, ma, da, rap, tub, map_, alc_a = _mem_translate(after_ll, func)
+        rb, wb, mb, db, rbp, sub, mbp, alc_b, gl_b = _mem_translate(before_ll, func)
+        ra, wa, ma, da, rap, tub, map_, alc_a, gl_a = _mem_translate(after_ll, func)
     except si.Unsupported as exc:
         return {"status": "unsupported", "function": func, "reason": str(exc)}
     if wb != wa or (rb is None) != (ra is None):
@@ -550,7 +600,23 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     # its address is not null, and distinct objects do not overlap. Nothing is said about a
     # POINTER PARAMETER -- the caller's extents are unknown, so the solver stays free to alias
     # them, which over-approximates in the direction that costs refutations, never proofs.
+    # GLOBALS ARE OBJECTS TOO, and join the same disjointness set as the allocas: distinct objects
+    # do not overlap, and none of them is null. The DIFFERENCE is what may be said about a POINTER
+    # PARAMETER. An alloca is fresh, so it genuinely cannot be what the caller passed; a GLOBAL can
+    # be -- `f(&g)` is ordinary code -- so asserting they differ would be asserting a FALSEHOOD
+    # rather than over-approximating. Neither is asserted, and the solver stays free to alias a
+    # parameter with either, which costs refutations and cannot manufacture proofs.
+    gsizes = ir.parse(before_ll).globals
+    gsizes.update(ir.parse(after_ll).globals)
+    glob_all = {}
+    for g in sorted(gl_b | gl_a):
+        sz = gsizes.get(g)
+        if not sz:
+            return {"status": "unsupported", "function": func,
+                    "reason": f"global {g} has no known size"}
+        glob_all[f"glob_{str(g).lstrip('@').replace('.', '_')}"] = sz
     alloc_all = {n: sz for n, sz in [*alc_b, *alc_a]}
+    alloc_all.update(glob_all)
     for n in alloc_all:
         decls.append(f"(declare-const {n} (_ BitVec {pw}))")
     facts = []

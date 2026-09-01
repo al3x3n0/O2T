@@ -413,6 +413,20 @@ class Module:
         return [Function(f) for f in self.raw.get("functions", [])]
 
     @property
+    def globals(self) -> dict:
+        """`{name: size in bytes}` for the module's global variables. The SIZE is the point:
+        disjointness cannot be stated from address inequality alone, since a 4-byte store at `@G`
+        and one at `@G + 1` are different addresses that still overlap."""
+        return {g["name"]: int(g.get("bytes", 0)) for g in self.raw.get("globals", [])}
+
+    @property
+    def constant_globals(self) -> set:
+        """Names of globals declared `constant`. Their contents are FIXED and LLVM folds loads of
+        them; a model that treats every global's memory as arbitrary is right about a mutable
+        global and wrong about one of these."""
+        return {g["name"] for g in self.raw.get("globals", []) if g.get("constant")}
+
+    @property
     def ptr_bits(self) -> int:
         """Address-space-0 pointer width from the module's datalayout, defaulting to 64.
 

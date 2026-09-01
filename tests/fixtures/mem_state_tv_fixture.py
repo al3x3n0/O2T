@@ -356,6 +356,51 @@ def main() -> int:
     assert mem_state_tv(z3, ce, ce, "ce")["status"] == "proved", \
         "a constant expression stored through a pointer must reach a VERDICT, not a solver error"
 
+    # 7l. A STORED POINTER is its address bytes, exactly as `load ptr` reads them back. The two
+    #     were asymmetric for no reason beyond the store branch only ever looking at integers.
+    rt = ("define ptr @sp(ptr %p, ptr %q) {\n  store ptr %q, ptr %p\n"
+          "  %r = load ptr, ptr %p\n  ret ptr %r\n}\n")
+    assert mem_state_tv(z3, rt, "define ptr @sp(ptr %p, ptr %q) {\n  store ptr %q, ptr %p\n"
+                                "  ret ptr %q\n}\n", "sp")["status"] == "proved", \
+        "a pointer stored and loaded back must round-trip"
+    assert mem_state_tv(z3, rt, "define ptr @sp(ptr %p, ptr %q) {\n  store ptr %q, ptr %p\n"
+                                "  ret ptr %p\n}\n", "sp")["status"] == "refuted", \
+        "returning the wrong pointer must refute -- the round-trip is not vacuous"
+
+    # 7m. GLOBALS ARE OBJECTS: an address, never null, never overlapping another global or an
+    #     alloca. Distinct globals not overlapping is what lets two stores be reordered.
+    gg = "@G1 = global i32 0\n@G2 = global i32 0\n"
+    two_st = (gg + "define void @g(i32 %a) {\n  store i32 %a, ptr @G1\n"
+              "  store i32 1, ptr @G2\n  ret void\n}\n")
+    reordered = (gg + "define void @g(i32 %a) {\n  store i32 1, ptr @G2\n"
+                 "  store i32 %a, ptr @G1\n  ret void\n}\n")
+    assert mem_state_tv(z3, two_st, reordered, "g")["status"] == "proved", \
+        "stores to two DISTINCT globals may be reordered"
+    swapped_g = (gg + "define void @g(i32 %a) {\n  store i32 %a, ptr @G2\n"
+                 "  store i32 1, ptr @G1\n  ret void\n}\n")
+    assert mem_state_tv(z3, two_st, swapped_g, "g")["status"] == "refuted", \
+        "writing the values to the OTHER globals must refute -- disjointness is not vacuity"
+    #     WHAT IS DELIBERATELY NOT ASSERTED: a global and a POINTER PARAMETER may alias, because a
+    #     caller can pass `&g`. That differs from the alloca case, where the object is fresh and
+    #     genuinely cannot be what the caller passed. Claiming they differ would assert a FALSEHOOD
+    #     rather than over-approximate, so `icmp eq ptr @G1, %p -> false` must NOT prove.
+    aliasable = (gg + "define i1 @h(ptr %p) {\n  %c = icmp eq ptr @G1, %p\n  ret i1 %c\n}\n")
+    assert mem_state_tv(z3, aliasable, gg + "define i1 @h(ptr %p) {\n  ret i1 false\n}\n",
+                        "h")["status"] != "proved", \
+        ("a global and a pointer parameter may genuinely alias -- `f(&g)` is ordinary code -- so "
+         "this must never prove")
+    #     A `constant` GLOBAL DECLINES, and this is a decline that a REFUTATION taught. Its contents
+    #     are fixed and LLVM folds using them: `@k = constant i32 10` makes `load i32, ptr @k` be
+    #     10, which collapses `select (icmp eq %p, @k), %A, 10` to `10`. This model gives every
+    #     global ARBITRARY contents -- right for a mutable one, wrong here -- and the extra
+    #     behaviours turned that sound fold into a FALSE REFUTATION on select.ll test61.
+    kk = "@k = constant i32 10\n"
+    cg = (kk + "define i32 @c(ptr %p) {\n  %A = load i32, ptr %p\n"
+          "  %B = icmp eq ptr %p, @k\n  %C = select i1 %B, i32 %A, i32 10\n  ret i32 %C\n}\n")
+    d = mem_state_tv(z3, cg, kk + "define i32 @c(ptr %p) {\n  ret i32 10\n}\n", "c")
+    assert d["status"] == "unsupported" and "constant global" in d.get("reason", ""), \
+        ("a fold that turns on a constant global's INITIALISER must decline, never refute", d)
+
     print("mem_state_tv_fixture OK: pointer-side-effect functions are TV'd over the MEMORY STATE via the "
           "SMT theory of arrays -- DSE removing a dead store PROVES (final memory unchanged); dropping a "
           "live store or storing a wrong value REFUTES; and ALIASING is handled exactly -- claiming a "
