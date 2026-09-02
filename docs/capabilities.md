@@ -23,18 +23,28 @@ recovered fold that provably matches it.
 | Area | Status | Notes |
 | --- | --- | --- |
 | Scalar integer folds (`add/sub/mul/and/or/xor/shifts/icmp/select`, casts) | ✅ verifies | poison/UB-aware refinement — a fold that adds an unjustified `nsw/nuw/exact/disjoint` is refuted |
-| Straight-line + acyclic branch/φ control flow | ✅ verifies (Track B) | symbolic CFG execution |
+| Acyclic control flow: branches, `phi`, **`switch`**, **void returns** | ✅ verifies (Track B) | symbolic CFG execution. A switch's cases ACCUMULATE onto a shared block; a void function's obligation is its observable calls plus UB |
 | Memory: `mem2reg`/`sroa`, DSE, load-forwarding, gep/type-punning | ✅ verifies (Track B) | byte-addressable theory of arrays, exact aliasing; a target that introduces a new dereference declines (null-deref UB unmodeled) |
-| Fixed & scalable vectors (element-wise, shuffle/extract/insert) | ✅ verifies (Track B) | per-lane model |
+| **Pointers as values**: `select`/`load`/`store`/`icmp`/`ret` of `ptr`, `ptrtoint`, geps | ✅ verifies (Track B) | a pointer is its address, with its own poison channel. Comparing addresses ignores provenance — an over-approximation that costs refutations, never proofs |
+| **Address width from the datalayout** | ✅ enforced | `p:32` makes `ptrtoint ptr to i32` EXACT; assuming 64 turned a sound LLVM fold into a refutation. Widths past 64 decline |
+| **Globals and allocas as objects** | ✅ verifies (Track B) | non-null, non-wrapping, mutually disjoint. An alloca may be asserted distinct from a pointer PARAMETER (it is fresh); a GLOBAL may not — `f(&g)` is ordinary code. A `constant` global DECLINES (its initialiser is not read) |
+| Fixed & scalable vectors (element-wise, shuffle/extract/insert) | ✅ verifies (Track B) | per-lane model with per-lane poison |
+| **Multi-block vectors**, **pointer lanes**, element-wise intrinsics, `llvm.smin/smax/umin/umax` | ✅ verifies (Track B) | the CFG walk is SHARED with the scalar model, not mirrored. Control flow in these is scalar; only values are lanes |
+| `llvm.assume`, `bswap`, `bitreverse`, `ctpop`, `abs`, `ctlz`/`cttz`, funnel shifts, saturating adds | ✅ verifies | `assume` is a UB term (`(not c) or poison(c)`), not an opaque effect — treating it as opaque refuted folds simplified USING the assumption |
+| **Constant expressions** | ✅ verifies | computable ones are FOLDED by LLVM; address-dependent ones (`ptrtoint (ptr @g to i32)`) become unconstrained symbols keyed by text, since a fold must hold for EVERY address the global could have |
 | Interprocedural: inlining, IPSCCP-style, argument promotion, `deadargelim`, `globaldce` | ✅ verifies (composition) | pipeline / module / signature / promotion via refinement transitivity |
 | Counted loops → closed form (`indvars`), strength reduction, LICM, SLP | ✅ verifies (loop track) | all trip counts |
+| `freeze` (poison laundering) | ✅ verifies introduction AND removal (Track B) | a target choice is existential; a SOURCE choice is universal and `forall`-bound. Parameters without `noundef` carry a poison flag shared by both sides, which is what makes `freeze %x -> %x` refute |
+| **Floating point: bit-level** (`fneg`, `llvm.copysign`, `select`, `freeze`, lane-preserving `bitcast`, FP constants) | ✅ verifies — EXACTLY | LLVM defines these BIT-WISE: no rounding, no trap, no NaN/zero special case. This is not an approximation of FP |
+| **Floating point: conversions and `fcmp`** | ✅ verifies structurally | modelled as UNINTERPRETED functions/predicates — the weakest honest model. Folds that route a conversion's RESULT through structure decide; a REFUTATION from such a query DECLINES (`guard: uninterpreted-fp`), because the witness may use a function real IEEE never realises |
+| Floating-point ARITHMETIC (`fadd`, `fmul`, `fdiv`, `frem`) | ⚠️ declines | no honest bits-only answer: `+0.0`/`-0.0` differ in bits and compare equal, NaN compares unequal to itself. The containment is ASSERTED by fixture, not described |
+| Fast-math flags | ⚠️ ignored on the SOURCE, DECLINED on the TARGET | FMF only ENLARGE a value's behaviour set. On the source that is conservative; on the target, modelling it smaller than it is would prove pairs reality refutes |
 | Guards needing `KnownBits` / `APInt` / `ConstantRange` reasoning | ⚠️ mostly declines | a scoped vocabulary stratum; the guard is dropped→decline unless modeled (never mis-applied) |
-| Floating point (beyond `nnan`/`ninf`) | ⚠️ declines | `nsz`/`reassoc`/`contract` involve value-nondeterminism — out of scope |
-| Width-changing loop recurrences; loop-nest transforms; loop vectorization | ⚠️ declines | stated loop-track boundary |
-| In-place-mutation folds; dynamic-opcode folds; worklist fixpoints | ⚠️ declines | recovery-fragment boundary |
-| `freeze` (poison laundering) | ✅ verifies introduction AND removal (Track B) | both directions are decided. A target choice is existential (a free constant); a SOURCE choice is universal and is bound by a `forall` around the refutation — leaving it free would manufacture false refutations. Parameters without `noundef` carry a poison flag shared by both sides, which is what makes `freeze %x -> %x` refute (Alive2's own witness for it is `%x = poison`). **Measured on LLVM 18 `freeze.ll`: 1 → 20 proved**, `select.ll` 114 → 116, `and.ll` unchanged at 132, 0 refutations, and all 268 proofs confirmed by lli + Alive2 |
-| Transforms whose soundness depends on an argument being `undef` | ⚠️ declines unless `noundef` | a parameter's POISON-ness is now modeled (a flag shared by both sides); its `undef`-ness is not, because an undef value is not one value — each USE may observe a different one, so it cannot be a single term. Where that is load-bearing (the target's result depends on a non-`noundef` parameter the source's does not) the verdict declines. Declaring `noundef` makes it provable |
-| Full undefined-behavior accounting (pointer validity, `undef` distinct from poison) | ⚠️ partial | single poison bit; UB modeled for div/rem and flags, not pointer validity; `undef` unmodeled, so `freeze`-removal and undef-sensitive folds decline |
+| Loops in Track B (`cyclic CFG`) | ⚠️ declines | the loop TRACK handles counted loops; Track B's CFG walk is acyclic. Hoisting a `freeze` out of a loop needs induction plus the freeze-quantifier problem |
+| Exception handling (`invoke`, `landingpad`, `catchswitch`) | ⚠️ declines | unwind edges unmodeled |
+| Non-byte-width memory (`i1`, `i4`, `i67`, `i177`) | ⚠️ declines | Alive2 tracks how many BITS of a byte were written; after `store i1`, a `load i8` of that byte is POISON. A byte array cannot represent a partially-written byte, and modelling it zero-padded is a FALSE PROOF |
+| `undef` used more than once | ⚠️ declines | an undef value is not one value — each USE may observe a different one, so it cannot be one term |
+| Full UB accounting (pointer validity) | ⚠️ partial | single poison bit; UB modeled for div/rem, flags, poison-pointer dereference and violated `!noundef`, not pointer validity |
 
 ✅ = a real proof or refutation with a witness. ⚠️ = an explicit `unsupported` decline (a sound
 non-answer), **never** a false `proved`.
@@ -60,145 +70,97 @@ Two consequences worth knowing when reading verdicts:
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV, re-measured 2026-08-10 over EIGHT of LLVM 18's InstCombine test files
-  (1,664 functions):** **1,442 proved (86%)**, **195 declines**, 27 timeouts, **0 refutations**, and
-  every proof independently confirmed — a full `--cross-check` pass over the same tree reports
-  **1,430 cross-checked against lli + Alive2 + bitwuzla, 0 disagreements, 0 vacuous**.
-  The two runs differ only in timeouts (26 vs 33) and therefore in proofs (1,437 vs 1,430): the
-  declines are identical at 201, and the per-function budget is WALL CLOCK, so the three extra oracle
-  processes push a handful of slow functions over it. A timeout is a non-answer, not a proof, so the
-  honest pair of numbers is "1,437 decided when run alone; every proof confirmed". It is also the
-  standing argument for `rlimit` over wall clock — a verdict should not depend on machine load.
-  (Earlier figure, 2026-08-05: 1,418 proved, 400 declines.) The jump from a
-  ~1,100 baseline came from two things measured rather than guessed: modelling arguments as
-  poison-capable plus a `forall`-bound source choice (which decided `freeze` in both directions), and
-  treating LLVM's keep-alive `call void @use(i32 %x)` as an *observable effect* rather than an
-  undecidable shape — that idiom alone accounted for 124 of 540 declines. A tenth file (`shift.ll`,
-  171 functions) is NOT measured: LLVM 18's own `opt` errors on it ("Instruction Combining did not
-  reach a fixpoint"), so it is excluded rather than silently counted as zero.
-- **The memory model discharges refinement too, and it bought almost nothing here.** Same port as the
-  lane model, one file later: every byte of memory carries a poison bit, a store writes the stored
-  value's poison across its range, a load ORs it back, and the obligation covers the returned value
-  AND the final memory. Both poison guards are gone from this path (the new-deref guard stays — it is
-  about pointer validity, not poison). **Measured lift: +7 functions.** These are peephole tests,
-  mostly scalar and vector, and their memory declines were about SHAPE — escaped pointers, `alloca`,
-  `getelementptr` — not poison. The value here is that two blunt whole-function guards were replaced
-  by the real obligation, so cases that could only be *declined* are now decided: a sound poison
-  exploitation through memory proves, and a target whose final memory is poison where the source's is
-  defined refutes. Reach is not the argument.
-- **The lane model discharges REFINEMENT, not value equality.** It used to compare values behind two
-  whole-function guards — refuse to prove if the target could be poison anywhere, refuse to refute if
-  the source could — and poison in LLVM is per *element*, so one flagged lane disqualified a whole
-  function. Each lane now carries a poison term and the obligation is the one `scalar_ir` discharges,
-  per lane; `undef`/`poison` elements become named choices whose quantifier depends on their side
-  (∀ for the source, free for the target), as for `freeze`. Both guards are gone from this path.
-  A fold that EXPLOITS poison (`ashr x,x -> 0`) now proves; one that INTRODUCES it (adding `exact`)
-  refutes though every lane value is identical. **Measured: +139 functions.**
-- **A FALSE PROOF the refinement port left behind, and it was in `undef`, not poison.** A literal
-  `undef` is named fresh at every read, which is right — each use may observe a different value. But a
-  register that *carries* that freedom (`%u = and undef, -1`) is one term, so reading it twice modelled
-  the two uses as agreeing. `xor %u, %u` therefore modelled `0`, and `ret zeroinitializer -> xor %u, %u`
-  **proved here while reference Alive2 refutes it** (witness: lane 1, source 0, target 1). It is unsound
-  in the *proving* direction, because sharing shrinks the TARGET's behaviour set and a target with fewer
-  behaviours is easier to prove a refinement of. Per-use instantiation is a change to the value model,
-  not to a read, so an undef-tainted register is **declined on its second read** instead; the taint is
-  transitive, and a single read (exactly one observation of undef) stays decided. **Measured cost: zero
-  — 1,418 of 1,664, unchanged.** The corpus oracles could not have found it: real InstCombine does not
-  introduce a duplicated undef use, so it is reachable through the API rather than through the sweep.
-  The class is bounded, and that was checked rather than assumed: `semantics.value` declines on *any*
-  undef operand and both the scalar and memory models read operands through it, while the scalable lane
-  model declines on the operand kind — so the fixed-width lane model was the only validator that
-  materializes `undef` at all, and is now the only one that needs the per-use rule.
-- **The element-wise tail the lane model was still missing** — the census named it, and each item is
-  exactly what a lane model is for. `trunc` narrows lane by lane (truncating the wrong bits refutes).
-  `freeze` is decided in BOTH directions, which required giving a vector parameter a **poison flag per
-  lane**: without one every lane is definite, freeze collapses to the identity, and `freeze %x -> %x`
-  would PROVE — Alive2 refutes it with witness `<3 [based on undef], poison>`. The two went in together
-  or not at all. Removal refutes, introduction proves, and adding `noundef` — the exact promise the flag
-  encodes — flips removal back to proved, so the verdict turns on the model rather than on the fixture.
-  Keep-alive `call void @use(...)` is carried into this path too, with the scalar path's split (callee
-  sequence syntactic, arguments per lane in the solver) and its poison rule (where the source already
-  passes poison, a different target argument refines). **Measured: 1,418 → 1,437 for `trunc` + `freeze`
-  + parameter poison, no new timeouts and no proof lost.**
-  **The observable-call half of that bought nothing here, and is recorded flat.** It removed the lane
-  model's `call` stop entirely (20 → 0 across the corpus), but the decline total did not move: those
-  functions get past the call and stop elsewhere, and four now decline correctly on an unmodelled
-  *intrinsic* name (`@llvm.smin.v2i32`) rather than on the shape. The argument for it is that the
-  scalar and lane paths now read a keep-alive call the same way, not reach.
-- **A precision bug in the undef rule, which only the measurement found.** The taint propagated through
-  `freeze` — but freeze is exactly the instruction that collapses undef into ONE fixed value, so its
-  uses legitimately agree. That declined five real functions in LLVM 18's tests
-  (`and_freeze_undef_multipleuses` and friends) that reference Alive2 confirms. The taint now clears at
-  a freeze, and the boundary is pinned from both sides: **frozen** undef used twice proves, **unfrozen**
-  undef used twice still declines (the original false proof). **Measured: 1,437 → 1,439**; the three
-  that still decline return `void`, which this validator does not model — a pre-existing limit, and the
-  one place where an observable call is the entire obligation. Worth noting for anyone extending the
-  rule: it cost nothing when it was written, and would have cost five the moment `freeze` landed.
-- **What the decline census actually says**, once each verdict is attributed to the validator that got
-  FURTHEST rather than to the first one to look: `select` 60, undef vector elements 34, `zext` 28,
-  `bitcast` 18, `sext` 9. `select`/`zext`/`sext` are now modelled lane by lane, and the undef/poison
-  element buckets fell to the refinement port above. Reporting only the scalar validator's reason had ranked "vectors" as the largest
-  bucket at ~150 — misleading, because the lane model was already being dispatched to and was
-  declining somewhere else entirely.
-- **Track B whole-function TV (earlier single-file figure):** **495 / 715 (69%)** of LLVM 18's `and/or/xor/add.ll` InstCombine test
-  functions proved sound end-to-end, **0 false refutations**; the rest decline on shapes above, plus a
-  handful of timing-dependent per-function solver timeouts (a sound decline). Re-measured at the
-  current head: the scalar refinement path proves ~434 and the memory/vector dispatch the other ~61 (the dispatch
-  share fell when the value-equality models stopped proving against targets that can produce poison).
-  The rise over the previously documented 428 is the parser migration: trailing `; comments`,
-  `immarg`, `zeroinitializer`, `splat (iW C)` and named/packed struct geps are all valid IR the old
-  text readers could not match.
-  The previously documented 351/715 (49%) counted the scalar path alone.
-- **An observable call is observable whatever the function returns — and that was a second false
-  proof.** The effect terms sat *inside* the guard on the returned value's poison, so once the source's
-  result was poison the solver never examined the calls at all. Isolated by a source that is poison-
-  returning but UB-free (`shl i32 %x, 33` is poison for every input): the source hands the callee `%x`,
-  the target hands it `0`, nothing else differs — O2T **proved** it and reference Alive2 refutes it with
-  witness `%x = 1`. The terms now sit beside the value obligation, each argument keeping its own poison
-  guard (where the source already passes poison the callee may observe anything), and a UB source still
-  refines to any behaviour, observable effects included. **Cost: zero — 1,439 of 1,664 and 199 declines,
-  unchanged, with 0 refutations on LLVM's own tests**, which is what `opt` not rewriting keep-alive
-  arguments into observably different values predicts. Like the `undef` case above, no sweep could have
-  found it; it took constructing the pair and asking the oracle.
-- **`bitcast`, and a float carried as opaque BITS — with no floating-point semantics assumed.** A
-  parameter this model has no value theory for still has a *width*, and a `bitcast` changes no value,
-  so it is the identity on the term (equal widths checked, not assumed). That makes
-  `bitcast float %b to i32` decidable without any FP model at all: every bit pattern is a valid float,
-  so carrying the argument as an opaque bitvector is **exact rather than approximate**. Previously
-  `scalar_ir` took `fn.int_params`, so a non-integer parameter was dropped from the environment
-  entirely and a function merely *mentioning* a float argument was undecidable whatever it did with
-  it — which is the real blocker the census had filed under "bitcast".
-  **The soundness argument is containment, and it is asserted rather than described**: a float cannot
-  reach anything that reads it as an FP *value*, because `ret` requires an integer type, `int_width`
-  declines on every non-integer, an observable call's arguments must be integers, and a real FP
-  operation declines on its opcode. A float return, an `fadd`, and a *vector* bitcast (which would
-  need a lane↔flat-bits correspondence this scalar model does not have) each still decline, and the
-  fixture checks all three. Widths come from LLVM's own `getPrimitiveSizeInBits()`, the accessor
-  `bitcast` legality is decided by — deriving them from type names in Python would be the second
-  reading of LLVM the parse migration removed.
-  **Measured: declines 199 → 195, exactly `or.ll test39a`–`d`, none added; proved 1,439 → 1,442 in
-  clean runs, the fourth landing as a timeout rather than a proof in this one.** Declines are the
-  load-insensitive figure and the one to compare; a proved count moves by a few either way with the
-  wall-clock budget. Only four verdicts changed across all 1,664 functions, and the three files that
-  could have been touched re-cross-check at 673/673 with 0 disagreements. The census called this
-  bucket 18; 11 of those return `float`, and comparing an FP result needs a value theory that is out
-  of scope by design, so 4 was the honest target and 4 is what it delivered. The argument for the work
-  is that it removes a decline *reason* rather than a symptom, not the four functions.
-- **Assumption hygiene.** Where a proof would rest on an undeclared assumption, O2T declines instead:
-  a source that is UB/poison everywhere is flagged vacuous (below), and a transform whose soundness
-  needs an argument to be non-`undef` declines unless the argument is declared `noundef`.
-- **Non-vacuity: zero vacuous proofs.** A refinement proof is vacuously true wherever the source is UB
-  or poison, so `udiv %x, 0` legitimately "refines" to anything — and an *over-approximated* UB model
-  would quietly convert refutations into proofs of exactly that shape, invisibly to the execution and
-  Alive2 oracles (which are consulted only on the proved set). Every proof on the refinement path
-  (~434 of the 495; the split with the value-equality validators shifts a little with timeouts) is
-  probed for a defined source: **none is vacuous**, so the reach number is not inflated and the
-  UB/poison model is not over-approximating anywhere on LLVM's own tests. The memory and vector
-  validators carry no vacuity flag — they compare *values* and have no UB term to over-approximate.
-- **Solver independence: 495 / 495 confirmed by a second solver.** Every decided query is replayed
-  verbatim through an independently implemented SMT solver (`bitwuzla`, or `cvc5`/`cvc4` if present),
-  including the QF_ABV memory encoding — **zero disagreements**. The other oracles check O2T's
-  *encoding*; this is the only one that checks the *solver*.
+- **Track B whole-function TV, 2026-09-02 over ALL NINE of LLVM 18's InstCombine test files
+  (1,835 functions):** **1,705 proved (92%)**, **104 declines**, 26 budget exhaustions (non-answers),
+  **0 refutations**, 1 vacuous. 154/154 fixtures.
+
+  **The cross-check is one commit-range behind the proof count, and that gap is stated rather than
+  glossed.** The last FULL `--cross-check` pass covered 1,614 proofs — every one confirmed by `lli`
+  (real execution), reference Alive2 (poison/UB) and Bitwuzla (a second SMT solver), **0
+  disagreements, 0 vacuous** — and a later single-file pass covered `or.ll` at 116/116. The ~90
+  proofs added since (pointers-as-values, globals, `switch`, void returns, the intrinsics, the
+  uninterpreted FP surface, multi-block vectors, pointer lanes) have NOT been through the external
+  oracles. Re-running `--cross-check` is the first thing to do before quoting this figure as
+  independently confirmed.
+
+- **The denominator was wrong until 2026-08-31, and the fix is worth knowing about.** Every earlier
+  figure said "nine files" over EIGHT: ONE function in `shift.ll` (`ashr_out_of_range`, an OSS-Fuzz
+  regression test) makes `opt -passes=instcombine` abort the WHOLE FILE with "did not reach a
+  fixpoint". The runner recorded `opt_ok: False`, printed an empty count dict, and the file dropped
+  silently out of the denominator — a file whose every function died read exactly like a file with
+  no work in it. `run_instcombine` now falls back to `instcombine<no-verify-fixpoint>` (what
+  `shift.ll`'s own RUN line uses), and a file `opt` cannot process is reported loudly. It scores
+  163/171, dead on the corpus average: never an unusual file, only an invisible one.
+
+- **The budget is DETERMINISTIC, and that was worth seven proofs.** The per-function budget used to
+  be WALL CLOCK, so a verdict depended on machine load: the `icmp.ll test_sdiv_pos_*` family took
+  2.5s in one run and over 15s in another on BYTE-IDENTICAL query text (same sha256), flipping
+  between `proved` and `timeout` and moving the total by seven functions. z3's `rlimit` counts SOLVER
+  WORK instead. Calibrate it against the hardest thing that still SUCCEEDS — `test_sdiv_pos_ugt`
+  proves at 7,027,220 units, the default is 10M, and a first guess of 6M would have silently turned
+  all seven into timeouts. The wall clock is now only a 300s hang-guard, or the flakiness returns.
+  **A sweep is therefore reproducible and may share the machine**: `-j 0` runs it in 416s instead of
+  2,135s (5.1x) with **0 verdict differences across all 1,835 functions**.
+
+- **Two false REFUTATIONS were introduced and caught, both the same shape.** A model that gains reach
+  by WIDENING what it permits will refute on the behaviours reality excludes. Uninterpreted FP
+  conversions permit every function, and refuted `signbit_bitcast_fpext` — a sound fold, since
+  `fpext` preserves the sign bit. Arbitrary global contents permit every value, and refuted
+  `select.ll test61` — sound because `@glbl` is a `constant` whose initialiser LLVM folds with.
+  **The fix's breadth must match the imprecision's**: FP wanted a BLANKET guard (no refutation from
+  any query containing an uninterpreted function), globals wanted a NARROW one (refutations about
+  MUTABLE globals are trustworthy; only `constant` ones are mis-modelled). Too broad loses real
+  proofs; too narrow leaves the false refutation standing.
+
+- **158 fixtures passed while those false refutations were live**, because every assertion tested
+  that something must PROVE or must NOT prove — none tested that something must NOT REFUTE. That
+  class of tooth now exists, and is required whenever a change trades precision for reach.
+
+- **What the decline census says today**, attributed to the validator that got FURTHEST (the FIRST
+  whose reason is not a door refusal — taking the last biases to a fallback that reached nothing):
+  loops 11, `invoke` 7, escaped-pointer memory 13, `alloca` memory 5, vector `fcmp` needing
+  vector-aware memory 3, `undef` per-use 4, non-byte widths, budget exhaustion 4. **These are
+  capability decisions, not a backlog** — the cheap incremental work is done.
+
+  **Split a bucket by opening the functions, not by its name.** Every estimate this way shrank on
+  contact: `ptrtoint` said 11 and delivered 3; `alloca` said 10 and delivered 2; `!noundef` said 3
+  and delivered 1; float said 48, then 18, then 14; and a "34 multi-block vector functions" bucket
+  was really 11 loops + 10 vectors + 7 invoke + 3 switch + 2 div/rem + 1 callbr — six orthogonal
+  capabilities. A decline reason can even be a fact about the MODEL rather than the IR: one function
+  reported `cyclic CFG (loop)` on an acyclic function because a bookkeeping bug starved the
+  block worklist.
+
+### How the model got here (the findings that cost the most)
+
+Each of these was a live false proof or a live false refutation, and **none was found by the corpus
+sweep** — they came from probing the model directly, ablating a fixture, reading *why* Alive2
+declined to answer, or reading a diff and asking who else calls a shared layer.
+
+- **A duplicated `undef` use.** A literal `undef` is named fresh at every read, but a register
+  CARRYING that freedom is one term, so two reads modelled the uses as agreeing. `xor %u, %u`
+  modelled 0 and `ret zeroinitializer -> xor %u, %u` PROVED while Alive2 refutes it. Sharing shrinks
+  the TARGET's behaviour set, and a smaller target set is easier to prove a refinement of.
+- **An observable call is observable whatever the function returns.** The effect terms sat INSIDE the
+  guard on the returned value's poison, so once the source's result was poison the solver never
+  looked at the calls.
+- **A store through a poison pointer recorded no UB** though the load path did — a target that is
+  secretly UB is missing the very disjunct that should refute the pair.
+- **Pointer poison did not travel into an inlined callee**, whose frame started the map empty; the
+  same program written with the access inside a call and inlined by hand refuted against itself.
+- **Fast-math flags were ignored on both sides.** They only ENLARGE a behaviour set, which is
+  conservative on the source and a false proof on the target.
+- **`llvm.assume` was invisible for a NAMING reason**: the intrinsic lookup only inspected a PREFIX
+  of a dotted name, and `assume` carries no type suffix. Treating it as an opaque effect drops the
+  fact it establishes, and a target simplified USING the assumption is refuted on exactly the inputs
+  the assumption excluded.
+- **A shared-layer symbol only one validator declared.** Constant expressions reach the memory model
+  through any `sem.value`, and only the scalar validator emitted their declarations — such a function
+  came back a solver ERROR, not a verdict. Every validator that calls into `semantics` owes its
+  declarations.
+- **Bit-level floats are exact, and the containment is what makes them so.** Nothing may read a
+  float as a NUMBER; the fixture asserts that `fadd`/`fmul`/`fdiv`/`frem` still decline, and that
+  removing the guard on an uninterpreted conversion's refutation fails.
+
 - **Track A verbatim recovery:** ~a dozen upstream fold arms proved directly from unmodified
   InstCombine source (e.g. both arms of `foldIsPowerOf2OrZero`), **0 false proofs, 0 false refutations**
   across repeated runs. Verbatim reach is small *by design* — it is vocabulary-bounded, and the
@@ -274,8 +236,15 @@ Two consequences worth knowing when reading verdicts:
 ## What this means for *your* pass
 
 - If your pass does scalar/vector/memory peephole work or a counted-loop rewrite, expect real verdicts.
-- If it leans on `KnownBits`/`APInt` range facts, floating point, or exotic control flow, expect honest
-  declines on those folds — not wrong answers.
+- If it leans on `KnownBits`/`APInt` range facts, floating-point ARITHMETIC, loops in Track B, or
+  exception handling, expect honest declines on those folds — not wrong answers. Floating point is
+  worth a second look before you rule O2T out: bit-level FP (`fneg`, `copysign`, `select`, `freeze`,
+  lane-preserving `bitcast`) verifies EXACTLY, and folds that merely route a conversion or an `fcmp`
+  through structure verify too.
+- **Run the sweep with `-j 0`.** The solver budget is deterministic (`--rlimit`), so a verdict does
+  not depend on machine load and a sweep can share the machine — roughly 5x faster with identical
+  verdicts. If you lower `--rlimit`, calibrate it against the hardest function that still succeeds,
+  or you will convert real proofs into non-answers and the total will barely move.
 - A `refuted` verdict comes with a concrete counterexample you can replay against real `opt`.
 - You can **independently cross-check** every `proved` whole-function transform against oracles that do
   not share O2T's SMT encoding — `o2t run tv-corpus <your.ll> --cross-check` runs `lli` (real execution)
@@ -284,6 +253,10 @@ Two consequences worth knowing when reading verdicts:
   encoder *or* its solver on trust. The same run reports how many proofs were **vacuous** (true only
   because the source is UB/poison everywhere); a nonzero count on your own pass means the reach figure
   is inflated and the UB model deserves a look.
+- **If you extend the model, add a "must not refute" tooth.** Anything that gains reach by WIDENING
+  what the model permits — an uninterpreted function, an unconstrained value — will refute on the
+  behaviours reality excludes. That is how both of this project's false refutations arose, and 158
+  passing fixtures said nothing, because every one of them tested PROVE or NOT-PROVE.
 - Coverage is a moving frontier; the self-enrichment loop (`o2t agent`) can grow the modeled vocabulary
   behind an execution oracle, so a decline today can become a proof tomorrow — but only once an oracle
   the proposer didn't author has ratified the new semantics.
