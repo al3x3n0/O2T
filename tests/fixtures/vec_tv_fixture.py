@@ -366,6 +366,35 @@ def main() -> int:
     #   IR and is therefore not asserted here: LLVM's own parser rejects `br <2 x i1> ...` with
     #   "branch condition must have 'i1' type", so no such module can be built to test it.
 
+    # POINTER LANES. A `<N x ptr>` lane is its ADDRESS, at the MODULE'S pointer width -- never a
+    # hardcoded 64. `or.ll` declares `p:32`, and there `ptrtoint <2 x ptr> to <2 x i32>` is EXACT
+    # rather than a truncation, which is exactly what makes InstCombine's fold of it correct. The
+    # scalar model learned this in 7902dc4, where assuming 64 turned a sound fold into a refutation.
+    pv_src = ("define <2 x i1> @p(<2 x ptr> %a) {\n"
+              "  %c = ptrtoint <2 x ptr> %a to <2 x i64>\n"
+              "  %r = icmp eq <2 x i64> %c, zeroinitializer\n  ret <2 x i1> %r\n}\n")
+    pv_tgt = ("define <2 x i1> @p(<2 x ptr> %a) {\n"
+              "  %r = icmp eq <2 x ptr> %a, zeroinitializer\n  ret <2 x i1> %r\n}\n")
+    assert vec_tv(z3, pv_src, pv_tgt, "p")["status"] == "proved", \
+        "comparing pointer lanes and comparing their ptrtoint is the same question"
+    #   AT p:32 THE SAME FOLD IS ALSO CORRECT, because the conversion is exact there...
+    dl32 = 'target datalayout = "e-p:32:32:32"\n'
+    n32_s = pv_src.replace("<2 x i64>", "<2 x i32>")
+    n32_t = pv_tgt
+    assert vec_tv(z3, dl32 + n32_s, dl32 + n32_t, "p")["status"] == "proved", \
+        "at 32-bit pointers, ptrtoint to i32 is exact and the fold holds"
+    #   ...and at the DEFAULT 64-bit width the identical text TRUNCATES, so it must not prove: a
+    #   pointer like 0x1_0000_0000 is non-null with a zero low half. Identical instructions,
+    #   opposite answers, nothing between them but the datalayout line.
+    assert vec_tv(z3, n32_s, n32_t, "p")["status"] != "proved", \
+        ("at 64-bit pointers the same conversion truncates, and the fold is unsound -- it must not "
+         "prove, or the lane width is not coming from the module")
+    #   A WIDER destination would have to invent high bits, so it declines.
+    wide = ("define <2 x i128> @w(<2 x ptr> %a) {\n"
+            "  %c = ptrtoint <2 x ptr> %a to <2 x i128>\n  ret <2 x i128> %c\n}\n")
+    d = vec_tv(z3, wide, wide, "w")
+    assert d["status"] == "unsupported", ("ptrtoint to a type wider than an address must decline", d)
+
     print("vec_tv_fixture OK: FIXED vectors are TV'd via a lane model -- element-wise folds prove, a "
           "shufflevector is proved equal to its explicit extract/insert form, a wrong lane or shuffle "
           "mask REFUTES; SCALABLE vectors (runtime length) are TV'd at ONE symbolic lane -- element-wise "

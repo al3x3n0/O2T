@@ -158,13 +158,26 @@ def _lanes_of(v, n, w, env, ctx=None):
     raise sem.Unsupported(f"operand {v.kind}")
 
 
-def _vshape(t):
+def _vshape(t, ctx=None):
     """(lanes, width) for a vector or scalar type this model has a BIT view of.
 
     A FLOATING-POINT lane is bits like any other -- the same view the scalar model takes -- and the
     lane model only ever performs bit operations on it (`fneg`, `copysign`, `select`, `bitcast`,
     an `icmp` on a bitcast result). Anything that would read a lane as an FP NUMBER is not modelled
     here at all, which is what keeps the bit view exact rather than an approximation."""
+    # A POINTER LANE is its ADDRESS, at the module's own pointer width -- never a hardcoded 64.
+    # `or.ll` declares `p:32`, and there `ptrtoint <2 x ptr> to <2 x i32>` is EXACT rather than a
+    # truncation, which is precisely what makes InstCombine's fold of it correct. The scalar model
+    # learned this the hard way in 7902dc4, where assuming 64 turned a sound fold into a refutation.
+    pw = (ctx or {}).get("pw", 64)
+    if t.kind == "vector" and not t.scalable and t.elem and t.elem.kind == "ptr":
+        if t.elem.addrspace != 0:
+            raise sem.Unsupported(f"pointer lane in address space {t.elem.addrspace}")
+        return t.n, pw
+    if t.kind == "ptr":
+        if t.addrspace != 0:
+            raise sem.Unsupported(f"pointer in address space {t.addrspace}")
+        return 1, pw
     if t.kind == "vector" and not t.scalable and t.elem and sem.bit_width(t.elem) is not None:
         return t.n, sem.bit_width(t.elem)
     if sem.bit_width(t) is not None:
@@ -191,7 +204,7 @@ def _vec_instr(inst, env, ctx=None):
     sem.check_fast_math(inst, ctx)
     ub = ctx.setdefault("ub", []) if ctx is not None else []
     if op in sem.BIN:
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         a = _lanes_of(inst.operands[0], n, w, env, ctx)
         b = _lanes_of(inst.operands[1], n, w, env, ctx)
         smt = sem.BIN[op]
@@ -207,6 +220,21 @@ def _vec_instr(inst, env, ctx=None):
                 ub.append(si.smt_or([bp, sem.own_ub(op, av, bv, w)]))
         env[inst.result] = (lanes, w)
         return
+    if op == "ptrtoint":
+        # Per lane, the same reading the scalar model takes: an address IS a bitvector, so this is
+        # the identity at the pointer width and a TRUNCATION below it (exact at `p:32` -> i32).
+        # Provenance is ignored, which over-approximates aliasing -- it costs refutations, never
+        # proofs. A WIDER destination would have to invent high bits, so it declines.
+        sn, sw = _vshape(inst.operands[0].type, ctx)
+        dn, dw = _vshape(inst.type, ctx)
+        if sn != dn:
+            raise sem.Unsupported("ptrtoint changes the lane count")
+        if dw > sw:
+            raise sem.Unsupported(f"ptrtoint to i{dw} (wider than an i{sw} address)")
+        a = _lanes_of(inst.operands[0], sn, sw, env, ctx)
+        env[inst.result] = ([(av if dw == sw else f"((_ extract {dw - 1} 0) {av})", ap)
+                             for av, ap in a], dw)
+        return
     if op == "bitcast":
         # A bitcast REINTERPRETS bits and moves none of them. When the source and destination agree
         # on lane count and lane width -- `<2 x float>` to `<2 x i32>` is the case every copysign
@@ -214,8 +242,8 @@ def _vec_instr(inst, env, ctx=None):
         # just its bits. A bitcast that RESHAPES (a different lane count or width, e.g.
         # `<2 x float>` to `i64`) would have to concatenate or split lanes and is a different job;
         # it declines rather than being waved through.
-        sn, sw = _vshape(inst.operands[0].type)
-        dn, dw = _vshape(inst.type)
+        sn, sw = _vshape(inst.operands[0].type, ctx)
+        dn, dw = _vshape(inst.type, ctx)
         if (sn, sw) != (dn, dw):
             raise sem.Unsupported(
                 f"bitcast reshapes {sn}x{sw} -> {dn}x{dw} (lane split/join not modelled)")
@@ -224,7 +252,7 @@ def _vec_instr(inst, env, ctx=None):
     if op == "fneg":
         # A sign-bit flip per lane. LLVM defines `fneg` this way rather than as `0.0 - x`, so it
         # neither rounds nor traps and treats NaN like any other pattern -- exact on bitvectors.
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         a = _lanes_of(inst.operands[0], n, w, env, ctx)
         env[inst.result] = ([(f"(bvxor {av} {sem.const(1 << (w - 1), w)})", ap) for av, ap in a], w)
         return
@@ -238,7 +266,7 @@ def _vec_instr(inst, env, ctx=None):
         # vector operand -- it is one flag for the whole operation, not one per lane -- so it is
         # read once and handed to every lane.
         intr = sem.intrinsic_name(inst.callee)
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         per_lane = []
         for a in inst.args:
             if a.type is not None and a.type.kind == "vector":
@@ -263,7 +291,7 @@ def _vec_instr(inst, env, ctx=None):
         # could translate every such source and none of their targets. The comparison table is the
         # SHARED one the scalar model uses (`sem.MINMAX`), not a second reading of it.
         intr = sem.intrinsic_name(inst.callee)
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         a = _lanes_of(inst.args[0], n, w, env, ctx)
         b = _lanes_of(inst.args[1], n, w, env, ctx)
         env[inst.result] = ([(f"(ite ({sem.MINMAX[intr]} {a[i][0]} {b[i][0]}) {a[i][0]} {b[i][0]})",
@@ -272,7 +300,7 @@ def _vec_instr(inst, env, ctx=None):
     if op == "call" and sem.intrinsic_name(inst.callee) == "copysign":
         # Sign bit from the second operand, every other bit from the first -- again LLVM's own
         # definition, with no special case for NaN or zero.
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         a = _lanes_of(inst.args[0], n, w, env, ctx)
         b = _lanes_of(inst.args[1], n, w, env, ctx)
         sign = 1 << (w - 1)
@@ -283,7 +311,7 @@ def _vec_instr(inst, env, ctx=None):
     if op == "icmp":
         if inst.pred not in sem.ICMP:
             raise sem.Unsupported(f"icmp predicate {inst.pred!r}")
-        n, w = _vshape(inst.operands[0].type)
+        n, w = _vshape(inst.operands[0].type, ctx)
         a = _lanes_of(inst.operands[0], n, w, env, ctx)
         b = _lanes_of(inst.operands[1], n, w, env, ctx)
         env[inst.result] = ([(f"(ite {sem.ICMP[inst.pred].format(a=a[i][0], b=b[i][0])} "
@@ -296,9 +324,9 @@ def _vec_instr(inst, env, ctx=None):
     # margin -- `select` 60, `zext` 28, `sext` 9 -- because every other vector shape it handles tends
     # to be reached THROUGH one of them.
     if op == "select":
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         # the condition is either one i1 (a scalar select over vectors) or one i1 PER LANE
-        cn, cw = _vshape(inst.operands[0].type)
+        cn, cw = _vshape(inst.operands[0].type, ctx)
         if cw != 1:
             raise sem.Unsupported(f"select condition of width {cw}")
         if cn not in (1, n):
@@ -317,8 +345,8 @@ def _vec_instr(inst, env, ctx=None):
         env[inst.result] = (lanes, w)
         return
     if op in ("zext", "sext", "trunc"):
-        n, w = _vshape(inst.type)
-        sn, sw = _vshape(inst.src_type or inst.operands[0].type)
+        n, w = _vshape(inst.type, ctx)
+        sn, sw = _vshape(inst.src_type or inst.operands[0].type, ctx)
         if sn != n:
             raise sem.Unsupported(f"{op} changes the lane count")
         a = _lanes_of(inst.operands[0], n, sw, env, ctx)
@@ -356,7 +384,7 @@ def _vec_instr(inst, env, ctx=None):
             if fn is None or fn.is_declaration:
                 args = []
                 for a in inst.args:
-                    an, aw = _vshape(a.type)      # a ptr/FP argument declines here, as it should
+                    an, aw = _vshape(a.type, ctx)      # a ptr/FP argument declines here, as it should
                     args.append((_lanes_of(a, an, aw, env, ctx), an, aw))
                 effects.append((callee, args))
                 return
@@ -371,7 +399,7 @@ def _vec_instr(inst, env, ctx=None):
         # Without one, every lane's poison term is `false`, freeze collapses to the identity, and
         # `freeze %x -> %x` PROVES -- which reference Alive2 refutes, witness `<3 [based on undef],
         # poison>`. The two go in together or not at all.
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         lanes = []
         for v, p in _lanes_of(inst.operands[0], n, w, env, ctx):
             if p == "false":
@@ -394,7 +422,7 @@ def _vec_instr(inst, env, ctx=None):
             ctx["undef_hit"] = False
         return
     if op == "extractelement":
-        n, w = _vshape(inst.operands[0].type)
+        n, w = _vshape(inst.operands[0].type, ctx)
         idx = inst.operands[1]
         if idx.kind != "int":
             raise sem.Unsupported("variable extractelement index")
@@ -405,7 +433,7 @@ def _vec_instr(inst, env, ctx=None):
         env[inst.result] = ([ls[k]], w)
         return
     if op == "insertelement":
-        n, w = _vshape(inst.type)
+        n, w = _vshape(inst.type, ctx)
         idx = inst.operands[2]
         if idx.kind != "int":
             raise sem.Unsupported("variable insertelement index")
@@ -418,7 +446,7 @@ def _vec_instr(inst, env, ctx=None):
         env[inst.result] = (ls, w)
         return
     if op == "shufflevector":
-        n, w = _vshape(inst.operands[0].type)
+        n, w = _vshape(inst.operands[0].type, ctx)
         a = _lanes_of(inst.operands[0], n, w, env, ctx)
         b = _lanes_of(inst.operands[1], n, w, env, ctx)
         pool = a + b
@@ -442,7 +470,7 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
         raise sem.Unsupported(f"function {func} not found")
     env, decls, pflags = {}, [], []
     ctx = {"side": side, "fresh": fresh, "ub": [], "undef_regs": set(), "undef_reads": {},
-           "effects": effects, "module": module}
+           "effects": effects, "module": module, "pw": module.ptr_bits}
     # A PARAMETER MAY ARRIVE POISON, per lane. LLVM only promises otherwise with `noundef`, and
     # modelling a parameter as definite is what makes `freeze %x -> %x` look like the identity. The
     # flag is part of the INPUT, so it needs no quantifier: it is one Bool per lane, SHARED by both
@@ -456,7 +484,12 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
     for p in fn.params:
         t = p.type
         nu = p.noundef                      # declared definite -> no flag, and freeze is the identity
-        if t.kind == "vector" and not t.scalable and t.elem and sem.bit_width(t.elem) is not None:
+        if t.kind == "vector" and not t.scalable and t.elem and t.elem.kind == "ptr":
+            ew = _vshape(t, ctx)[1]          # a POINTER lane is its address, at the module's width
+            ls = [f"{p.name}!{i}" for i in range(t.n)]
+            decls += [(lane, ew) for lane in ls]
+            env[p.name] = ([(lane, _flag(lane, nu)) for lane in ls], ew)
+        elif t.kind == "vector" and not t.scalable and t.elem and sem.bit_width(t.elem) is not None:
             ew = sem.bit_width(t.elem)       # a float lane is carried as bits, like a scalar one
             ls = [f"{p.name}!{i}" for i in range(t.n)]
             decls += [(lane, ew) for lane in ls]
@@ -473,7 +506,7 @@ def _vtranslate(ll_text, func, side="source", fresh=None, effects=None):
         if inst.op == "ret":
             if not inst.operands:
                 raise sem.Unsupported("no vector/scalar ret")
-            n, w = _vshape(inst.operands[0].type)
+            n, w = _vshape(inst.operands[0].type, ctx)
             return (_lanes_of(inst.operands[0], n, w, env, ctx), w, decls,
                     si.smt_or(ctx["ub"]), pflags)
         _step(inst, env, ctx)
@@ -506,7 +539,7 @@ def _v_multiblock(fn, env, decls, pflags, ctx):
             body = binfo[lab].instructions
             for inst in body[:-1]:
                 if inst.op == "phi":
-                    n, w = _vshape(inst.type)
+                    n, w = _vshape(inst.type, ctx)
                     acc = None
                     for value, plab in inst.incoming:
                         ls = _lanes_of(value, n, w, env, ctx)
@@ -521,12 +554,12 @@ def _v_multiblock(fn, env, decls, pflags, ctx):
             if term.op == "ret":
                 if not term.operands:
                     raise sem.Unsupported("no vector/scalar ret")
-                n, w = _vshape(term.operands[0].type)
+                n, w = _vshape(term.operands[0].type, ctx)
                 rets.append((_lanes_of(term.operands[0], n, w, env, ctx), w, path[lab]))
             else:
                 cv, cw = None, 1
                 if term.op == "switch" or term.conditional:
-                    cn, cw = _vshape(term.operands[0].type)
+                    cn, cw = _vshape(term.operands[0].type, ctx)
                     if cn != 1:
                         raise sem.Unsupported("branching on a vector condition")
                     (cv, cvp), = _lanes_of(term.operands[0], 1, cw, env, ctx)
