@@ -165,6 +165,70 @@ def main() -> int:
         assert record2.get("resumed") is True, "unchanged concluded pass must be resumed, not re-run"
         assert report2["agent_run"]["llm_calls_used"] == 0
 
+        # 6) NO-PROGRESS: a VALID reply can spin as effectively as a malformed one. A model that
+        #    keeps choosing the same action and keeps getting the same answer used to loop until
+        #    the step cap, burning budget for no evidence -- the strike counter only ever watched
+        #    MALFORMED replies. Found by running the agent against a LIVE model, which spent three
+        #    of four calls re-running one `classify` that answered "no family matched" every time;
+        #    the scenario stub cannot produce it, because a scenario scripts DISTINCT turns.
+        #    The request already carries `evidence`, so the model could SEE its own repetition and
+        #    repeated anyway -- prompting is not the fix, this guard is.
+        scenario = _write_scenario(tmp, "spin.json", [
+            {"action": "classify", "args": {}, "rationale": "first look"},
+            {"action": "classify", "args": {}, "rationale": "again, learning nothing"},
+            {"action": "classify", "args": {}, "rationale": "and again"},
+            {"action": "classify", "args": {}, "rationale": "and again"},
+        ])
+        os.environ["AGENT_STUB_SCENARIO"] = str(scenario)
+        report, exit_code = run_agent(_args(scenario, tmp, budget=8, max_steps_per_pass=8))
+        assert exit_code == 0, exit_code
+        _, record = _agent_record(report)
+        assert record["status"] == "degraded", \
+            ("a repeated action with an identical observation must degrade the pass, not spin to "
+             "the step cap", record["status"], record["llm_calls"])
+        assert record["llm_calls"] == 3, \
+            ("two strikes and out: one real step, then two no-progress repeats", record["llm_calls"])
+        assert record["steps"][1]["observation"] == {
+            "error": "no-progress", "reason": "action already produced this result"}, record["steps"][1]
+        #    ...and the budget is what this protects: the spin must cost strictly less than the cap.
+        assert record["llm_calls"] < 8, "the guard must save budget, not merely relabel the outcome"
+        #    UNASSERTED, AND DELIBERATELY SO: that a repeat which DOES make progress is still
+        #    allowed. The signature keys on (action, args, OBSERVATION) precisely so that re-running
+        #    an action which now answers differently is legitimate -- but every action reachable
+        #    from this stub is deterministic, so the same action with the same args cannot produce
+        #    a different observation here and the case is not constructible. Ablating the
+        #    observation out of the key therefore passes this fixture. If a non-deterministic
+        #    action is ever added (one whose result depends on staged state), pin that case.
+
+        # 7) THE MODEL TRANSCRIPT. The report records what the agent DID; the transcript records
+        #    what was actually SAID. It matters most for the reply the report cannot show: a
+        #    MALFORMED one reaches the evidence log only as `invalid-action`, with the text that
+        #    would explain it discarded -- and a malformed reply is the failure a live model
+        #    actually produces. Debugging one without the raw text means guessing.
+        scenario = _write_scenario(tmp, "transcript.json", [
+            {"action": "classify", "args": {}, "rationale": "first"},
+            "malformed",
+            {"action": "conclude", "args": {"proposal": "inconclusive"}},
+        ])
+        os.environ["AGENT_STUB_SCENARIO"] = str(scenario)
+        out = tmp / "tout"
+        report, _ = run_agent(_args(scenario, tmp, out_dir=out))
+        tpath = Path(report["agent_run"]["llm_transcript"])
+        assert tpath.exists(), "the run must write a transcript beside its other artifacts"
+        lines = [json.loads(l) for l in tpath.read_text().splitlines() if l.strip()]
+        assert len(lines) == report["agent_run"]["llm_exchanges"] >= 3, (len(lines), report["agent_run"])
+        assert [r["seq"] for r in lines] == list(range(1, len(lines) + 1)), "seq must be dense"
+        for r in lines:
+            assert set(r) >= {"request", "stdout", "exit_status", "elapsed_s", "rejected_because"}, r
+        #    THE MALFORMED TURN IS THE POINT: its raw text is preserved and a reason is given, where
+        #    the evidence log has only `invalid-action`.
+        bad = [r for r in lines if r.get("rejected_because")]
+        assert bad, ("the malformed reply must be recorded with a reason", lines)
+        assert bad[0]["stdout"].strip(), "the raw text of a rejected reply must be kept verbatim"
+        assert bad[0]["parsed"] is None, bad[0]
+        #    ...and the request is kept too, so a reply can be read against what was actually asked.
+        assert "evidence" in bad[0]["request"] and "actions" in bad[0]["request"], bad[0]["request"]
+
     del os.environ["AGENT_STUB_SCENARIO"]
     print("agent_fixture OK: a scripted LLM drives an unclassified residue pass to a REAL proved "
           "verdict (origin: agent, provenance-tagged headline) while the deterministic headline "

@@ -105,10 +105,22 @@ def main() -> int:
 
     # 5c) AN UNMODELLED `@llvm.*` INTRINSIC IS NOT AN OPAQUE EXTERNAL CALL. It has semantics LLVM
     #     defines, so it must decline on its NAME rather than be waved through as "some effect".
-    #     `llvm.assume` is the case that proves it: it does not do something unknown, it ESTABLISHES
-    #     that its argument is true. Treated as opaque, that fact is dropped, and a target simplified
-    #     USING the assumption is refuted on precisely the inputs the assumption excluded -- three
-    #     false refutations in LLVM's own tests. Declining is the honest answer until it is modelled.
+    #     `llvm.lifetime.start` is such a name here: void, intrinsic, and unmodelled.
+    #
+    #     THE CASE THAT ORIGINALLY PROVED THIS WAS `llvm.assume`, which is now MODELLED -- so the
+    #     example moved, and both halves are pinned below. Treating assume as opaque dropped the
+    #     fact it ESTABLISHES, and a target simplified USING the assumption was refuted on exactly
+    #     the inputs the assumption excluded (three false refutations in LLVM's own tests).
+    life_src = ("declare void @llvm.lifetime.start.p0(i64, ptr)\n"
+                "define i8 @f(ptr %p, i8 %x, i8 %y) {\n"
+                "  call void @llvm.lifetime.start.p0(i64 8, ptr %p)\n  ret i8 %x\n}\n")
+    d = S.validate_transform(z3, life_src, life_src, "f", timeout=30)
+    assert d["status"] == "unsupported", \
+        ("an unmodelled llvm.* intrinsic must DECLINE, not be treated as an opaque observable call "
+         "-- it has semantics LLVM defines, and guessing at them is how a fact gets dropped", d)
+    #     ...and the other half: once an intrinsic IS modelled, the fold that needs its meaning is
+    #     DECIDED rather than declined. `assume` establishes its argument, so simplifying under it
+    #     proves -- the outcome that was impossible while it was treated as an opaque effect.
     asm_src = ("declare void @llvm.assume(i1)\n"
                "define i8 @f(i1 %cond, i8 %x, i8 %y) {\n"
                "  call void @llvm.assume(i1 %cond)\n"
@@ -117,9 +129,8 @@ def main() -> int:
                "define i8 @f(i1 %cond, i8 %x, i8 %y) {\n"
                "  call void @llvm.assume(i1 %cond)\n  ret i8 %x\n}\n")
     d = S.validate_transform(z3, asm_src, asm_tgt, "f", timeout=30)
-    assert d["status"] == "unsupported", \
-        ("an unmodelled llvm.* intrinsic must DECLINE, not be treated as an opaque observable call "
-         "-- doing so drops the fact it establishes and refutes a correct transform", d)
+    assert d["status"] == "proved", \
+        ("a target simplified USING an assumption must prove now that `assume` is modelled", d)
 
     # 6) A call whose RESULT IS USED still declines: a bodiless declaration is not a function of its
     #    arguments, and treating it as one would assume a purity LLVM does not promise.

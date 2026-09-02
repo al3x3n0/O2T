@@ -119,16 +119,27 @@ def main() -> int:
     #     float may be carried as bits ONLY because it cannot reach anything that reads it as a
     #     floating-point VALUE. Each exit is checked:
     for name, ir_text, why in (
-        ("float return", "define float @f(float %x) {\n  %i = bitcast float %x to i32\n"
-                         "  %j = xor i32 %i, -2147483648\n  %r = bitcast i32 %j to float\n"
-                         "  ret float %r\n}\n", "a float RESULT would need FP value semantics"),
+        # A float RETURN used to be listed here. It is now DECIDED -- returned as its BITS, the
+        # same view already taken of a float parameter -- so the boundary moved and this list has
+        # to move with it. What still declines is FP ARITHMETIC, which has no bits-only answer:
+        # +0.0 and -0.0 differ in bits and compare equal, and NaN compares unequal to itself.
         ("fp operation", "define float @f(float %x) {\n  %r = fadd float %x, %x\n"
                          "  ret float %r\n}\n", "an actual FP op has no model here"),
+        ("fp division", "define float @f(float %x, float %y) {\n  %r = fdiv float %x, %y\n"
+                        "  ret float %r\n}\n", "rounding is not a bit operation"),
         ("vector bitcast", "define i64 @f(<2 x i32> %v) {\n  %r = bitcast <2 x i32> %v to i64\n"
                            "  ret i64 %r\n}\n", "reinterpreting LANES needs a lane<->bits map"),
     ):
         d = si.validate_transform(z3, ir_text, ir_text, "f")
         assert d["status"] == "unsupported", (f"{name} must DECLINE -- {why}", d)
+
+    #     THE OTHER SIDE OF THAT MOVE, asserted so the list above cannot quietly drift back: a
+    #     sign-flip through a bitcast pair RETURNS a float and is decided, because carrying it as
+    #     opaque bits assumes nothing about floating point.
+    fret = ("define float @f(float %x) {\n  %i = bitcast float %x to i32\n"
+            "  %j = xor i32 %i, -2147483648\n  %r = bitcast i32 %j to float\n  ret float %r\n}\n")
+    assert si.validate_transform(z3, fret, fret, "f")["status"] == "proved", \
+        "a float RETURN is carried as bits and must be decided, not declined"
 
     # 5) the CLI agrees and exits 0.
     tool = ROOT / "tools" / "cv-validate-instcombine-ir.py"
@@ -141,8 +152,9 @@ def main() -> int:
           "div-by-zero) refuted by Alive2 refinement while flag/UB removal still proves; an "
           "unmodeled instruction soundly declined. A `bitcast` is the identity on BITS, so a float "
           "argument used only for its bits no longer makes a fold undecidable -- with no FP "
-          "semantics assumed anywhere, because the containment that permits it is asserted: a float "
-          "RETURN, a real FP operation and a VECTOR bitcast each still decline")
+          "semantics assumed anywhere, because the containment that permits it is asserted: a real FP "
+          "OPERATION and a VECTOR bitcast still decline, while a float RETURN is carried as bits "
+          "and decided")
     return 0
 
 

@@ -120,6 +120,24 @@ def run_agent(args) -> tuple[dict, int]:
         records[key] = run_pass_agent(entry, ctx, client, services, registry,
                                       max_steps=args.max_steps_per_pass)
 
+    # THE FULL MODEL TRANSCRIPT, written beside the run's other artifacts. The report records what
+    # the agent DID; this records what was actually said -- every request, the raw stdout and
+    # stderr, the exit status, the elapsed time, and why a reply was rejected. Debugging a live
+    # model without it means guessing at what it replied, because a malformed reply reaches the
+    # report only as `invalid-action`.
+    #
+    # It is written as JSON Lines so a long run can be tailed and grepped while it is still going,
+    # and it stays in `out_dir` rather than the report: it contains the pass SOURCE EXCERPT sent to
+    # the provider, which is exactly the thing not to paste into a shared artifact by accident.
+    transcript_path = out_dir / "llm-transcript.jsonl"
+    try:
+        with transcript_path.open("w") as fh:
+            for rec in client.transcript:
+                fh.write(json.dumps(rec, default=str) + "\n")
+    except OSError as exc:                       # advisory: a dump failure never fails the run
+        print(f"cv-agent: could not write transcript: {exc}", file=sys.stderr)
+        transcript_path = None
+
     run_meta = {
         "budget": args.budget,
         "llm_calls_used": client.used,
@@ -127,6 +145,8 @@ def run_agent(args) -> tuple[dict, int]:
         "attempted": len(records),
         "enable_synthesis": bool(args.enable_synthesis),
         "staging_dir": str(staging.root) if staging else None,
+        "llm_transcript": str(transcript_path) if transcript_path else None,
+        "llm_exchanges": len(client.transcript),
     }
     merge(report, records, run_meta)
 

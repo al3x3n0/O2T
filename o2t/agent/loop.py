@@ -6,8 +6,11 @@ Loop contract:
   and the advertised action registry with arg schemas (`answer_schema` mirrors brain.py's style).
 - An invalid reply (transport failure, malformed JSON, unknown action, bad args) EXECUTES
   NOTHING: it becomes an `invalid-action` observation the LLM sees next turn. Two consecutive
-  invalid replies degrade the pass (`status: degraded`) -- the loop never spins on a confused
-  model, and a dead LLM command strikes out in two turns.
+  invalid replies degrade the pass (`status: degraded`), and a dead LLM command strikes out in two
+  turns. A VALID reply that makes NO PROGRESS -- the same action, the same arguments and the same
+  observation as an earlier step -- strikes the same way, because a model can spin just as
+  effectively with well-formed replies as with malformed ones (observed live: three of four calls
+  spent re-running one `classify` that answered "no family matched" every time).
 - Budget exhaustion winds down cleanly with partial evidence kept.
 - Observations are truncated before entering the prompt; full tool verdicts live untruncated in
   `state.formal_checks` for the report.
@@ -16,6 +19,7 @@ Loop contract:
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,6 +53,7 @@ class AgentState:
     staged: list = field(default_factory=list)
     steps: int = 0
     invalid_strikes: int = 0
+    seen: set = field(default_factory=set)   # (action, args, observation) already produced
     status: str = "running"                # running|concluded|budget-exhausted|degraded|step-cap
     conclusion: dict | None = None
 
@@ -119,12 +124,33 @@ def run_pass_agent(entry: dict, ctx: dict, client, services: dict, registry: dic
                 state.status = "degraded"
                 break
             continue
-        state.invalid_strikes = 0
         observation = spec.handler(state, args_or_reason, ctx, services)
         state.evidence.append({"step": state.steps, "action": spec.name,
                                "args": _truncate(args_or_reason, max_chars=500),
                                "rationale": str(reply.get("rationale", ""))[:300],
                                "observation": _truncate(observation)})
+        # A VALID reply can spin just as effectively as an invalid one. The strike counter only
+        # ever watched malformed replies, so a model that keeps choosing the SAME action and keeps
+        # getting the SAME answer looped until the step cap, burning budget for no evidence --
+        # observed live, three of four calls spent on one `classify` that returned "no family
+        # matched" every time. The request already carries `evidence`, so the model could SEE its
+        # own repetition and chose it anyway; prompting is not the fix, a structural guard is.
+        #
+        # Keyed on (action, args, OBSERVATION): repeating an action that produced something NEW is
+        # legitimate progress, and only an identical outcome counts as no information. The reset
+        # must happen here rather than before the handler runs -- resetting first would clear the
+        # counter between two consecutive repeats, so it could never reach the threshold.
+        sig = json.dumps([spec.name, args_or_reason, observation], sort_keys=True, default=str)
+        if sig in state.seen:
+            state.invalid_strikes += 1
+            state.evidence[-1]["observation"] = {"error": "no-progress",
+                                                 "reason": "action already produced this result"}
+            if state.invalid_strikes >= 2:
+                state.status = "degraded"
+                break
+            continue
+        state.seen.add(sig)
+        state.invalid_strikes = 0
     return {
         "attempted": True,
         "status": state.status,

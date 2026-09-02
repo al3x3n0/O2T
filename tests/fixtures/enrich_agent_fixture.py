@@ -31,22 +31,34 @@ from o2t.frontend import tv_matrix as tv  # noqa: E402
 STUB = ROOT / "tests" / "fixtures" / "agent_llm_stub.py"
 _HB_LLI = "/opt/homebrew/opt/llvm@18/bin/lli"
 
-# A corpus whose functions whole-function TV declines only for the missing `llvm.bswap` instruction.
-CORPUS = ("declare i32 @llvm.bswap.i32(i32)\n"
-          "define i32 @dbl(i32 %x) {\n"
-          "  %a = call i32 @llvm.bswap.i32(i32 %x)\n"
-          "  %b = call i32 @llvm.bswap.i32(i32 %a)\n  ret i32 %b\n}\n"   # bswap(bswap x) -> x
-          "define i32 @swp(i32 %x) {\n"
-          "  %a = call i32 @llvm.bswap.i32(i32 %x)\n  ret i32 %a\n}\n")   # bswap x (opt leaves it)
+# THE INSTRUCTION THIS FIXTURE ENRICHES MUST STILL BE UNMODELLED -- that is its PREMISE, and it is
+# asserted below rather than assumed. It used to use `llvm.bswap`, which was later modelled natively
+# (4d5f452); the premise vanished, the agent had nothing to diagnose, and the fixture failed with
+# `diagnosed: []` -- a confusing symptom a long way from its cause. `llvm.ushl.sat` is unmodelled
+# today; when it too gets modelled, the assertion says so and says what to do.
+#
+# A corpus whose functions whole-function TV declines ONLY for that missing instruction.
+_INTR = "ushl.sat"
+CORPUS = ("declare i32 @llvm.ushl.sat.i32(i32, i32)\n"
+          "define i32 @sh1(i32 %x) {\n"
+          "  %a = call i32 @llvm.ushl.sat.i32(i32 %x, i32 1)\n"
+          "  %b = call i32 @llvm.ushl.sat.i32(i32 %a, i32 0)\n  ret i32 %b\n}\n"
+          "define i32 @sh2(i32 %x) {\n"
+          "  %a = call i32 @llvm.ushl.sat.i32(i32 %x, i32 2)\n  ret i32 %a\n}\n")
 
 # The LLM's proposal (as the stub would emit it): the SMT model uses %OP% for the operand.
-_BSWAP = {"name": "bswap", "decl": "declare i{w} @llvm.bswap.i{w}(i{w})",
-          "call": "call i{w} @llvm.bswap.i{w}(i{w} {a})",
-          "regex": r"call\s+i(32)\s+@llvm\.bswap\.i32\(\s*i32\s+(\S+?)\s*\)",
-          "smt": ("(concat ((_ extract 7 0) %OP%) ((_ extract 15 8) %OP%) "
-                  "((_ extract 23 16) %OP%) ((_ extract 31 24) %OP%))")}
-CORRECT = dict(_BSWAP)
-WRONG = {**_BSWAP, "smt": "%OP%"}                      # identity -- forgets to reverse; unsound
+# `ushl.sat x, c` is `x << c` saturating to all-ones on unsigned overflow -- i.e. if shifting back
+# does not recover x, the result is UINT_MAX.
+def _shl_sat(c: int) -> str:
+    return (f"(ite (= (bvlshr (bvshl %OP% (_ bv{c} 32)) (_ bv{c} 32)) %OP%) "
+            f"(bvshl %OP% (_ bv{c} 32)) (_ bv4294967295 32))")
+
+_SAT = {"name": _INTR, "decl": "declare i{w} @llvm.ushl.sat.i{w}(i{w}, i{w})",
+        "call": "call i{w} @llvm.ushl.sat.i{w}(i{w} {a}, i{w} 1)",
+        "regex": r"call\s+i(32)\s+@llvm\.ushl\.sat\.i32\(\s*i32\s+(\S+?)\s*,\s*i32\s+1\s*\)",
+        "smt": _shl_sat(1)}
+CORRECT = dict(_SAT)
+WRONG = {**_SAT, "smt": "%OP%"}                        # identity -- forgets the shift; unsound
 
 
 def _run_with(reply: dict, z3, lli, opt) -> dict:
@@ -69,7 +81,15 @@ def main() -> int:
         print("enrich_agent_fixture: z3 / opt / lli (18) not all found, skipped")
         return 0
 
-    # 1. The agent diagnoses the missing instruction, the (stub) LLM proposes bswap, lli VALIDATES it,
+    # 0. THE PREMISE, asserted rather than assumed: the instruction this fixture enriches must still
+    #    be UNMODELLED, or there is nothing to diagnose and every assertion below is vacuous.
+    from o2t.validate import semantics as _sem
+    assert _INTR not in _sem.INTRINSICS and _INTR not in _sem.MINMAX, (
+        f"`llvm.{_INTR}` is now modelled natively, so this fixture has no missing instruction to "
+        f"enrich. Point CORPUS/_SAT at an intrinsic that is still declined -- the fixture is about "
+        f"the enrichment MECHANISM, not about this particular instruction.")
+
+    # 1. The agent diagnoses the missing instruction, the (stub) LLM proposes it, lli VALIDATES it,
     #    it is installed, and the reach lifts 0 -> 2 -- the loop ran end-to-end with zero model access.
     good = _run_with(CORRECT, z3, lli, opt)
     assert good["diagnosed"], ("agent must diagnose the missing instruction", good)
@@ -84,9 +104,9 @@ def main() -> int:
     assert [e["status"] for e in bad["enrichments"]] == ["rejected"], bad
     assert bad["proved_after"] == 0, ("a rejected proposal must not lift the reach", bad)
 
-    print("enrich_agent_fixture OK: an LLM (deterministic stub) DROVE the enrichment loop -- diagnosed "
-          "the missing llvm.bswap, proposed its SMT model, which lli VALIDATED (installed -> reach lifts "
-          "0->2); a WRONG (identity) proposal was REJECTED by lli, never installed, no lift. The LLM "
+    print(f"enrich_agent_fixture OK: an LLM (deterministic stub) DROVE the enrichment loop -- diagnosed "
+          f"the missing llvm.{_INTR}, proposed its SMT model, which lli VALIDATED (installed -> reach "
+          "lifts 0->2); a WRONG (identity) proposal was REJECTED by lli, never installed, no lift. The LLM "
           "proposes; an oracle it did not author decides -- and a hallucinated model cannot enter the "
           "trust base. Going live is one flag (--llm-command)")
     return 0

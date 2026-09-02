@@ -54,20 +54,34 @@ def main() -> int:
     bad = enrich.validate_proposal(enrich.BSWAP_WRONG, z3, lli)
     assert not bad["valid"] and bad["disagreements"], ("a wrong model must be rejected by lli", bad)
 
-    # 3. Before enrichment, a bswap-using function is UNSUPPORTED by whole-function TV.
-    before = si.validate_transform(z3, BSWAP_FN, si.run_instcombine(BSWAP_FN, opt), "t")
-    assert before["status"] == "unsupported", ("bswap must be unmodeled before enrichment", before)
-
-    # 4. With ONLY the lli-VALIDATED enrichment installed, the same transform is PROVED end-to-end.
-    handlers = [enrich.make_handler(enrich.BSWAP)]
-    after = si.validate_transform(z3, BSWAP_FN, si.run_instcombine(BSWAP_FN, opt), "t",
-                                  extra_ops=handlers)
-    assert after["status"] == "proved", ("with the validated bswap enrichment, TV must prove", after)
+    # 3. THE INSTALL PATH IS CURRENTLY UNREACHABLE, and that is reported rather than hidden.
+    #    It needs an instruction whole-function TV does NOT model, so the enrichment has something
+    #    to add. `bswap` was that instruction until it was modelled natively (4d5f452), which
+    #    silently removed this fixture's subject. Every remaining candidate is blocked from BOTH
+    #    sides: `validate_proposal` is UNARY-only (`_smt_outputs` calls `smt(width, "x")` with one
+    #    operand), and every unmodelled integer intrinsic left in LLVM is n-ary (`ushl.sat`,
+    #    `sshl.sat`, the fixed-point muls). Restoring end-to-end coverage needs ONE of:
+    #      (a) a unary intrinsic TV does not model, or
+    #      (b) `validate_proposal` extended to n-ary proposals -- a change to the component that
+    #          decides whether a proposed model may enter the trust base, so not a fixture edit.
+    #    Steps 1-2 above still cover what matters most: a correct model VALIDATES against lli and a
+    #    wrong one is REJECTED, which is the trust invariant. What is not covered is the install
+    #    lift (unsupported -> proved).
+    from o2t.validate import semantics as _sem
+    if "bswap" not in _sem.INTRINSICS:                 # bswap declined again -> restore full coverage
+        before = si.validate_transform(z3, BSWAP_FN, si.run_instcombine(BSWAP_FN, opt), "t")
+        assert before["status"] == "unsupported", ("bswap must be unmodeled before enrichment", before)
+        after = si.validate_transform(z3, BSWAP_FN, si.run_instcombine(BSWAP_FN, opt), "t",
+                                      extra_ops=[enrich.make_handler(enrich.BSWAP)])
+        assert after["status"] == "proved", ("with the validated enrichment, TV must prove", after)
+        installed = "install lift covered (unsupported -> proved)"
+    else:
+        installed = ("INSTALL LIFT NOT COVERED: llvm.bswap is modelled natively, and no unary "
+                     "unmodelled intrinsic remains -- see the note above")
 
     print(f"enrich_fixture OK: the enrichment loop grew whole-function TV's instruction vocabulary "
-          f"(llvm.bswap) gated by lli EXECUTION -- the correct byte-reversal model validated ({good['checked']} "
-          "inputs agree with lli) and, installed, turned a bswap(bswap(x))->x transform from unsupported "
-          "into a proved end-to-end TV; a WRONG (identity) model was REJECTED by lli and never installed. "
+          f"gated by lli EXECUTION -- the byte-reversal model validated ({good['checked']} inputs agree "
+          f"with lli) and a WRONG (identity) model REJECTED by lli, never installed -- {installed}. "
           "O2T grows its own verifier; an independent oracle decides the growth is sound")
     return 0
 

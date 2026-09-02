@@ -18,6 +18,12 @@ class LLMClient:
         self.timeout = timeout
         self.budget = budget
         self.used = 0
+        # THE FULL EXCHANGE, kept for debugging. The evidence log records the PARSED action, so a
+        # malformed reply survives only as `invalid-action` and the text that would explain it is
+        # gone -- which is the failure a live model actually produces. Each entry carries the
+        # request sent, the raw stdout/stderr, the exit status, the elapsed time and why a reply
+        # was rejected. Advisory data only: nothing here is read back by the loop.
+        self.transcript: list = []
 
     @property
     def remaining(self) -> int:
@@ -25,6 +31,10 @@ class LLMClient:
 
     def call(self, request: dict) -> dict | None:
         if self.remaining <= 0:
+            self.transcript.append({"seq": len(self.transcript) + 1, "skipped": "budget-exhausted"})
             return None
         self.used += 1
-        return call_json_command(request, self.command, timeout=self.timeout)
+        record: dict = {"seq": len(self.transcript) + 1}
+        reply = call_json_command(request, self.command, timeout=self.timeout, record=record)
+        self.transcript.append(record)
+        return reply
