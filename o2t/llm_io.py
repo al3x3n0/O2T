@@ -11,6 +11,7 @@ reply's content against its own schema (family whitelist, action registry, ...).
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import time
@@ -51,7 +52,13 @@ def call_json_command(request: dict, command: str, timeout: int = 60,
     if not isinstance(reply, dict):
         reply, why = None, why or "reply was not a JSON object"
     if record is not None:
-        record.update({"request": request, "stdout": raw_out[:20000], "stderr": raw_err[:4000],
+        # SNAPSHOT the request, never alias it. `build_request` hands over `state.evidence` -- the
+        # LIVE list the agent loop appends to -- so storing the reference means every record ends up
+        # showing the FINAL evidence: seq 1 appeared to have seen three prior steps it could not
+        # have seen. The model itself received the right thing (the dumps above happens at send
+        # time); it was the TRANSCRIPT that lied, which is worse for the one job it has.
+        record.update({"request": copy.deepcopy(request),
+                       "stdout": raw_out[:20000], "stderr": raw_err[:4000],
                        "exit_status": status, "elapsed_s": round(time.monotonic() - started, 3),
                        "parsed": reply, "rejected_because": why})
     return reply

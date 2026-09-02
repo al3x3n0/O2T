@@ -63,10 +63,18 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
 
-        # 1) HAPPY PATH: the scripted LLM classifies, dispatches a REAL canonical verifier
-        #    (memory-model -> cv-validate-memory, Z3 decides), and concludes. The deterministic
-        #    headline stays `unclassified`; the agent's provenance-tagged headline is `proved`
-        #    from a formal check with `origin: "agent"`; the conclusion is advisory.
+        # 1) HAPPY PATH: the scripted LLM classifies, dispatches a REAL verifier (memory-model ->
+        #    cv-validate-memory, Z3 decides), and concludes. The deterministic headline stays
+        #    `unclassified` and the conclusion is advisory.
+        #
+        #    THIS CASE USED TO ASSERT THE HEADLINE BECAME `proved`, AND THAT WAS A DEFECT IT
+        #    ENSHRINED. `memory-model` is a CANONICAL strategy: it runs `cv-validate-memory` with no
+        #    `--source` at all and discharges fixed DSE/forwarding theorems that hold whatever pass
+        #    you point the agent at. Its verdict is real, its ATTRIBUTION is empty -- so collapsing
+        #    it into a pass-level `proved` marked a vendor bookkeeping snippet with no transform in
+        #    it as verified. The agent-layer analogue of a vacuous proof: true, and about nothing.
+        #    A live model refused to dispatch it here for exactly that reason, which is how this
+        #    was found. The check is still RUN, RECORDED and NAMED -- only its attribution changed.
         scenario = _write_scenario(tmp, "happy.json", [
             {"action": "classify", "args": {}, "rationale": "see what the classifier says"},
             {"action": "run-strategy", "args": {"strategy": "memory-model"},
@@ -83,14 +91,37 @@ def main() -> int:
         assert record["status"] == "concluded" and record["llm_calls"] == 3, record["llm_calls"]
         formal = record["formal_checks"]
         assert formal and formal[0]["origin"] == "agent" and formal[0]["verdict"] == "proved", formal
-        assert record["headline"]["status"] == "proved", record["headline"]
+        #    The check ran and is recorded with its real verdict...
         assert record["headline"]["provenance"] == "deterministic+agent-formal"
+        assert [c["strategy"] for c in record["headline"]["checks"]] == ["memory-model"], record
+        #    ...but it is CANONICAL, so it decides nothing about this pass: the status stays
+        #    `no-formal-evidence` and the strategy is named as canonical-only rather than folded in.
+        assert record["headline"]["status"] == "no-formal-evidence", record["headline"]
+        assert record["headline"]["canonical_only"] == ["memory-model"], record["headline"]
         assert record["conclusion"] == {"proposal": "proved",
                                         "rationale": "memory-model contracts proved",
                                         "trust": "advisory"}
         summary = report["summary"]["agent"]
         assert summary["attempted"] == 1 and summary["concluded"] == 1
-        assert summary["agent_formal"].get("proved") == 1 and summary["headline_upgrades"] == 1
+        assert summary["agent_formal"].get("proved") == 1, summary
+        assert summary["headline_upgrades"] == 0, \
+            ("a canonical contract proof must not UPGRADE a pass's headline -- it holds whatever "
+             "pass the agent was pointed at", summary)
+        #    THE EXCLUSION MUST FAIL SAFE. Only a strategy KNOWN to be canonical is dropped from
+        #    attribution; an unknown id counts, because the alternative is that a new or mistyped
+        #    strategy silently vanishes -- taking a REFUTATION with it, which is the direction that
+        #    hides a miscompile rather than one that over-claims.
+        from o2t.agent.report import agent_headline
+        unknown_neg = agent_headline({"checks": []},
+                                     {"formal_checks": [{"strategy": "brand-new-strategy",
+                                                         "verdict": "refuted", "origin": "agent"}]})
+        assert unknown_neg["status"] == "refuted", \
+            ("a check from an UNKNOWN strategy must still count -- excluding it by default would "
+             "silently drop a refutation", unknown_neg)
+        known_canon = agent_headline({"checks": []},
+                                     {"formal_checks": [{"strategy": "memory-model",
+                                                         "verdict": "proved", "origin": "agent"}]})
+        assert known_canon["status"] == "no-formal-evidence", known_canon
 
         # 2) TRUST: an LLM that only "concludes refuted" changes NO headline and trips NO gate --
         #    an advisory opinion is not a refutation. Both fail gates stay 0.
@@ -228,6 +259,18 @@ def main() -> int:
         assert bad[0]["parsed"] is None, bad[0]
         #    ...and the request is kept too, so a reply can be read against what was actually asked.
         assert "evidence" in bad[0]["request"] and "actions" in bad[0]["request"], bad[0]["request"]
+        #    THE REQUEST MUST BE A SNAPSHOT, NOT A LIVE REFERENCE. `build_request` passes
+        #    `state.evidence` -- the list the loop appends to -- so recording the reference made
+        #    every entry show the FINAL evidence: seq 1 looked as though it had seen three prior
+        #    steps. The model got the right data (the transport serialises at send time); only the
+        #    transcript lied, which defeats its entire purpose. Evidence must GROW: the n-th call
+        #    sees exactly the n-1 steps that preceded it.
+        for i, rec in enumerate(lines):
+            if "request" not in rec:
+                continue
+            assert len(rec["request"]["evidence"]) == i, (
+                "each recorded request must show the evidence AS SENT -- entry i has i prior steps",
+                i, [len(r["request"]["evidence"]) for r in lines if "request" in r])
 
     del os.environ["AGENT_STUB_SCENARIO"]
     print("agent_fixture OK: a scripted LLM drives an unclassified residue pass to a REAL proved "

@@ -21,13 +21,32 @@ POSITIVE_VERDICTS = {"proved", "sound", "validated"}
 NEGATIVE_VERDICTS = {"refuted", "miscompile"}
 
 
+def _is_about_this_pass(check: dict) -> bool:
+    """Does this check's verdict say anything about the pass it is attached to?
+
+    A CANONICAL strategy proves FIXED contracts -- `memory-model` runs `cv-validate-memory` with no
+    `--source` at all and discharges the DSE/forwarding theorems, which hold whatever pass you point
+    the agent at. Its verdict is real; its ATTRIBUTION is empty.
+
+    Counting it collapsed a pass-level headline to `proved` for a vendor bookkeeping snippet with no
+    transform in it -- demonstrated, not theorised. That is the agent-layer analogue of a VACUOUS
+    proof: true, and about nothing. Only `source` (the pass's own code) and `pass-runner` (a real
+    `opt` run) verdicts are about the pass; canonical ones are recorded and shown, never collapsed.
+    Unknown strategies are treated as about the pass, so a new one must opt OUT deliberately."""
+    from o2t.orchestrate.plan import STRATEGIES
+    spec = STRATEGIES.get(str(check.get("strategy") or ""))
+    return spec is None or spec.target != "canonical"
+
+
 def agent_headline(entry: dict, record: dict) -> dict:
     """Collapse deterministic checks + agent formal checks with the orchestrator's rules.
     Unlike the deterministic headline, ALL formal checks count (the agent may have run a
     strategy outside the primary family precisely because classification failed)."""
     checks = [c for c in (entry.get("checks") or []) if isinstance(c, dict)]
     checks += [c for c in record.get("formal_checks", []) if isinstance(c, dict)]
-    verdicts = [str(c.get("verdict") or "unknown") for c in checks]
+    # Only checks that are ABOUT THIS PASS can decide its status; see `_is_about_this_pass`.
+    attributable = [c for c in checks if _is_about_this_pass(c)]
+    verdicts = [str(c.get("verdict") or "unknown") for c in attributable]
     if not verdicts:
         status = "no-formal-evidence"
     elif any(v in NEGATIVE_VERDICTS for v in verdicts):
@@ -41,6 +60,10 @@ def agent_headline(entry: dict, record: dict) -> dict:
     return {
         "status": status,
         "provenance": "deterministic+agent-formal",
+        # Canonical contract checks ran and are listed in `checks`, but prove nothing about THIS
+        # pass, so they are named here rather than silently folded into the status above.
+        "canonical_only": sorted({str(c.get("strategy")) for c in checks
+                                  if not _is_about_this_pass(c)}),
         "checks": [{"strategy": c.get("strategy"), "verdict": c.get("verdict"),
                     "origin": c.get("origin", "deterministic")} for c in checks],
         "verdicts": dict(sorted((v, verdicts.count(v)) for v in set(verdicts))),

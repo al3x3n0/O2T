@@ -309,6 +309,37 @@ def build_registry(enable_synthesis: bool = False) -> dict[str, ActionSpec]:
     return reg
 
 
+def _strategy_catalog(ctx: dict) -> list[dict]:
+    """What each verification strategy DOES and whether it can run here.
+
+    The enum alone is 33 opaque ids. Measured against a live model, that is not enough to route
+    with: told only `["cfg-shape", ..., "memory-model", ...]`, it concluded "no formal strategy is
+    applicable without a family match" and wound down with most of its budget unspent -- while
+    `memory-model` was runnable on that very pass and returns a real proved verdict.
+
+    The information it needed already existed and was being discarded. Every `Strategy` carries a
+    LABEL and a TARGET, and `target == "canonical"` means precisely "validates fixed contracts,
+    runnable from z3 alone" -- no family match, no source needed. Passing those through is not a
+    heuristic; it is the registry describing itself."""
+    cat = []
+    for sid, st in sorted(STRATEGIES.items()):
+        missing = [n for n in st.needs if not ctx.get(n)]
+        cat.append({
+            "id": sid,
+            "does": st.label,
+            # The routing fact: a CANONICAL strategy proves fixed contracts and needs neither a
+            # family match nor the pass source, so it is applicable even to unclassified residue.
+            "applies_when": {
+                "canonical": "always -- proves fixed contracts, needs no family match or source",
+                "source": "the pass SOURCE is available and its intent can be recovered",
+                "pass-runner": "a real `opt` pass can be run on IR",
+            }.get(st.target, st.target),
+            "runnable_here": not missing,
+            "blocked_by": ("missing: " + ", ".join(missing)) if missing else "",
+        })
+    return cat
+
+
 def advertise(registry: dict, state, ctx: dict) -> list[dict]:
     """Render the registry for the LLM prompt, marking per-pass availability honestly."""
     out = []
@@ -319,7 +350,10 @@ def advertise(registry: dict, state, ctx: dict) -> list[dict]:
             available, reason = False, f"missing: {', '.join(missing)}"
         elif spec.kind == "synthesis" and state.mode == "diagnose":
             available, reason = False, "synthesis disabled while diagnosing a refutation"
-        out.append({"name": spec.name, "description": spec.description, "kind": spec.kind,
-                    "args_schema": spec.args_schema, "available": available,
-                    "unavailable_reason": reason})
+        entry = {"name": spec.name, "description": spec.description, "kind": spec.kind,
+                 "args_schema": spec.args_schema, "available": available,
+                 "unavailable_reason": reason}
+        if spec.name == "run-strategy":
+            entry["strategy_catalog"] = _strategy_catalog(ctx)
+        out.append(entry)
     return out
