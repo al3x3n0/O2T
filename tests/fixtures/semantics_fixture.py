@@ -201,8 +201,6 @@ def main() -> int:
                       (" %r = fmul float %x, %y\n ret float %r", "fmul"),
                       (" %r = fdiv float %x, %y\n ret float %r", "fdiv"),
                       (" %r = frem float %x, %y\n ret float %r", "frem"),
-                      (" %c = fcmp oeq float %x, %y\n %r = select i1 %c, float %x, float %y\n"
-                       " ret float %r", "fcmp"),
                       ):
         src = f"define float @f(float %x, float %y){{\n{body}\n}}\n"
         try:
@@ -210,6 +208,16 @@ def main() -> int:
             raise AssertionError(f"{why} needs real FP semantics and must decline in a bits model")
         except sem.Unsupported:
             pass
+
+    #    `fcmp` MOVED OUT OF THAT LIST and into the uninterpreted group below. It is a PREDICATE
+    #    rather than arithmetic: several folds route its RESULT through structure without depending
+    #    on what it means, and an uninterpreted predicate keyed by the comparison serves them
+    #    without claiming any IEEE fact. What still declines above is the ARITHMETIC -- fadd, fmul,
+    #    fdiv, frem -- which has no honest bits-only answer at all.
+    fcmp_t = _new("define i1 @fc(float %x, float %y){\n %a = fcmp olt float %x, %y\n"
+                  " ret i1 %a\n}\n", "fc")[0]
+    assert fcmp_t.startswith("(uf_fcmpolt_32_1 "), \
+        ("fcmp must be an uninterpreted predicate keyed by its comparison", fcmp_t)
 
     #    THE CONVERSIONS ARE THE EXCEPTION, AND FOR A REASON WORTH STATING. They are modelled as
     #    UNINTERPRETED FUNCTIONS -- an unknown function of the operand -- which is the WEAKEST

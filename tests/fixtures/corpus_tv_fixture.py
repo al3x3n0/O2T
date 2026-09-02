@@ -314,6 +314,36 @@ def main() -> int:
     assert si.validate_transform(z3, sw3, wrong, "s3")["status"] == "refuted", \
         "a value matching no case must take the default"
 
+    # 12. `fcmp` IS AN UNINTERPRETED PREDICATE, for the same reason the conversions are
+    #     uninterpreted functions: folds route a comparison's RESULT through structure without
+    #     depending on what it means. Keyed by the PREDICATE too, so `oeq` and `olt` are different
+    #     functions rather than interchangeable.
+    same = ("define i1 @fc(float %x, float %y) {\n  %a = fcmp olt float %x, %y\n"
+            "  %b = fcmp olt float %x, %y\n  %r = xor i1 %a, %b\n  ret i1 %r\n}\n")
+    assert si.validate_transform(z3, same, "define i1 @fc(float %x, float %y) {\n"
+                                 "  ret i1 false\n}\n", "fc")["status"] == "proved", \
+        "the same comparison of the same operands must be the same answer"
+    diff = same.replace("%b = fcmp olt", "%b = fcmp ogt")
+    assert si.validate_transform(z3, diff, "define i1 @fc(float %x, float %y) {\n"
+                                 "  ret i1 false\n}\n", "fc")["status"] != "proved", \
+        "two DIFFERENT predicates must not be modelled as one function"
+    #     ...and the model must not know WHICH answer, or it has been given IEEE semantics it does
+    #     not have. `x < y` is not always false.
+    one = "define i1 @g(float %x, float %y) {\n  %a = fcmp olt float %x, %y\n  ret i1 %a\n}\n"
+    assert si.validate_transform(z3, one, "define i1 @g(float %x, float %y) {\n"
+                                 "  ret i1 false\n}\n", "g")["status"] != "proved", \
+        "an uninterpreted comparison must not be provably equal to a constant"
+    #     THE LIMIT IS REAL AND IS SUPPOSED TO SHOW. `select.ll test39` folds using the fact that
+    #     `x <= +infinity` holds unless x is NaN -- genuine IEEE reasoning this model does not have.
+    #     It must DECLINE via the uninterpreted-fp guard, never be reported as a miscompile.
+    inf39 = ("define i1 @t39(i1 %c, double %x) {\n"
+             "  %s = select i1 %c, double %x, double 0x7FF0000000000000\n"
+             "  %cmp = fcmp ule double %x, %s\n  ret i1 %cmp\n}\n")
+    v39 = si.validate_transform(z3, inf39, "define i1 @t39(i1 %c, double %x) {\n"
+                                "  ret i1 true\n}\n", "t39")
+    assert v39["status"] == "unsupported" and v39.get("guard") == "uninterpreted-fp", \
+        ("a fold that needs real IEEE comparison must decline, not refute", v39)
+
     print(f"corpus_tv_fixture OK: whole-function translation validation proved {proved} real "
           "InstCombine test transforms sound END-TO-END (real IR -> real `opt -passes=instcombine` -> "
           "Alive2-style refinement proof over the WHOLE function, verifying the composition of whatever "

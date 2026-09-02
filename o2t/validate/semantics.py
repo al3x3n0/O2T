@@ -324,7 +324,7 @@ def const_expr_sym(text: str, w: int) -> str:
 # work exact (see FAST_MATH and the fixture) is not weakened: nothing here reads a float as a NUMBER.
 FP_UNINTERPRETED = {"fptosi", "fptoui", "sitofp", "uitofp", "fpext", "fptrunc"}
 
-_UF_RE = __import__("re").compile(r"\b(uf_[a-z]+_\d+_\d+)\b")
+_UF_RE = __import__("re").compile(r"\b(uf_[a-z_]+_\d+_\d+)\b")
 _UFP_RE = __import__("re").compile(r"\b(ufp_[a-z]+_\d+_\d+)\b")
 
 
@@ -348,6 +348,8 @@ def uf_decls(*terms) -> list[str]:
         _, _, sw, dw = n.split("_")
         if n.startswith("ufp_"):
             out.append(f"(declare-fun {n} ((_ BitVec {sw})) Bool)")
+        elif n.startswith("uf_fcmp"):        # a COMPARISON takes two operands, not one
+            out.append(f"(declare-fun {n} ((_ BitVec {sw}) (_ BitVec {sw})) (_ BitVec {dw}))")
         else:
             out.append(f"(declare-fun {n} ((_ BitVec {sw})) (_ BitVec {dw}))")
     return out
@@ -460,6 +462,25 @@ def evaluate(inst: ir.Instruction, env: dict, ctx: dict | None = None) -> None:
         env[dst] = (f"(ite {picks_t} {t} {f})", w, smt_or([cp, arm]), smt_or([cu, tu, fu]))
         return
 
+    if op == "fcmp":
+        # AN UNINTERPRETED PREDICATE, for the same reason the conversions are uninterpreted
+        # functions: several folds route a comparison's RESULT through structure without ever
+        # depending on what it means (`select %cmp, bitcast %a, bitcast %b` -> `bitcast (select ...)`
+        # needs only that both selects share ONE condition). Keyed by the PREDICATE as well as the
+        # operands, so `oeq` and `olt` are different functions rather than interchangeable.
+        #
+        # Sound for the same reason and with the same limit: it permits every predicate, so a proof
+        # holds for the real one, while a REFUTATION may use behaviour real IEEE comparison never
+        # has -- which is why the `uninterpreted-fp` guard declines those rather than reporting them.
+        sw = bit_width(inst.operands[0].type)
+        if sw is None or not inst.type.is_int(1):
+            raise Unsupported(f"fcmp on {inst.operands[0].type}")
+        a, _, ap, au = value(inst.operands[0], env, sw)
+        b, _, bp, bu = value(inst.operands[1], env, sw)
+        pred = (inst.pred or "?").replace(".", "_")
+        n = f"uf_fcmp{pred}_{sw}_1"
+        env[dst] = (f"({n} {a} {b})", 1, smt_or([ap, bp]), smt_or([au, bu]))
+        return
     if op in FP_UNINTERPRETED:
         sw = bit_width(inst.operands[0].type)
         dw = bit_width(inst.type)
