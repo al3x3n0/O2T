@@ -170,12 +170,53 @@ def main() -> int:
         assert report_a["summary"]["agent"]["headline_upgrades"] == 1, report_a["summary"]["agent"]
         assert record_a["headline"]["status"] == "proved", record_a["headline"]
 
+        # 6) THE SECOND TERRITORY: `planned` residue and CROSS-FAMILY routing. Case 2 covers a pass
+        #    the classifier could not place at all. This one it places CONFIDENTLY AND WRONGLY, and
+        #    that is the harder case, because a wrong family still produces a full plan and a
+        #    confident-looking report.
+        #
+        #    `cross_family_unattributed_snippet.cpp` carries the same planted unguarded FP reduction
+        #    but wears peephole idiom (`replaceInstUsesWith`, `Builder.CreateFAddReduce`), so it
+        #    classifies `peephole` at score 18 and `slp-source` is never planned. Its one
+        #    source-targeted check answers `inconclusive`; the rest are canonical or pass-runners
+        #    that fell back to their canonical pass. Until the attribution fix this pass was
+        #    reported PROVED and the agent never saw it -- `proved` is not residue. Now it lands on
+        #    `planned` and the agent can do the one thing the planner structurally cannot: dispatch
+        #    a strategy from a family the classifier did not pick.
+        cross = SNIPPET.parent / "cross_family_unattributed_snippet.cpp"
+        report_x, exit_x, entry_x, record_x = _run(tmp, "xfam.json", DISPATCH, cross)
+        assert exit_x == 0, exit_x
+        assert entry_x["headline"]["status"] == "planned", \
+            ("the misclassified pass must NOT be certified -- its only source-targeted check was "
+             "inconclusive and the rest never read it", entry_x["headline"])
+        assert entry_x["headline"]["unattributed_proofs"], \
+            ("...and the proofs it did collect must be named, not dropped", entry_x["headline"])
+        assert record_x is not None, \
+            ("`planned` must be RESIDUE. It is the plainest residue there is -- checks ran and "
+             "produced no attributable verdict -- and excluding it left this pass untriaged by "
+             "both layers at once", entry_x["headline"])
+        check_x = record_x["formal_checks"][0]
+        assert check_x["strategy"] == "slp-source" and check_x["verdict"] == "refuted", \
+            ("the agent must recover the finding by routing OUTSIDE the classified family -- the "
+             "planner only ever runs the matched family's strategies", check_x)
+        assert (check_x["transforms"], check_x["proved"], check_x["refuted"]) == (3, 2, 1), check_x
+        assert record_x["headline"]["status"] == "refuted", record_x["headline"]
+        #    The five unattributed deterministic proofs must stay OUT of the agent headline too --
+        #    the same rule, one implementation, both paths.
+        assert set(record_x["headline"]["canonical_only"]) >= {
+            "instcombine-ir", "reassociate-ir", "early-cse-ir", "symexec-real-pass",
+            "klee-symexec"}, record_x["headline"]
+
     del os.environ["AGENT_STUB_SCENARIO"]
     print("agent_positive_control_fixture OK: on a pass the deterministic layer cannot classify "
           "(zero checks planned), the agent routes to slp-source and REFUTES a real planted "
           "unguarded FP reduction -- attributed to this pass (canonical_only empty), 2 sibling "
           "folds still proving, tripping --fail-on-agent-refuted where an advisory 'refuted' does "
-          "not; restoring the reassoc guard turns the same check green (3/3, headline upgraded)")
+          "not; restoring the reassoc guard turns the same check green (3/3, headline upgraded). "
+          "AND on a pass the classifier places CONFIDENTLY AND WRONGLY (peephole idiom, SLP fold): "
+          "the headline is `planned` with its unattributed proofs named, that IS residue, and the "
+          "agent recovers the same refutation by dispatching outside the classified family -- the "
+          "one move the planner structurally cannot make")
     return 0
 
 

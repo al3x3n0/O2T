@@ -26,7 +26,17 @@ from pathlib import Path
 from o2t.agent.actions import _truncate, advertise, validate_response
 
 # Residue: the passes where deterministic orchestration left a human decision open.
-RESIDUE_STATUSES = ("unclassified", "advisory", "skipped", "error", "refuted")
+#
+# `planned` was missing, and it is the plainest residue of all: it means checks were planned and
+# produced no attributable verdict. It became reachable in earnest once the headline stopped
+# counting proofs from checks that never read the pass -- a vendor pass whose only source-targeted
+# check answered `inconclusive` now lands here instead of being certified `proved`, which is
+# exactly the pass a human would want triaged. It was previously excluded on the reasoning that
+# applies to `skipped` too (the agent cannot conjure a missing binary), but `skipped` is already
+# residue: the agent's move is to route to a DIFFERENT strategy, not to re-run the one that could
+# not start. Measured: on that snippet the agent then dispatches `slp-source` and refutes the
+# planted unguarded FP reduction the whole plan had missed.
+RESIDUE_STATUSES = ("unclassified", "advisory", "skipped", "error", "refuted", "planned")
 _EXCERPT_CHARS = 6000
 
 
