@@ -63,6 +63,17 @@ Actions (v1):
 Residue selection: deterministic `headline.status ∈ {unclassified, advisory, skipped, error,
 refuted}`.
 
+**The residue statuses are not equally reachable, and two of them are dead ground.** Measured
+offline against `plan_for` with a source supplied and z3/opt/clang present: *no* family yields an
+all-infeasible plan — every one of the nine has at least one feasible check. A `skipped` headline
+therefore only arises when a required binary is absent, and the agent runs in the *same*
+environment, so it cannot route around a missing `opt` any more than the orchestrator could. There
+is nothing for it to do there. `refuted` routes to diagnose mode, which is advisory by construction
+and never relitigates the refutation. That leaves the agent's real surface as `unclassified` (a
+classifier blind spot — see below, and `agent_positive_control_fixture`) and `error`/`advisory`
+(route around a check that crashed or answered inconclusively to a feasible sibling). Those last two
+still have no positive control.
+
 **Where the agent can actually add attributable value.** Only where a *miner* can see a fold the
 *classifier's* signal list cannot — and that gap is family-specific, not general. For `cleanup-dce`
 it does not exist: the miner's erase regex requires `eraseFromParent` (classifier weight 3),
