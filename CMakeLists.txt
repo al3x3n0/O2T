@@ -675,6 +675,14 @@ if(O2T_BUILD_TESTS)
     # reported as a disagreement (which this pipeline surfaces as a possible false proof).
     # The corpus's first-ever refutation was FALSE: a refutation may not rest on the freedom of an
     # opaque constant expression. Pins the decline, that the guard stays scoped, and its cost.
+    # Only the scalar validator has a non-vacuity probe; vec/mem have none. Each validator must
+    # DECLARE its coverage and the corpus layer must count the unprobed separately.
+    add_test(
+        NAME vacuity_coverage_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/vacuity_coverage_fixture.py; else echo 'vacuity_coverage_fixture: z3/opt not found, skipped'; fi"
+    )
     add_test(
         NAME opaque_const_expr_refutation_fixture
         COMMAND

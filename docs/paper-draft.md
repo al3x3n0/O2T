@@ -319,7 +319,13 @@ model, plus a few solver timeouts — never a false proof. *Non-vacuity* is a ch
 refinement holds trivially wherever the source is UB or poison, so an over-approximated UB model would
 turn refutations into proofs of exactly that shape, invisibly to the execution and Alive2 oracles
 (which are consulted only on the proved set). Probing every proof for a defined source is the guard
-Track A has always had via `mini_alive`'s premise-satisfiability check, now on Track B as well. The translator's fragment is deliberately bounded and every boundary declines
+Track A has always had via `mini_alive`'s premise-satisfiability check, now on Track B as well —
+with a coverage limit we state rather than assume away. The probe lives in the SCALAR validator;
+the vector and memory validators have none, so their proofs carry no vacuity information at all.
+Measured over the pinned 1,937-function corpus: of 1,826 proofs, one is vacuous, 1,304 are verified
+non-vacuous, and 521 (28.5%) are unprobed. The non-vacuity claim above therefore covers the proofs
+the probe reaches, and the unprobed remainder is reported as such (`vacuity_unprobed`) rather than
+folded into it — the distinction matters precisely because no external oracle can supply it. The translator's fragment is deliberately bounded and every boundary declines
 rather than approximates:
 
 - **Control flow.** Acyclic **branch/phi** functions are symbolically executed — each block carries a

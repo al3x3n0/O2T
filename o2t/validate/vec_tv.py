@@ -698,7 +698,12 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
             return {"status": "unsupported", "function": func, "guard": "target-poison",
                     "reason": "target can produce poison; a value-equality model cannot prove "
                               "refinement against it (values agree, poison is not a value)"}
-        return {"status": "proved", "function": func, **xc}
+        return {"status": "proved", "function": func,
+                "vacuity_probe": "absent",  # see scalar_ir.validate_transform: this validator has NO
+                # non-vacuity guard. `vacuous: None` used to conflate "the probe ran and
+                # could not decide" with "no probe exists here", and they are very
+                # different claims -- 521 of 1,826 corpus proofs (28.5%) are this case.
+                **xc}
     if head == "sat":
         # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
         # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
@@ -797,7 +802,12 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func, **xc}
+        return {"status": "proved", "function": func,
+                "vacuity_probe": "absent",  # see scalar_ir.validate_transform: this validator has NO
+                # non-vacuity guard. `vacuous: None` used to conflate "the probe ran and
+                # could not decide" with "no probe exists here", and they are very
+                # different claims -- 521 of 1,826 corpus proofs (28.5%) are this case.
+                **xc}
     if head == "sat":
         return {"status": "refuted", "function": func, "witness": out, **xc}
     if head == "unknown":                     # deterministic budget exhausted -- no verdict

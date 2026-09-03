@@ -456,7 +456,7 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "function": func}
     if head == "unsat":
-        verdict = {"status": "proved", "function": func}
+        verdict = {"status": "proved", "function": func, "vacuity_probe": "ran"}
     elif head == "sat":
         # A REFUTATION CANNOT BE TRUSTED ONCE AN UNINTERPRETED FUNCTION IS IN THE QUERY, and the
         # asymmetry is the whole point of using one. A UF permits EVERY function, so:

@@ -105,6 +105,16 @@ def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int 
     counts = Counter(r["status"] for r in results)
     return {"functions": results, "counts": dict(counts), "opt_ok": True,
             "vacuous": sum(1 for r in results if r.get("vacuous") is True),
+            # NOT-PROBED IS NOT CLEAN. Only the scalar validator has a non-vacuity guard; the
+            # vector and memory ones have none, so their proofs carry no vacuity information at
+            # all. Reporting only `vacuous: 1` invited reading the other 1,825 as checked, when
+            # 521 of them (28.5% of the corpus) were never probed. Vacuity is also the ONE shape
+            # the external oracles cannot see -- lli and Alive2 are consulted only on the proved
+            # set and agree that a UB source refines to anything -- so it is exactly the coverage
+            # that must not be overstated.
+            "vacuity_unprobed": sum(1 for r in results
+                                    if r.get("status") == "proved"
+                                    and r.get("vacuity_probe") == "absent"),
             "solver_disagreements": [r["function"] for r in results
                                      if r.get("cross_check", {}).get("status") == "disagree"]}
 
@@ -147,7 +157,8 @@ def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: s
     disagreements, checked = [], 0
     if opt_text is None:
         return {"base": base["counts"], "cross_checked": 0, "disagreements": [],
-                "vacuous": base.get("vacuous", 0)}
+                "vacuous": base.get("vacuous", 0),
+                "vacuity_unprobed": base.get("vacuity_unprobed", 0)}
     solver_no_answer: list[dict] = []
     for r in base["functions"]:
         if r["status"] != "proved":
@@ -174,4 +185,5 @@ def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: s
             if bfn and afn and alive_refines(bfn, afn, alive_bin).get("status") == "refuted":
                 disagreements.append({"function": fn, "oracle": "alive2"})
     return {"base": base["counts"], "cross_checked": checked, "disagreements": disagreements,
-            "solver_no_answer": solver_no_answer, "vacuous": base.get("vacuous", 0)}
+            "solver_no_answer": solver_no_answer, "vacuous": base.get("vacuous", 0),
+            "vacuity_unprobed": base.get("vacuity_unprobed", 0)}

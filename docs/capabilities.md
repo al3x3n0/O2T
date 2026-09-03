@@ -88,9 +88,13 @@ Two consequences worth knowing when reading verdicts:
   layer** — the `combine_mul_abs*`/`nabs*` family in `mul.ll`, where Bitwuzla cannot answer inside
   its 30s bound. They are confirmed by `lli` and Alive2; the tool now reports them as
   `solver_no_answer` and excludes them from `cross_checked` rather than counting them as confirmed.
-  (2) **The 1 vacuous proof is the one shape no oracle here can see**: `lli` and Alive2 are consulted
-  only on the proved set and agree that a UB source refines to anything, so vacuity is caught by
-  O2T's own probe or not at all.
+  (2) **Vacuity is the one shape no oracle here can see** — `lli` and Alive2 are consulted only on the
+  proved set and agree that a UB source refines to anything — **and O2T probes only 71% of its own
+  proofs for it.** Of the 1,826: 1 vacuous (`shift.ll:test62`, `ashr i32 %a, 32`, poison on every
+  input — correctly flagged), 1,304 verified non-vacuous, and **521 (28.5%) never probed at all**,
+  because only the scalar validator has the guard; `mem_state` and `vec_tv` have none. Those 521 are
+  now reported as `vacuity_unprobed` rather than left to read as clean. Extending the probe to the
+  vector and memory validators is open work (`vacuity_coverage_fixture` pins the gap meanwhile).
 
   **The corpus's first-ever refutation appeared in this run, and it was FALSE.**
   `test_mul_canonicalize_neg_is_not_undone` is plain `mul` commutativity; the source computed

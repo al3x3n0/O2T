@@ -703,7 +703,12 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func, **xc}
+        return {"status": "proved", "function": func,
+                "vacuity_probe": "absent",  # see scalar_ir.validate_transform: this validator has NO
+                # non-vacuity guard. `vacuous: None` used to conflate "the probe ran and
+                # could not decide" with "no probe exists here", and they are very
+                # different claims -- 521 of 1,826 corpus proofs (28.5%) are this case.
+                **xc}
     if head == "sat":
         # A CONSTANT EXPRESSION is modelled as an opaque free constant (`cexpr_<digest>_<w>`),
         # shared across sides only when the printed text is IDENTICAL. When one side computes a
