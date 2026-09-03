@@ -471,6 +471,24 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
             return {"status": "unsupported", "function": func, "guard": "uninterpreted-fp",
                     "reason": "refutation depends on an uninterpreted FP conversion (the witness "
                               "may use a function the real one never realises)"}
+        # A CONSTANT EXPRESSION is modelled as an opaque free constant (`cexpr_<digest>_<w>`),
+        # shared across sides only when the printed text is IDENTICAL. When one side computes a
+        # value structurally and the other carries the folded constant expression, the two are
+        # unrelated symbols and the solver is free to pick them inconsistently -- which is not a
+        # counterexample, it is the model's own slack. Measured on LLVM 18.1.8 `mul.ll`:
+        # `test_mul_canonicalize_neg_is_not_undone` computes `0 - ptrtoint(@X)` from instructions
+        # while InstCombine emits `sub (i64 0, i64 ptrtoint (ptr @X to i64))` as a constant expr;
+        # the witness assigned `glob_X` and the `cexpr_` symbol independent values and refuted a
+        # plain commutativity fold. The corpus's first refutation in its history, and false.
+        #
+        # The asymmetry is the same one this file already applies to fast-math and uninterpreted
+        # FP: an unconstrained symbol makes the TARGET's behaviour set larger, so a PROOF over it
+        # is conservative and stays valid, while a REFUTATION drawn from that freedom is worthless.
+        # So proofs stand and refutations decline.
+        if "cexpr_" in refute:
+            return {"status": "unsupported", "function": func, "guard": "opaque-const-expr",
+                    "reason": "refutation depends on an opaque constant expression (the witness "
+                              "may choose it inconsistently with the value it is built from)"}
         verdict = {"status": "refuted", "function": func, "witness": out}
     elif head == "unknown":
         # The DETERMINISTIC budget ran out. Reported as `timeout` because it is the same outcome --

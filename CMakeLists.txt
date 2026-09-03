@@ -673,6 +673,14 @@ if(O2T_BUILD_TESTS)
     # coherent and stops the fetch script from growing its own copy of the file list. Offline.
     # A second-solver replay must be bounded, and a solver that cannot answer must not be
     # reported as a disagreement (which this pipeline surfaces as a possible false proof).
+    # The corpus's first-ever refutation was FALSE: a refutation may not rest on the freedom of an
+    # opaque constant expression. Pins the decline, that the guard stays scoped, and its cost.
+    add_test(
+        NAME opaque_const_expr_refutation_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/opaque_const_expr_refutation_fixture.py; else echo 'opaque_const_expr_refutation_fixture: z3 not found, skipped'; fi"
+    )
     add_test(
         NAME cross_solver_timeout_fixture
         COMMAND

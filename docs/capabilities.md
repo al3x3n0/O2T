@@ -70,18 +70,41 @@ Two consequences worth knowing when reading verdicts:
 
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
-- **Track B whole-function TV, 2026-09-02 over ALL NINE of LLVM 18's InstCombine test files
-  (1,835 functions):** **1,705 proved (92%)**, **104 declines**, 26 budget exhaustions (non-answers),
-  **0 refutations**, 1 vacuous. 154/154 fixtures.
+- **Track B whole-function TV, 2026-09-03, ALL NINE InstCombine test files at the PINNED tag
+  `llvmorg-18.1.8` (1,937 functions), every proof cross-checked in the same pass:**
+  **1,826 proved (94.3%)**, 78 unsupported, 32 budget exhaustions (non-answers), **0 refutations**,
+  1 vacuous — and **0 disagreements** from `lli` (real execution), reference Alive2 (poison/UB) and
+  Bitwuzla (a second SMT solver replaying every query). 158/158 fixtures.
 
-  **The cross-check is one commit-range behind the proof count, and that gap is stated rather than
-  glossed.** The last FULL `--cross-check` pass covered 1,614 proofs — every one confirmed by `lli`
-  (real execution), reference Alive2 (poison/UB) and Bitwuzla (a second SMT solver), **0
-  disagreements, 0 vacuous** — and a later single-file pass covered `or.ll` at 116/116. The ~90
-  proofs added since (pointers-as-values, globals, `switch`, void returns, the intrinsics, the
-  uninterpreted FP surface, multi-block vectors, pointer lanes) have NOT been through the external
-  oracles. Re-running `--cross-check` is the first thing to do before quoting this figure as
-  independently confirmed.
+  **This is a DIFFERENT corpus from the 1,835-function figure quoted before, not an update to it.**
+  That corpus was local and unpinned and no longer exists; the file list was recorded nowhere, so
+  the old number could not be regenerated. Refetching is not equivalent — the obvious source,
+  `release/18.x`, is a moving branch and the same nine files now hold 1,937 functions. The corpus is
+  pinned by tag and sha256 in `tests/fixtures/trackb_corpus_manifest.json`; fetch and verify it with
+  `tools/cv-fetch-trackb-corpus.sh`. Compare percentages, not counts.
+
+  **The proof/cross-check gap is closed: there is no longer a set of proofs the oracles have not
+  seen.** Two caveats stated rather than glossed. (1) **8 proofs are not confirmed at the SOLVER
+  layer** — the `combine_mul_abs*`/`nabs*` family in `mul.ll`, where Bitwuzla cannot answer inside
+  its 30s bound. They are confirmed by `lli` and Alive2; the tool now reports them as
+  `solver_no_answer` and excludes them from `cross_checked` rather than counting them as confirmed.
+  (2) **The 1 vacuous proof is the one shape no oracle here can see**: `lli` and Alive2 are consulted
+  only on the proved set and agree that a UB source refines to anything, so vacuity is caught by
+  O2T's own probe or not at all.
+
+  **The corpus's first-ever refutation appeared in this run, and it was FALSE.**
+  `test_mul_canonicalize_neg_is_not_undone` is plain `mul` commutativity; the source computed
+  `0 - ptrtoint(@X)` from instructions while InstCombine emitted the folded constant expression, and
+  an opaque `cexpr_` symbol let z3 choose the two inconsistently. Refutations that depend on one now
+  decline `opaque-const-expr` (`opaque_const_expr_refutation_fixture`); no proof was affected.
+
+  **Why it stayed behind, which was not neglect: the run could not finish.** The second-solver
+  replay called `subprocess.run` with no timeout, so one hard query could stall a whole-corpus pass
+  indefinitely — measured 2026-09-03, a single bitwuzla query held a run for 78 minutes at 99% CPU
+  while the parent sat idle, and since `--cross-check` also forces `jobs=1`, nothing else advanced.
+  Bounded at 30s (`SOLVER_TIMEOUT`), a file now cross-checks in minutes. `lli` (30s) and `alive-tv`
+  (60s) were already bounded; the gap was only in the solver replay. Run it PER FILE so one stall
+  cannot cost the other eight.
 
 - **The denominator was wrong until 2026-08-31, and the fix is worth knowing about.** Every earlier
   figure said "nine files" over EIGHT: ONE function in `shift.ll` (`ashr_out_of_range`, an OSS-Fuzz
