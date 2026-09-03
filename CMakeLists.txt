@@ -4739,3 +4739,30 @@ assert k["reasons"] == ["unsupported-global-replacement-kind"]
         )
     endif()
 endif()
+
+# --- slow-lane labelling ---------------------------------------------------------------------
+# THE FULL SUITE IS DOMINATED BY A HANDFUL OF SWEEP-STYLE FIXTURES, and that is a soundness problem
+# rather than an inconvenience. Measured 2026-09-03 with `-j 8`: 125 ordinary fixtures run in ~94
+# SECONDS, while `orchestrate_sweep_fixture` alone takes ~1833s, `globalopt_strict_check_fixture`
+# ~868s and `registry_contract_check_formal_fixture` ~770s -- roughly an hour on the critical path,
+# where parallelism cannot help because each is ONE test.
+#
+# The consequence was not hypothetical: because the whole gate took ~90 minutes (and background runs
+# were being killed before finishing), work proceeded behind `ctest -R <guess>` filters keyed on the
+# files thought to be touched -- and FOUR fixtures were broken and pushed, each asserting that
+# something DECLINES which a change had since made supported. A gate nobody can afford to run is a
+# gate that stops being run.
+#
+#   fast gate (pre-push):   ctest --test-dir build -LE slow -j 8
+#   everything (nightly):   ctest --test-dir build -j 8
+#
+# A fixture belongs here only for RUNTIME, never to hide a failure; each of these is a sweep whose
+# value is periodic rather than per-change.
+foreach(_slow_fixture
+        orchestrate_sweep_fixture
+        globalopt_strict_check_fixture
+        registry_contract_check_formal_fixture)
+    if(TEST ${_slow_fixture})
+        set_tests_properties(${_slow_fixture} PROPERTIES LABELS "slow")
+    endif()
+endforeach()
