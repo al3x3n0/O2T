@@ -699,11 +699,14 @@ def svec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int 
                     "reason": "target can produce poison; a value-equality model cannot prove "
                               "refinement against it (values agree, poison is not a value)"}
         return {"status": "proved", "function": func,
-                "vacuity_probe": "absent",  # see scalar_ir.validate_transform: this validator has NO
-                # non-vacuity guard. `vacuous: None` used to conflate "the probe ran and
-                # could not decide" with "no probe exists here", and they are very
-                # different claims -- 521 of 1,826 corpus proofs (28.5%) are this case.
-                **xc}
+                # NOT-APPLICABLE, not merely unimplemented. Vacuity is refinement holding BECAUSE
+                # the source is UB/poison everywhere, so anything refines it. This model asserts no
+                # UB premise at all -- it proves `rb == ra` for every input, and `target_may_poison`
+                # is handled by a separate decline above -- so there is no premise for a proof to
+                # hide behind and no vacuity escape to probe for. Recorded explicitly so this is
+                # not later "fixed" by bolting on a probe that would answer non-vacuous every time,
+                # which is worse than no probe: a guard that cannot fail reads as coverage.
+                "vacuity_probe": "not-applicable", "vacuous": False, **xc}
     if head == "sat":
         # value-only lane model: a value mismatch is a genuine miscompile ONLY when the source is
         # poison-free; otherwise it may be a sound poison exploitation (opt folding a poison vector
@@ -802,12 +805,25 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func,
-                "vacuity_probe": "absent",  # see scalar_ir.validate_transform: this validator has NO
-                # non-vacuity guard. `vacuous: None` used to conflate "the probe ran and
-                # could not decide" with "no probe exists here", and they are very
-                # different claims -- 521 of 1,826 corpus proofs (28.5%) are this case.
-                **xc}
+        # NON-VACUITY PROBE. Refinement is trivially true wherever the source is UB or poison
+        # on every input, and no external oracle can see it (lli and Alive2 look only at the proved
+        # set and agree a UB source refines to anything). The lane analogue of the scalar probe: is
+        # there an input where the source is defined AND at least one result lane is not poison?
+        # `or` over the lanes, not `and` -- one meaningful lane is enough for the proof to be about
+        # something, and demanding every lane be defined would under-report non-vacuity on folds
+        # that legitimately leave a lane poison.
+        defined = si.smt_and([f"(not {sub})",
+                              si.smt_or([f"(not {lane[1]})" for lane in rb])]) if rb else f"(not {sub})"
+        vsmt = "\n".join([f"(set-logic {logic})", *ds, f"(assert {defined})", "(check-sat)", ""])
+        try:
+            vout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(vsmt, rlimit),
+                                  capture_output=True, text=True,
+                                  timeout=si.wall_backstop(timeout, rlimit)).stdout
+            vhead = vout.strip().splitlines()[0].strip() if vout.strip() else "error"
+        except subprocess.TimeoutExpired:
+            vhead = "timeout"
+        return {"status": "proved", "function": func, "vacuity_probe": "ran",
+                "vacuous": {"sat": False, "unsat": True}.get(vhead), **xc}
     if head == "sat":
         return {"status": "refuted", "function": func, "witness": out, **xc}
     if head == "unknown":                     # deterministic budget exhausted -- no verdict

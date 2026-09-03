@@ -127,19 +127,36 @@ def main() -> int:
 
     # 8) The cross-check reaches the FALLBACK validators too -- and matters most for mem_state, the
     #    only QF_ABV (theory-of-arrays) encoding in Track B and the least-exercised corner of the
-    #    solver stack. Vectors are QF_BV but a distinct lane encoding. Neither carries a vacuity flag:
-    #    they compare VALUES, so there is no UB/poison term that could be over-approximated.
+    #    solver stack. Vectors are QF_BV but a distinct lane encoding.
+    #
+    #    THIS BLOCK USED TO ASSERT `"vacuous" not in m`, ON A RATIONALE THAT WAS SIMPLY FALSE:
+    #    "they compare VALUES, so there is no UB/poison term that could be over-approximated".
+    #    Both models carry exactly such terms -- `mem_state` builds its refutation as
+    #    `(and (not sub) (or tub ret_bad mem_bad))` with a source-return-poison term in `ret_bad`,
+    #    and the lane model carries a poison flag beside every lane's value. So the missing probe
+    #    was not a design property; it was a gap wearing a justification, and the assertion pinned
+    #    it in place. Measured consequence: 521 of 1,826 corpus proofs carried no vacuity
+    #    information at all, and nine genuinely vacuous proofs sat inside that silence being
+    #    counted as meaningful. Both validators now probe (`vacuity_coverage_fixture` owns the
+    #    coverage claim); here we pin only that the flag is PRESENT and DECIDED, so it cannot
+    #    regress to absent without this failing.
     from o2t.validate.mem_state import mem_state_tv  # noqa: E402
     from o2t.validate.vec_tv import vec_tv  # noqa: E402
     dse_b = ("define i32 @f(ptr %p) {\n  store i32 1, ptr %p\n  store i32 2, ptr %p\n"
              "  %v = load i32, ptr %p\n  ret i32 %v\n}\n")
     dse_a = "define i32 @f(ptr %p) {\n  store i32 2, ptr %p\n  ret i32 2\n}\n"
     m = mem_state_tv(z3, dse_b, dse_a, "f", cross_check=True)
-    assert m["status"] == "proved" and "vacuous" not in m, ("dead-store elimination proves", m)
+    assert m["status"] == "proved", ("dead-store elimination proves", m)
+    assert m.get("vacuity_probe") == "ran" and m.get("vacuous") is False, \
+        ("mem_state must PROBE for vacuity and decide -- this store-forwarding source is defined "
+         "for every input, so a None here means the QF_ABV probe cannot answer even a plain case", m)
     vb = "define <4 x i32> @f(<4 x i32> %x) {\n  %r = add <4 x i32> %x, zeroinitializer\n  ret <4 x i32> %r\n}\n"
     va = "define <4 x i32> @f(<4 x i32> %x) {\n  ret <4 x i32> %x\n}\n"
     vv = vec_tv(z3, vb, va, "f", cross_check=True)
-    assert vv["status"] == "proved" and "vacuous" not in vv, ("the vector fold proves", vv)
+    assert vv["status"] == "proved", ("the vector fold proves", vv)
+    assert vv.get("vacuity_probe") == "ran" and vv.get("vacuous") is False, \
+        ("the lane model must PROBE for vacuity and decide -- `add %x, zeroinitializer` is defined "
+         "in every lane for every input", vv)
     for tag, res in (("mem_state/QF_ABV", m), ("vec/lane", vv)):
         want = "agree" if detected else "skipped"
         assert res["cross_check"]["status"] == want, (tag, res["cross_check"])

@@ -89,12 +89,16 @@ Two consequences worth knowing when reading verdicts:
   its 30s bound. They are confirmed by `lli` and Alive2; the tool now reports them as
   `solver_no_answer` and excludes them from `cross_checked` rather than counting them as confirmed.
   (2) **Vacuity is the one shape no oracle here can see** — `lli` and Alive2 are consulted only on the
-  proved set and agree that a UB source refines to anything — **and O2T probes only 71% of its own
-  proofs for it.** Of the 1,826: 1 vacuous (`shift.ll:test62`, `ashr i32 %a, 32`, poison on every
-  input — correctly flagged), 1,304 verified non-vacuous, and **521 (28.5%) never probed at all**,
-  because only the scalar validator has the guard; `mem_state` and `vec_tv` have none. Those 521 are
-  now reported as `vacuity_unprobed` rather than left to read as clean. Extending the probe to the
-  vector and memory validators is open work (`vacuity_coverage_fixture` pins the gap meanwhile).
+  proved set and agree that a UB source refines to anything — so it is caught by O2T's own probe or
+  not at all. That probe used to live only in the scalar validator, covering 71% of proofs; it now
+  runs in the lane model and the memory model too. **Coverage 98.1%, and the vacuous count moved
+  1 → 10**: of the 1,826 proofs, 10 vacuous, 1,782 verified non-vacuous, 34 unknown (genuine solver
+  non-answers, reported as `vacuity_unprobed`). The nine newly exposed proofs were real and had been
+  counted as meaningful — `shift.ll:test62_splat_vector`, `shift.ll:test38_poison` (`srem` by a
+  poison divisor, UB rather than poison because it decides whether the division traps),
+  `and.ll:negate_lowbitmask_commute` (both lanes poison, from opposite directions) and the six
+  `icmp.ll:or_poison_vec_*`. `svec_tv` is marked `not-applicable` rather than probed: it asserts no
+  UB premise at all, so no vacuity escape exists to look for.
 
   **The corpus's first-ever refutation appeared in this run, and it was FALSE.**
   `test_mul_canonicalize_neg_is_not_undone` is plain `mul` commutativity; the source computed

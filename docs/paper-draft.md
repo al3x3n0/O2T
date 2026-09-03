@@ -320,12 +320,18 @@ refinement holds trivially wherever the source is UB or poison, so an over-appro
 turn refutations into proofs of exactly that shape, invisibly to the execution and Alive2 oracles
 (which are consulted only on the proved set). Probing every proof for a defined source is the guard
 Track A has always had via `mini_alive`'s premise-satisfiability check, now on Track B as well —
-with a coverage limit we state rather than assume away. The probe lives in the SCALAR validator;
-the vector and memory validators have none, so their proofs carry no vacuity information at all.
-Measured over the pinned 1,937-function corpus: of 1,826 proofs, one is vacuous, 1,304 are verified
-non-vacuous, and 521 (28.5%) are unprobed. The non-vacuity claim above therefore covers the proofs
-the probe reaches, and the unprobed remainder is reported as such (`vacuity_unprobed`) rather than
-folded into it — the distinction matters precisely because no external oracle can supply it. The translator's fragment is deliberately bounded and every boundary declines
+— and its coverage is itself measured, because a guard that runs on only part of the proof set
+grades a claim it does not support. The probe first lived only in the scalar validator, reaching
+71% of proofs; the vector and memory validators had none, and their proofs carried no vacuity
+information while the aggregate reported a single vacuous proof. Extending it to both raised
+coverage to 98.1% and moved the count from 1 to 10 — nine genuinely vacuous proofs, each previously
+counted as meaningful, among them an `ashr` by the full bit width in every lane and an `srem` by a
+poison divisor (UB rather than poison, since it decides whether the division traps). Over the
+pinned 1,937-function corpus: of 1,826 proofs, 10 vacuous, 1,782 verified non-vacuous, 34 unknown
+(solver non-answers, reported as such). The value-equality scalable-vector model is marked
+not-applicable rather than probed, since it asserts no UB premise for a proof to hide behind. The
+distinction between "probed and clean" and "not probed" matters precisely because no external
+oracle can supply it. The translator's fragment is deliberately bounded and every boundary declines
 rather than approximates:
 
 - **Control flow.** Acyclic **branch/phi** functions are symbolically executed — each block carries a

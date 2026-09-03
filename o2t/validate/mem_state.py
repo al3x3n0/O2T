@@ -703,12 +703,24 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
     xc = ({"cross_check": si.cross_check_smt(smt, head, z3_bin, extra_solvers)}
           if cross_check and head in ("sat", "unsat") else {})
     if head == "unsat":
-        return {"status": "proved", "function": func,
-                "vacuity_probe": "absent",  # see scalar_ir.validate_transform: this validator has NO
-                # non-vacuity guard. `vacuous: None` used to conflate "the probe ran and
-                # could not decide" with "no probe exists here", and they are very
-                # different claims -- 521 of 1,826 corpus proofs (28.5%) are this case.
-                **xc}
+        # NON-VACUITY PROBE, the same obligation `scalar_ir` has carried and this model had not.
+        # Refinement is trivially true wherever the SOURCE is UB or poison on every input, so such a
+        # `proved` is valid but says nothing -- and it is the signature of an over-approximated UB
+        # model, which turns would-be refutations into proofs. No external oracle can see it: lli
+        # and Alive2 are consulted only on the PROVED set and agree that a UB source refines to
+        # anything. So: is the source defined, with a non-poison result, for SOME input?
+        defined = si.smt_and([f"(not {sub})"] + ([f"(not {rbp})"] if rb is not None else []))
+        vsmt = "\n".join(["(set-logic QF_ABV)", *decls,
+                           f"(assert {assume})", f"(assert {defined})", "(check-sat)", ""])
+        try:
+            vout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(vsmt, rlimit),
+                                  capture_output=True, text=True,
+                                  timeout=si.wall_backstop(timeout, rlimit)).stdout
+            vhead = vout.strip().splitlines()[0].strip() if vout.strip() else "error"
+        except subprocess.TimeoutExpired:
+            vhead = "timeout"
+        return {"status": "proved", "function": func, "vacuity_probe": "ran",
+                "vacuous": {"sat": False, "unsat": True}.get(vhead), **xc}
     if head == "sat":
         # A CONSTANT EXPRESSION is modelled as an opaque free constant (`cexpr_<digest>_<w>`),
         # shared across sides only when the printed text is IDENTICAL. When one side computes a
