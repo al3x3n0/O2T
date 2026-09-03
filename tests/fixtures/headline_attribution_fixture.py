@@ -119,6 +119,28 @@ def main() -> int:
     assert is_about_pass("reassociate-ir", "reassociate") and is_about_pass("early-cse-ir", "early-cse"), \
         "the canonical-fallback rule must key on the PASS, not disable pass-runners wholesale"
 
+    # 5) ALL THREE HEADLINE IMPLEMENTATIONS MUST AGREE. There are three: `cv-orchestrate`'s
+    #    `_headline_for_pass` (the tool's report), `o2t.agent.report.agent_headline`, and
+    #    `o2t.orchestrate.sweep.headline` (the coverage sweep). Two of them had already drifted --
+    #    f79398b taught the agent to discount canonical proofs and left the deterministic one
+    #    certifying them, which is how a planted miscompile got a `proved` -- and the sweep was a
+    #    third copy that discounted nothing. Duplication is the root cause here, not an incidental
+    #    detail, so this asserts the shared rule is actually shared.
+    from o2t.orchestrate.sweep import headline as sweep_headline
+    from o2t.agent.report import agent_headline
+    unattributed = [{"strategy": "mem2reg-ir", "verdict": "proved"}]
+    assert sweep_headline(unattributed) == "advisory", \
+        ("the sweep must discount a proof from a pass-runner that fell back, exactly as the "
+         "report does -- otherwise the coverage sweep certifies what the tool declines", 
+         sweep_headline(unattributed))
+    assert sweep_headline(unattributed, "mem2reg") == "proved", \
+        "...and must NOT discount it when the pass under verification is the one being run"
+    assert sweep_headline([{"strategy": "mem2reg-ir", "verdict": "refuted"}]) == "refuted", \
+        "a refutation counts from any strategy in every implementation"
+    ah = agent_headline({"checks": unattributed, "pass_name": None}, {"formal_checks": []})
+    assert ah["status"] != "proved" and ah["canonical_only"] == ["mem2reg-ir"], \
+        ("the agent headline must reach the same conclusion from the same rule", ah)
+
     print("headline_attribution_fixture OK: a vendor pass with a planted unguarded FP reduction is "
           "no longer certified `proved` by five checks that never read it (three canonical-fallback "
           "pass-runners, two canonical) while its only source-targeted check answered inconclusive; "
@@ -126,7 +148,9 @@ def main() -> int:
           "pass-runner verifying its OWN pass still attributes normally. The structural form is "
           "pinned too: `promotion` has ONE strategy and it is a canonical-fallback pass-runner, so "
           "the family could never say anything about a vendor pass yet certified every one -- and "
-          "the set of such families is asserted, so a new blind family cannot be added quietly")
+          "the set of such families is asserted, so a new blind family cannot be added quietly. "
+          "All THREE headline implementations (report, agent, sweep) are checked to agree, since "
+          "two of them drifting apart is what let the planted miscompile be certified")
     return 0
 
 

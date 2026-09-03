@@ -92,13 +92,25 @@ def secondary_checks(pass_report: dict) -> list[dict]:
     return [c for c in pass_report.get("checks", []) if c["strategy"] not in strats]
 
 
-def headline(primary: list[dict]) -> str:
+def headline(primary: list[dict], pass_name: str | None = None) -> str:
     """The source's headline verdict-kind from its primary-family checks. A refutation (teeth)
-    dominates; otherwise a positive proof; otherwise advisory (only inconclusive/planned)."""
+    dominates; otherwise a positive proof FROM A CHECK ABOUT THIS PASS; otherwise advisory.
+
+    THIS WAS THE THIRD COPY of that judgement. `cv-orchestrate` and the agent headline both learned
+    to discount proofs from checks that never read the pass -- canonical strategies, and pass-runners
+    that fell back to their `canonical_pass` -- and this one did not, so the sweep's `observed`
+    could read `proved` where the tool's own report said `advisory` for the same input. The rule now
+    lives once, in `o2t.orchestrate.attribution`; three copies of a judgement is how the first two
+    drifted apart in the first place.
+
+    Passing `pass_name` matters and is not a formality: `mem2reg-ir` verifying `mem2reg` IS about
+    that pass and attributes normally. It is only unattributable when it fell back."""
+    from o2t.orchestrate.attribution import is_about_pass
     verdicts = [c.get("verdict") for c in primary]
     if any(v == "refuted" for v in verdicts):
         return "refuted"
-    if any(v in _POSITIVE for v in verdicts):
+    if any(c.get("verdict") in _POSITIVE for c in primary
+           if is_about_pass(c.get("strategy"), pass_name)):
         return "proved"
     return "advisory"
 
@@ -122,7 +134,7 @@ def run_sweep(ctx: dict, manifest: tuple[SweepCase, ...] = MANIFEST, fixtures_di
     rows = []
     for case, p in zip(manifest, rep["passes"]):
         pc = primary_checks(p)
-        observed = headline(pc)
+        observed = headline(pc, case.pass_name)
         expect = effective_expect(case, ctx)
         rows.append({
             "source": case.source, "expected_family": case.family,
