@@ -166,10 +166,20 @@ nesting — and single-return helpers are inlined interprocedurally first.
 
 **Cascades.** A real fold function is not one fold but a *cascade* of sequential
 `if (match(...)) return ...;` arms. O2T slices every arm into an independent obligation with its
-own path condition. The refutation discipline survives slicing by construction: the first arm's
+own path condition. Slicing itself cannot corrupt the refutation discipline: the first arm's
 refutation is a pass-level claim, but a later arm's premise omits the negations of earlier arms'
 guards, so its refutation is reported *standalone-only* — the witness may be unreachable — while
-its proof remains sound (proved over a superset of the reachable inputs). An in-place-mutation
+its proof remains sound (proved over a superset of the reachable inputs). That much is structural.
+A cascade premise can be under-constrained a *second* way, however, and that one is not: a guard
+clause the model cannot express was once dropped silently, leaving a weaker premise that a
+refutation was then read off as though it were complete — the same "an under-constrained model
+must never refute" error, arriving through the guard rather than through the slice. Nothing about
+the slicing discipline prevents it; it is caught by an explicit check that declines the arm
+`guard-unmodeled` whenever any clause failed to lower, and refutations from such arms are
+downgraded rather than reported. We name the asymmetry because the fix had to preserve it: an
+early attempt declined the whole *branch*, which also discarded two sound proofs — a proof over a
+superset of the reachable inputs stays valid when the premise is weak, and only the refutation
+must go. An in-place-mutation
 screen declines any cascade that mutates the instruction between match and rewrite, where the
 replaced value would no longer be the matched shape.
 

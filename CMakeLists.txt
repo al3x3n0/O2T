@@ -4767,10 +4767,16 @@ endif()
 #
 # A fixture belongs here only for RUNTIME, never to hide a failure; each of these is a sweep whose
 # value is periodic rather than per-change.
+# Measured SERIALLY and uncontended, which is the only way to rank these: ctest's own
+# CostData is stale by 10x here (it recorded 30s/42s for two fixtures that take 133s/386s),
+# and the per-test times printed during a -j 8 run are inflated 2-5x by contention. Rank
+# from `ctest -R <one> ` alone, never from either of those.
 foreach(_slow_fixture
         orchestrate_sweep_fixture
         globalopt_strict_check_fixture
-        registry_contract_check_formal_fixture)
+        registry_contract_check_formal_fixture
+        pass_graph_return_form_fixture
+        clang_tree_source_fixture)
     if(TEST ${_slow_fixture})
         set_tests_properties(${_slow_fixture} PROPERTIES LABELS "slow")
     endif()
