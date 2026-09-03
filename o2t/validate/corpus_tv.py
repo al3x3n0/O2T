@@ -148,14 +148,23 @@ def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: s
     if opt_text is None:
         return {"base": base["counts"], "cross_checked": 0, "disagreements": [],
                 "vacuous": base.get("vacuous", 0)}
+    solver_no_answer: list[dict] = []
     for r in base["functions"]:
         if r["status"] != "proved":
             continue
         fn = r["function"]
         checked += 1
-        if r.get("cross_check", {}).get("status") == "disagree":   # solver oracle (not the encoding)
+        xc_status = r.get("cross_check", {}).get("status")
+        if xc_status == "disagree":                   # solver oracle (not the encoding)
             disagreements.append({"function": fn, "oracle": "second-solver",
                                   "witness": r["cross_check"]["solvers"]})
+        elif xc_status == "inconclusive":
+            # The second solver did not answer (timed out / errored). This function is NOT
+            # independently confirmed at the solver layer, and counting it in `cross_checked` would
+            # inflate the very figure the cross-check exists to justify -- "every proof confirmed by
+            # oracles that do not share the encoding" must mean they actually answered.
+            solver_no_answer.append({"function": fn,
+                                     "solvers": r["cross_check"].get("no_answer", [])})
         if lli_bin:                                   # value oracle (real execution)
             cc = concrete_tv(lli_bin, ll_text, opt_text, fn)
             if cc["status"] == "disagree":
@@ -165,4 +174,4 @@ def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: s
             if bfn and afn and alive_refines(bfn, afn, alive_bin).get("status") == "refuted":
                 disagreements.append({"function": fn, "oracle": "alive2"})
     return {"base": base["counts"], "cross_checked": checked, "disagreements": disagreements,
-            "vacuous": base.get("vacuous", 0)}
+            "solver_no_answer": solver_no_answer, "vacuous": base.get("vacuous", 0)}

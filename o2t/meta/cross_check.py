@@ -68,11 +68,25 @@ def _argv(name, binary):
     return [binary]                              # bitwuzla and others: read SMT-LIB2 from stdin
 
 
-def run_solver(name, binary, smt):
-    """Run `smt` through one solver; return its first result line (sat/unsat/unknown/error)."""
+# A second-solver replay is a CONFIRMATION, not a verdict: nothing downstream is blocked on it, so
+# it must never be allowed to outlast the verdict it is confirming. Without a bound one query can
+# run unbounded -- measured: a single bitwuzla replay held a whole-corpus cross-check for 78 minutes
+# at 99% CPU while the parent sat idle waiting on it, and because --cross-check also forces jobs=1,
+# nothing else progressed either. That is the likeliest reason this cross-check kept being "one
+# commit-range behind": not neglect, but a run that could not finish.
+SOLVER_TIMEOUT = 30.0
+
+
+def run_solver(name, binary, smt, timeout=SOLVER_TIMEOUT):
+    """Run `smt` through one solver; return its first result line (sat/unsat/unknown/error/timeout).
+
+    `timeout` bounds the call. A timeout returns the sentinel "timeout", which callers MUST treat as
+    "no answer" rather than as disagreement -- see `scalar_ir.cross_check_smt`."""
     try:
         out = subprocess.run(_argv(name, binary), input=smt,
-                             capture_output=True, text=True).stdout
+                             capture_output=True, text=True, timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        return "timeout"
     except OSError as exc:
         return f"error:{exc}"
     return out.strip().splitlines()[0].strip() if out.strip() else "error"

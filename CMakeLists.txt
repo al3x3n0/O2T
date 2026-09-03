@@ -671,6 +671,14 @@ if(O2T_BUILD_TESTS)
     # check must go green when the defect is guarded away.
     # The Track B corpus is pinned by tag+sha256 rather than vendored; this keeps the manifest
     # coherent and stops the fetch script from growing its own copy of the file list. Offline.
+    # A second-solver replay must be bounded, and a solver that cannot answer must not be
+    # reported as a disagreement (which this pipeline surfaces as a possible false proof).
+    add_test(
+        NAME cross_solver_timeout_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cross_solver_timeout_fixture.py; else echo 'cross_solver_timeout_fixture: z3 not found, skipped'; fi"
+    )
     add_test(
         NAME trackb_corpus_manifest_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/trackb_corpus_manifest_fixture.py

@@ -35,14 +35,17 @@ def _cross_check(args, z3, opt) -> int:
         print("cv-tv-corpus --cross-check: needs lli, alive-tv, or a second SMT solver on PATH",
               file=sys.stderr)
         return 2
-    total, disagreements, vacuous = Counter(), [], 0
+    total, disagreements, vacuous, no_answer = Counter(), [], 0, []
     for path in args.ll:
         r = cross_check_file(z3, path.read_text(), opt, lli_bin=lli, alive_bin=alive, timeout=args.timeout)
         total.update(r["base"])
         vacuous += r.get("vacuous", 0)
         disagreements += [{**d, "file": path.name} for d in r["disagreements"]]
+        no_answer += [{**n, "file": path.name} for n in r.get("solver_no_answer", [])]
+        na = len(r.get("solver_no_answer", []))
         print(f"{path.name}: proved {r['base'].get('proved', 0)} (vacuous {r.get('vacuous', 0)}), "
-              f"cross-checked {r['cross_checked']}, disagreements {len(r['disagreements'])}")
+              f"cross-checked {r['cross_checked']}, disagreements {len(r['disagreements'])}"
+              + (f", second-solver no-answer {na}" if na else ""), flush=True)
     oracles = ", ".join([name for name, present in (("lli", lli), ("alive2", alive)) if present]
                         + second)
     print(f"CROSS-CHECK [{oracles}]: {sum(total.values())} functions, "
@@ -50,13 +53,25 @@ def _cross_check(args, z3, opt) -> int:
     if args.report:
         args.report.write_text(json.dumps(
             {"counts": dict(total), "oracles": oracles, "vacuous": vacuous,
-             "disagreements": disagreements}, indent=2) + "\n")
+             "disagreements": disagreements, "solver_no_answer": no_answer}, indent=2) + "\n")
     if disagreements:
         print("!! INDEPENDENT ORACLE DISAGREEMENTS -- an O2T `proved` a non-encoding oracle contradicts "
               "(a possible FALSE PROOF):", file=sys.stderr)
         for d in disagreements:
             print(f"   {d}", file=sys.stderr)
         return 1
+    # "Confirmed" must mean the oracles ANSWERED. A second solver that timed out has confirmed
+    # nothing, and printing the unqualified line anyway is how a partial cross-check gets quoted as
+    # a complete one -- the figure this run exists to justify.
+    if no_answer:
+        print(f"All proved transforms confirmed by the oracles that ANSWERED (0 disagreements), but "
+              f"{len(no_answer)} had no second-solver answer (timeout/error) and are NOT "
+              f"independently confirmed at the solver layer:")
+        for n in no_answer[:20]:
+            print(f"   {n['file']}:{n['function']} -- no answer from {', '.join(n['solvers']) or 'second solver'}")
+        if len(no_answer) > 20:
+            print(f"   ... and {len(no_answer) - 20} more (see --report)")
+        return 0
     print("All proved transforms independently confirmed (0 disagreements).")
     return 0
 

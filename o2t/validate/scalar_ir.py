@@ -294,8 +294,26 @@ def cross_check_smt(smt, expect, z3_bin=None, extra_solvers=()):
     if not solvers:
         return {"status": "skipped", "reason": "no second solver on PATH", "solvers": {}}
     results = {name: run_solver(name, binary, smt) for name, binary in solvers}
-    agree = all(r == expect for r in results.values())
-    return {"status": "agree" if agree else "disagree", "expect": expect, "solvers": results}
+    # A NON-ANSWER IS NOT A DISAGREEMENT. `timeout` and `error` mean the second solver said nothing,
+    # and `all(r == expect)` would previously fold both into `disagree` -- which this pipeline
+    # reports as a possible FALSE PROOF. Crying false-proof because a solver was slow is how a real
+    # disagreement gets lost in noise, and the project's own discipline is that an absent answer is
+    # a decline, never a verdict in either direction. So: a solver that answered and differs is a
+    # genuine `disagree`; one that could not answer leaves the replay `inconclusive`, recorded with
+    # the reason and never silently counted as confirmation.
+    answered = {n: r for n, r in results.items() if r not in ("timeout", "error")
+                and not r.startswith("error:")}
+    silent = sorted(set(results) - set(answered))
+    if any(r != expect for r in answered.values()):
+        status = "disagree"
+    elif silent:
+        status = "inconclusive"
+    else:
+        status = "agree"
+    out = {"status": status, "expect": expect, "solvers": results}
+    if silent:
+        out["no_answer"] = silent
+    return out
 
 
 def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops=None,
