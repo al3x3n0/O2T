@@ -165,7 +165,16 @@ def build_models(findings: list[dict], opcode_map: dict[str, str]) -> list[dict]
         branches = []
         for x in fs:
             guard, unmodeled = predicate_to_guard(str(x.get("predicate_source") or ""))
-            rewrite = re.sub(r"^\s*return\s+", "", str(x.get("rewrite_source") or "")).rstrip(";").strip()
+            rewrite = re.sub(r"^\s*return\b\s*", "", str(x.get("rewrite_source") or "")).rstrip(";").strip()
+            # A BRANCH THAT REWRITES NOTHING IS NOT A FOLD ARM. A bare `return;` in a void fold
+            # leaves no replacement value, and the strip above used to require whitespace AFTER
+            # `return` -- so `return;` survived intact, `rstrip(";")` left the text `"return"`, and
+            # it was lifted as a free VARIABLE NAMED `return`. The obligation became
+            # `bvadd(Op0, Op1) == return` with `return` unconstrained: refutable for trivially the
+            # wrong reason, and `llvm_pass_snippet::instcombineLike` was reported as three
+            # miscompiles. `return` is a C++ keyword, so it can never be a real operand name.
+            if not rewrite:
+                continue
             try:
                 output = lm.lift_builder_expr(rewrite)
             except lm.MatcherError:
