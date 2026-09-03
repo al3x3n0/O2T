@@ -1,0 +1,44 @@
+{
+  "_comment": "The Track B corpus, PINNED. The 1,705/1,835 figure published before 2026-09-03 was measured against local, unpinned copies of these files that no longer exist, so it could not be regenerated from a clean checkout -- the file list itself was recorded nowhere in the repo. release/18.x is a moving branch and had drifted to 1,937 functions by the time this manifest was written; a published denominator must name a tag and a hash or it decays into folklore.",
+  "upstream": "https://raw.githubusercontent.com/llvm/llvm-project/{tag}/llvm/test/Transforms/InstCombine/{file}",
+  "tag": "llvmorg-18.1.8",
+  "files": {
+    "add.ll": {
+      "sha256": "95fbd1da021e15ca6ccc11d412704049201b959d707f2ccf1f4a328eee990dfa",
+      "functions": 281
+    },
+    "and.ll": {
+      "sha256": "8acecdc01faad44b81866d005ecd0a146a58567ccd4b89f0d8d550f18747e94b",
+      "functions": 207
+    },
+    "icmp.ll": {
+      "sha256": "6efd17787162943f806fdd78bb96bcf258c7e038b5f45046e2b7213e6008fb92",
+      "functions": 436
+    },
+    "mul.ll": {
+      "sha256": "372d5c26f137fa45dbc907daf9c99588087568c42d0cd1f3881476ea5b565f0c",
+      "functions": 165
+    },
+    "or.ll": {
+      "sha256": "45a5ce7debf5aba80bb2b8d0c3a36b327cdb6391f7d331da02a68134bfc34862",
+      "functions": 121
+    },
+    "select.ll": {
+      "sha256": "d76c0fea4fa07b1501566b7c08e345827f697c845da51ec7b73096a2a6a35167",
+      "functions": 245
+    },
+    "shift.ll": {
+      "sha256": "168b786c1a71827fb48b5d3a9faad0f94dff0104bcfd1644f9b1f7dbbb4acfd1",
+      "functions": 171
+    },
+    "sub.ll": {
+      "sha256": "66ba289c32495808c28f122e89491cfaf17b840631c38554079e696c86d1adae",
+      "functions": 205
+    },
+    "xor.ll": {
+      "sha256": "58e049e97a1b442aa5444e4e7f93b9126a0380e2e3d4be6f801c95714525aed9",
+      "functions": 106
+    }
+  },
+  "total_functions": 1937
+}

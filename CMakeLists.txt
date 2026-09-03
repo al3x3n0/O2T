@@ -669,6 +669,12 @@ if(O2T_BUILD_TESTS)
     # Positive control: on a pass the deterministic layer cannot classify, the agent must recover
     # a REAL finding (attributable refutation of a planted unguarded FP reduction) and the same
     # check must go green when the defect is guarded away.
+    # The Track B corpus is pinned by tag+sha256 rather than vendored; this keeps the manifest
+    # coherent and stops the fetch script from growing its own copy of the file list. Offline.
+    add_test(
+        NAME trackb_corpus_manifest_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/trackb_corpus_manifest_fixture.py
+    )
     add_test(
         NAME agent_positive_control_fixture
         COMMAND
