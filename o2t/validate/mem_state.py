@@ -713,9 +713,9 @@ def mem_state_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout:
         vsmt = "\n".join(["(set-logic QF_ABV)", *decls,
                            f"(assert {assume})", f"(assert {defined})", "(check-sat)", ""])
         try:
-            vout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(vsmt, rlimit),
+            vout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(vsmt, si.vacuity_rlimit(rlimit)),
                                   capture_output=True, text=True,
-                                  timeout=si.wall_backstop(timeout, rlimit)).stdout
+                                  timeout=si.vacuity_wall(timeout, rlimit)).stdout
             vhead = vout.strip().splitlines()[0].strip() if vout.strip() else "error"
         except subprocess.TimeoutExpired:
             vhead = "timeout"

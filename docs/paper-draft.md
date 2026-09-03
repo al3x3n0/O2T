@@ -324,11 +324,17 @@ Track A has always had via `mini_alive`'s premise-satisfiability check, now on T
 grades a claim it does not support. The probe first lived only in the scalar validator, reaching
 71% of proofs; the vector and memory validators had none, and their proofs carried no vacuity
 information while the aggregate reported a single vacuous proof. Extending it to both raised
-coverage to 98.1% and moved the count from 1 to 10 — nine genuinely vacuous proofs, each previously
+coverage to 99.3% and moved the count from 1 to 10 — nine genuinely vacuous proofs, each previously
 counted as meaningful, among them an `ashr` by the full bit width in every lane and an `srem` by a
 poison divisor (UB rather than poison, since it decides whether the division traps). Over the
-pinned 1,937-function corpus: of 1,826 proofs, 10 vacuous, 1,782 verified non-vacuous, 34 unknown
-(solver non-answers, reported as such). The value-equality scalable-vector model is marked
+pinned 1,937-function corpus: of 1,826 proofs, 10 vacuous, 1,803 verified non-vacuous, and 13
+undecided and reported as such. The residue is affordable rather than impossible — a larger probe
+budget decides it — but measurement showed the budget buys no detection: the vacuous count is ten
+whether the probe is given its own budget or none, so the extra cost purchases only a better
+residue statistic. The probe carries its own deterministic budget, being an existential query following a
+validity one and routinely the harder of the two, and it binds a source's nondeterministic
+`freeze`/`undef` choices existentially rather than inheriting the refutation's universal
+binding. The value-equality scalable-vector model is marked
 not-applicable rather than probed, since it asserts no UB premise for a proof to hide behind. The
 distinction between "probed and clean" and "not probed" matters precisely because no external
 oracle can supply it. The translator's fragment is deliberately bounded and every boundary declines

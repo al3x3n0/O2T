@@ -88,7 +88,26 @@ def main() -> int:
     assert res["vacuity_unprobed"] == 0, \
         ("with both validators probing, nothing here should be unprobed", res)
 
-    # 4) THE PROBE MUST HAVE TEETH: a genuinely vacuous VECTOR source must be caught. Without this,
+    # 4) THE PROBE MUST DECIDE ON A `freeze`/`undef` SOURCE. These carry `src_fresh` -- the
+    #    source's nondeterministic choices -- which the REFUTATION binds with `forall` and which are
+    #    therefore absent from the lane model's declarations. A probe that merely referenced them
+    #    asked z3 about undeclared symbols, got an error, and reported it as "could not decide":
+    #    every `freeze`/`undef` function in select.ll, none of them actually hard. `None` cannot
+    #    distinguish a hard query from a malformed one, which is exactly why this needs a case.
+    FREEZE_SRC = """define <4 x i32> @frozen(<4 x i32> %a, <4 x i1> %c) {
+  %f = freeze <4 x i1> %c
+  %r = select <4 x i1> %f, <4 x i32> %a, <4 x i32> %a
+  ret <4 x i32> %r
+}
+"""
+    fres = validate_file("z3", FREEZE_SRC, opt, timeout=20)
+    fpv = [f for f in fres["functions"] if f.get("status") == "proved"]
+    assert fpv, fres["counts"]
+    assert fpv[0].get("vacuous") is not None, \
+        ("the probe must DECIDE on a source carrying freeze/undef choices -- the existential "
+         "question needs those declared, not forall-bound as the refutation binds them", fpv[0])
+
+    # 5) THE PROBE MUST HAVE TEETH: a genuinely vacuous VECTOR source must be caught. Without this,
     #    assertions 2-3 are satisfied by a probe that answers "non-vacuous" unconditionally -- which
     #    is worse than no probe, because it reads as coverage while checking nothing.
     VACUOUS_SRC = """define <4 x i32> @all_poison(<4 x i32> %a) {
@@ -105,8 +124,9 @@ def main() -> int:
     print("vacuity_coverage_fixture OK: scalar AND lane-model proofs are both probed and decide; "
           "a genuinely vacuous vector source is caught (the probe has teeth, not just coverage); "
           "nothing is left unprobed without being counted. Corpus effect: vacuity coverage 71% -> "
-          "98.1%, and the vacuous count moved 1 -> 10 -- nine real vacuous proofs had been counted "
-          "as meaningful, in the one place no external oracle could have told us")
+          "99.3% (1,826 proofs, 10 vacuous, 13 undecided and reported), and the count moved 1 -> 10 -- "
+          "nine real vacuous proofs had been counted as meaningful, in the one place no external "
+          "oracle could have told us")
     return 0
 
 

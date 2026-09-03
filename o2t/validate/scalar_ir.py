@@ -229,6 +229,45 @@ def sem_extra_decls(*terms) -> list[str]:
     return sem.const_expr_decls(*terms) + sem.uf_decls(*terms)
 
 
+# The non-vacuity probe gets a LARGER deterministic budget than the refutation query it follows.
+# They are different questions -- the refutation is a validity check, the probe an existential
+# satisfiability one -- and the probe is routinely the harder of the two: measured on LLVM 18.1.8's
+# mul.ll, functions whose refinement PROVED inside the default budget left the probe undecided, and
+# raising only the probe's budget resolved them (`combine_mul_abs_x_abs_y_not_oneuse` at 10x,
+# `mul_nsw_mul_nsw_neg` at 40x). Spending it here is cheap because z3 stops the moment it decides,
+# so the easy majority costs nothing extra and only the genuinely hard queries draw on the larger
+# allowance. It is also sound in the only direction that matters: an undecided probe yields
+# `vacuous: None`, which is a DECLINE, so more budget can only turn unknowns into answers.
+# NO EXTRA BUDGET, and a short wall cap. The probe was given 40x and then 8x the refutation's
+# deterministic budget before that was measured properly, and the measurement retired the idea:
+#
+#   factor  coverage  undecided  VACUOUS FOUND  corpus time
+#      1     99.3%       13           10           234s
+#      8     99.7%        5           10           389s
+#     40      100%        0           10           gate unreliable (orchestrate_fixture 198s->433s)
+#
+# The vacuous count is 10 at every setting. A larger budget buys NO detection -- it only converts
+# "undecided non-vacuous" into "verified non-vacuous", improving a residue statistic while doubling
+# the heaviest fixtures. The guard's value was in EXISTING on all three validators (71% -> 99%),
+# not in the last fraction of a percent, and the fast gate this would have cost is what catches
+# everything else. The knob stays, documented, so the measurement is not repeated.
+#
+# The WALL CAP does earn its place: the probe is a decline-either-way check and must never inherit
+# the 300s hang-guard meant for a query that produces a verdict.
+VACUITY_RLIMIT_FACTOR = 1
+VACUITY_WALL_CAP = 20                       # seconds; a probe may never outlast the proof it follows
+
+
+def vacuity_rlimit(rlimit: int | None) -> int | None:
+    """The probe's budget: `rlimit` scaled by VACUITY_RLIMIT_FACTOR (None stays None)."""
+    return None if not rlimit else rlimit * VACUITY_RLIMIT_FACTOR
+
+
+def vacuity_wall(timeout, rlimit) -> int:
+    """The probe's wall-clock guard: the normal backstop, capped. Never the full 300s."""
+    return min(wall_backstop(timeout, rlimit) or VACUITY_WALL_CAP, VACUITY_WALL_CAP)
+
+
 def with_rlimit(smt: str, rlimit: int | None) -> str:
     """Insert `(set-option :rlimit N)` after the logic line, where z3 requires it."""
     if not rlimit:
@@ -504,7 +543,9 @@ def validate_transform(z3_bin, src_text, opt_text, func, timeout=None, extra_ops
         defined = smt_and([f"(not {su})", f"(not {sp})"])
         vdecls = decls + [f"(declare-const {n} (_ BitVec {w}))" for n, w in src_fresh]
         try:
-            dhead, _ = _query(z3_bin, _smt(vdecls, defined), timeout, rlimit)
+            dhead, _ = _query(z3_bin, _smt(vdecls, defined),
+                              min(timeout or VACUITY_WALL_CAP, VACUITY_WALL_CAP),
+                              vacuity_rlimit(rlimit))
         except subprocess.TimeoutExpired:
             dhead = "timeout"
         verdict["vacuous"] = {"sat": False, "unsat": True}.get(dhead)   # None: inconclusive probe

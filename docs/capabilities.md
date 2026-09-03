@@ -134,9 +134,21 @@ new blind family nor a fix to this one can land quietly.
   (2) **Vacuity is the one shape no oracle here can see** — `lli` and Alive2 are consulted only on the
   proved set and agree that a UB source refines to anything — so it is caught by O2T's own probe or
   not at all. That probe used to live only in the scalar validator, covering 71% of proofs; it now
-  runs in the lane model and the memory model too. **Coverage 98.1%, and the vacuous count moved
-  1 → 10**: of the 1,826 proofs, 10 vacuous, 1,782 verified non-vacuous, 34 unknown (genuine solver
-  non-answers, reported as `vacuity_unprobed`). The nine newly exposed proofs were real and had been
+  runs in the lane model and the memory model too. **Coverage 99.3%, and the vacuous count moved
+  1 → 10**: of the 1,826 proofs, 10 vacuous, 1,803 verified non-vacuous, and 13 undecided, reported
+  as such. Two unrelated fixes got it there: the probe had to run in the lane and memory models at
+  all, and on `freeze`/`undef` sources it had to DECLARE the source's nondeterministic choices
+  rather than inherit the refutation's `forall` binding — which had been producing solver errors
+  reported as "undecided", 21 of the original 34.
+
+  **The remaining 0.7% was measured and deliberately not bought.** Giving the probe a larger
+  deterministic budget does decide them — 8x leaves 5 undecided, 40x leaves none — but the vacuous
+  count is **10 at every setting**. The budget buys no detection at all; it only converts "undecided
+  non-vacuous" into "verified non-vacuous", while 40x took `orchestrate_fixture` from 198s to 433s
+  and made the gate unreliable. The guard's value was in existing on all three validators (71% →
+  99%), not in the last fraction. The probe keeps a 20s wall cap of its own, because a
+  decline-either-way check must never inherit the 300s hang-guard meant for verdict-bearing
+  queries. The nine newly exposed proofs were real and had been
   counted as meaningful — `shift.ll:test62_splat_vector`, `shift.ll:test38_poison` (`srem` by a
   poison divisor, UB rather than poison because it decides whether the division traps),
   `and.ll:negate_lowbitmask_commute` (both lanes poison, from opposite directions) and the six

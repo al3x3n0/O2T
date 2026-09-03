@@ -814,11 +814,20 @@ def vec_tv(z3_bin: str, before_ll: str, after_ll: str, func: str, timeout: int =
         # that legitimately leave a lane poison.
         defined = si.smt_and([f"(not {sub})",
                               si.smt_or([f"(not {lane[1]})" for lane in rb])]) if rb else f"(not {sub})"
-        vsmt = "\n".join([f"(set-logic {logic})", *ds, f"(assert {defined})", "(check-sat)", ""])
+        # `src_fresh` are the source's nondeterministic choices (an `undef` element's per-use
+        # freedom, a `freeze`'s pick). The REFUTATION binds them with `forall` -- a refutation must
+        # hold for every choice -- but they are then NOT among `ds`, so a probe that merely
+        # references them asks z3 about undeclared symbols and gets an error, which this reads back
+        # as "could not decide". Measured: every `freeze`/`undef` function in select.ll reported an
+        # unknown probe for exactly that reason, and none of them was hard. The probe's question is
+        # existential -- "is the source defined for SOME input and SOME choice?" -- so the right
+        # binding is a plain declaration, which is what the scalar probe has always done.
+        vdecls = list(ds) + [f"(declare-const {n} (_ BitVec {w}))" for n, w in src_fresh]
+        vsmt = "\n".join(["(set-logic QF_BV)", *vdecls, f"(assert {defined})", "(check-sat)", ""])
         try:
-            vout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(vsmt, rlimit),
+            vout = subprocess.run([z3_bin, "-in"], input=si.with_rlimit(vsmt, si.vacuity_rlimit(rlimit)),
                                   capture_output=True, text=True,
-                                  timeout=si.wall_backstop(timeout, rlimit)).stdout
+                                  timeout=si.vacuity_wall(timeout, rlimit)).stdout
             vhead = vout.strip().splitlines()[0].strip() if vout.strip() else "error"
         except subprocess.TimeoutExpired:
             vhead = "timeout"
