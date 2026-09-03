@@ -50,12 +50,7 @@ SNIPPETS = ("scalar_more_ops_snippet.cpp", "intent_inference_snippet.cpp",
 # (snippet, function) pairs where Pass-IR proves and the cascade calls it a miscompile. Every entry
 # is a KNOWN FALSE REFUTATION in the cascade, not a disputed fold: all four are elementary
 # identities. Removing an entry is the definition of done for the binding fix.
-KNOWN_CONTRADICTIONS = {
-    ("scalar_more_ops_snippet.cpp", "foldSubZero"),      # X - 0 -> X
-    ("scalar_more_ops_snippet.cpp", "foldOrZero"),       # X | 0 -> X
-    ("scalar_more_ops_snippet.cpp", "foldAndAllOnes"),   # X & -1 -> X
-    ("scalar_more_ops_snippet.cpp", "foldAndSelf"),      # X & X -> X
-}
+KNOWN_CONTRADICTIONS: set = set()      # was four; the cascade now DECLINES those shapes instead
 
 
 def _fold_sources(text: str):
@@ -92,7 +87,7 @@ def main() -> int:
         print("recovery_crosspath_fixture: z3 not found, skipped")
         return 0
 
-    seen, decided = set(), 0
+    seen, decided, cascade_verdicts, passir_proofs = set(), 0, 0, 0
     with tempfile.TemporaryDirectory() as td:
         for snippet in SNIPPETS:
             path = ROOT / "tests" / "fixtures" / snippet
@@ -105,13 +100,25 @@ def main() -> int:
                     continue
                 pair = pg.recover_from_function(src)
                 pir = "declined" if pair is None else pg.reconcile(pair, z3).get("z3", "error")
+                cascade_verdicts += casc[name] in ("sound", "unsound")
+                passir_proofs += pir == "proved"
+                # THE PROPERTY, stated so it holds even when the overlap is EMPTY: the cascade must
+                # never call UNSOUND a fold the Pass-IR recovery proves. A decline on either side is
+                # not a clash -- the paths are largely complementary by design.
+                if pir == "proved" and casc[name] == "unsound":
+                    seen.add((snippet, name))
                 if pir == "declined" or casc[name] == "none":
-                    continue                      # only one path decided: complementary, not a clash
+                    continue
                 decided += 1
                 if (pir == "proved") != (casc[name] == "sound"):
                     seen.add((snippet, name))
 
-    assert decided >= 4, ("both paths must decide SOMETHING, or this fixture proves nothing", decided)
+    # NEITHER PATH MAY GO SILENT, or the contradiction check below passes vacuously. The overlap
+    # where BOTH decide the same fold is allowed to be empty (a correct decline shrinks it -- which
+    # is exactly what fixing the cascade's incomplete-guard refutations did), so what is pinned is
+    # that each path still produces verdicts of its own.
+    assert cascade_verdicts >= 8, ("the cascade must still decide folds", cascade_verdicts)
+    assert passir_proofs >= 4, ("Pass-IR must still prove folds", passir_proofs)
     new = seen - KNOWN_CONTRADICTIONS
     assert not new, (
         "NEW cross-path contradiction: Pass-IR and the symexec cascade disagree about whether a "
@@ -119,16 +126,18 @@ def main() -> int:
         "REFUTATION -- the outcome Track A claims zero of.", sorted(new))
     fixed = KNOWN_CONTRADICTIONS - seen
     assert not fixed, (
-        "a KNOWN cross-path contradiction no longer reproduces -- if the cascade's matcher BINDING "
-        "was fixed, delete these entries from KNOWN_CONTRADICTIONS so the guard tightens rather "
-        "than silently tolerating them", sorted(fixed))
+        "a KNOWN cross-path contradiction no longer reproduces -- delete these entries from "
+        "KNOWN_CONTRADICTIONS so the guard tightens rather than silently tolerating them",
+        sorted(fixed))
 
-    print(f"recovery_crosspath_fixture OK: {decided} folds decided by BOTH the Pass-IR recovery and "
-          f"the symexec cascade; no NEW contradiction, and the {len(KNOWN_CONTRADICTIONS)} known "
-          "ones still reproduce exactly. Those four are elementary identities (X-0, X|0, X&-1, X&X) "
-          "that Pass-IR proves and the cascade calls miscompiles, because the cascade leaves a "
-          "matcher's OUTPUT BINDING free -- a FALSE REFUTATION, pinned here so it cannot spread and "
-          "cannot be quietly forgotten once fixed")
+    print(f"recovery_crosspath_fixture OK: the symexec cascade decided {cascade_verdicts} folds and "
+          f"the Pass-IR recovery proved {passir_proofs}; NO fold is proved by one and called a "
+          "miscompile by the other. It used to be four -- X-0, X|0, X&-1, X&X, all elementary "
+          "identities -- because an unrecognised guard clause was DROPPED, weakening the path "
+          "condition until the obligation failed on a state the match makes impossible. Dropping a "
+          "clause is harmless for a PROOF (a weaker guard is a stronger result) and unsound for a "
+          "REFUTATION, so the cascade now declines those instead: a model that under-constrains "
+          "must never refute")
     return 0
 
 

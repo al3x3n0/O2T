@@ -117,6 +117,21 @@ def symexec(model, z3_bin):
             counts["sound"] += 1
             paths.append({"name": br.get("name", "?"), "reachable": True, "status": "sound"})
         elif refute == "sat":
+            # A REFUTATION IS ONLY MEANINGFUL IF THE GUARD WAS FULLY MODELED. An unrecognised guard
+            # clause is dropped, which WEAKENS the path condition -- harmless for a proof (proving
+            # under a weaker guard is stronger) and unsound for a refutation, because the witness
+            # may live exactly where the missing clause would have excluded it. That is how four
+            # elementary identities (X-0, X|0, X&-1, X&X) were reported as miscompiles: the
+            # structural match `m_Sub(m_Value(Kept), m_Zero())` contributed neither `Op1 == 0` nor
+            # the binding `Kept == Op0`, so the counterexample was `{Kept: -1, Op0: 0, Op1: 0}` --
+            # a state the match makes impossible. A model that under-constrains must never refute.
+            unmodeled = br.get("unmodeled_guards") or []
+            if unmodeled:
+                counts["declined"] = counts.get("declined", 0) + 1
+                paths.append({"name": br.get("name", "?"), "reachable": True,
+                              "status": "guard-unmodeled", "unmodeled": unmodeled[:4],
+                              "counterexample": {o: m.get(o, 0) for o in sorted(variables)}})
+                continue
             counts["unsound"] += 1
             cex = {o: m.get(o, 0) for o in sorted(variables)}
             paths.append({"name": br.get("name", "?"), "reachable": True,

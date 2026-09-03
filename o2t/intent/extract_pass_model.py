@@ -164,14 +164,29 @@ def build_models(findings: list[dict], opcode_map: dict[str, str]) -> list[dict]
             continue
         branches = []
         for x in fs:
-            guard, _ = predicate_to_guard(str(x.get("predicate_source") or ""))
+            guard, unmodeled = predicate_to_guard(str(x.get("predicate_source") or ""))
             rewrite = re.sub(r"^\s*return\s+", "", str(x.get("rewrite_source") or "")).rstrip(";").strip()
             try:
                 output = lm.lift_builder_expr(rewrite)
             except lm.MatcherError:
                 continue
+            # AN UNMODELED GUARD CLAUSE MAY NOT PRODUCE A REFUTATION. `predicate_to_guard`
+            # already reports what it could not express, and this DISCARDED that list -- so with no
+            # clause recognised the guard fell back to `0 == 0`, always true. A structural match
+            # like `m_Sub(m_Value(Kept), m_Zero())` then contributed NOTHING: neither `Op1 == 0` nor
+            # the BINDING `Kept == Op0`, and the obligation `bvsub(Op0, Op1) == Kept` was checked
+            # with `Kept` free. It fails on `{Kept: -1, Op0: 0, Op1: 0}` -- a state the match makes
+            # impossible -- and the branch was reported a MISCOMPILE. A false refutation, on four
+            # elementary identities the Pass-IR recovery proves.
+            #
+            # The asymmetry matters and the fix must respect it: dropping a clause WEAKENS the
+            # guard, and proving under a weaker guard is a STRONGER result, so proofs stay valid
+            # (`unmodeledPoisonGuard` and `knownPowerOfTwoGuard` legitimately prove this way).
+            # Only the refuting direction is unsound, so the clauses ride along on the branch and
+            # the symbolic executor downgrades a refutation to a decline.
             branches.append({"name": f"{x['marker'].split('.')[-1]}@{x.get('line')}",
-                             "guard": guard, "output": output})
+                             "guard": guard, "output": output,
+                             "unmodeled_guards": unmodeled})
         if branches:
             models.append({"function": fn, "file": file, "opcode": bvop,
                            "operands": ["Op0", "Op1"], "branches": branches})

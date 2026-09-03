@@ -85,8 +85,21 @@ def _verdict_symexec(report: dict) -> dict:
     miscompiles = sum(int(r.get("miscompiles", 0) or 0) for r in reports)
     if not funcs:
         return {"verdict": "inconclusive", "reason": "no fold functions mined"}
-    return {"verdict": "miscompile" if miscompiles else "sound",
-            "functions": funcs, "miscompiles": miscompiles}
+    # "NO MISCOMPILE" IS NOT "SOUND". This read `miscompiles else "sound"`, so a run in which every
+    # branch DECLINED reported `sound` and the pass headline collapsed to `proved` -- a vacuous
+    # proof, and the more dangerous twin of the false refutation that made declines reachable here
+    # in the first place. A verdict of sound has to rest on a branch actually PROVED, and a decline
+    # anywhere means the function is not fully decided.
+    proved = sum(int((r.get("counts") or {}).get("sound", 0) or 0) for r in reports)
+    declined = sum(int((r.get("counts") or {}).get("declined", 0) or 0) for r in reports)
+    if miscompiles:
+        verdict = "miscompile"
+    elif declined or not proved:
+        verdict = "inconclusive"
+    else:
+        verdict = "sound"
+    return {"verdict": verdict, "functions": funcs, "miscompiles": miscompiles,
+            "proved_branches": proved, "declined_branches": declined}
 
 
 def _run_intent_validation(source: Path, ctx: dict) -> dict:
