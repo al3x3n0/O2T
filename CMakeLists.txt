@@ -648,6 +648,16 @@ if(O2T_BUILD_TESTS)
                 "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${_pg_fixture}.py; else echo '${_pg_fixture}: z3 not found, skipped'; fi"
         )
     endforeach()
+    # Cross-path consistency: the Pass-IR recovery and the symexec cascade must never CONTRADICT
+    # each other about whether a fold is sound. Nothing gated this, and they disagreed on four
+    # elementary identities while the whole suite passed -- a false refutation, which is the outcome
+    # Track A claims zero of. Needs z3 and the AST miner (the cascade mines the snippet).
+    add_test(
+        NAME recovery_crosspath_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/recovery_crosspath_fixture.py; else echo 'recovery_crosspath_fixture: z3 not found, skipped'; fi"
+    )
     # Verification agent: the LLM-driven batch-triage loop (deterministic scenario stub; the
     # z3-guarded fixture dispatches REAL verifiers, the synthesis fixture is pure quarantine).
     add_test(
