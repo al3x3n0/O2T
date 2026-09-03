@@ -61,7 +61,22 @@ Actions (v1):
 | `conclude(proposal, rationale)` | control | ends the pass; advisory |
 
 Residue selection: deterministic `headline.status ∈ {unclassified, advisory, skipped, error,
-refuted}`. A `refuted` pass runs in **diagnose** mode (explain the witness, propose a fix
+refuted}`.
+
+**Where the agent can actually add attributable value.** Only where a *miner* can see a fold the
+*classifier's* signal list cannot — and that gap is family-specific, not general. For `cleanup-dce`
+it does not exist: the miner's erase regex requires `eraseFromParent` (classifier weight 3),
+`deleteDeadInstruction` (4) or `RecursivelyDeleteTriviallyDeadInstructions` (5) against a retention
+threshold of 3, so anything the DCE miner can mine the DCE classifier already retains, and the
+agent can only re-run a check the orchestrator ran itself (measured: on
+`dce_dead_instruction_folds.cpp` it reproduces the deterministic refutation and adds nothing). For
+SLP reductions it does: the miner recognizes the reduction *builders* while `vectorize-slp` scores
+on `TreeEntry` / `vectorizeTree` / `ShuffleVectorInst`, so a pass emitting reductions without those
+names is invisible to the classifier and fully visible to the miner. That is a genuine classifier
+blind spot rather than a contrived one — signal lists enumerate idioms someone thought of, and a
+vendor names things how it likes — and closing it for SLP would not retire the agent, only move the
+frontier. This is the same shape as the `recover-fold`/classifier overlap: where the two key on the
+same tokens, the agent is redundant by construction. A `refuted` pass runs in **diagnose** mode (explain the witness, propose a fix
 direction — synthesis disabled, the refutation is never relitigated).
 
 Safety knobs: global `--budget` (LLM calls), `--max-steps-per-pass`, `--action-timeout` per
@@ -113,5 +128,12 @@ security sandbox** — the staged fixture still runs with your user's privileges
   deterministic headline untouched; advisory "refuted" trips no gate; invalid/malformed replies
   execute nothing (one strike recoverable, two degrade); budget exhaustion winds down; resume
   skips settled passes.
+- `agent_positive_control_fixture` (z3) — **the one that shows the agent is worth running.** On a
+  pass the deterministic layer cannot classify (zero checks planned), the agent routes to
+  `slp-source` and refutes a planted unguarded FP reduction — *attributed* to that pass
+  (`canonical_only` empty), with two sibling folds still proving, tripping `--fail-on-agent-refuted`
+  where an advisory "refuted" does not. Guarding the defect turns the same check green (3/3).
+  Everything `agent_fixture` proves is canonical, so before this fixture a harness that only ever
+  proved vacuous things and a broken one were indistinguishable.
 - `agent_synthesis_fixture` — the quarantine invariants above, end to end.
 - `agent_selftest` — registry whitelisting without any LLM or verifier.

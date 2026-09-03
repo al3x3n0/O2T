@@ -666,6 +666,15 @@ if(O2T_BUILD_TESTS)
             /bin/sh -c
             "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_fixture.py; else echo 'agent_fixture: z3 not found, skipped'; fi"
     )
+    # Positive control: on a pass the deterministic layer cannot classify, the agent must recover
+    # a REAL finding (attributable refutation of a planted unguarded FP reduction) and the same
+    # check must go green when the defect is guarded away.
+    add_test(
+        NAME agent_positive_control_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_positive_control_fixture.py; else echo 'agent_positive_control_fixture: z3 not found, skipped'; fi"
+    )
     add_test(
         NAME agent_synthesis_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_synthesis_fixture.py
