@@ -68,6 +68,28 @@ Two consequences worth knowing when reading verdicts:
   `zeroinitializer`, LLVM 18's `splat (iW C)` spelling, and **named or packed struct types** in a
   `getelementptr` were all valid IR the old readers could not match.
 
+### What a `proved` headline means (and what it refused to mean)
+
+A positive verdict may only certify a pass some check actually **read**. Two kinds cannot:
+`canonical` strategies discharge fixed contracts (true whatever pass you point them at), and a
+`pass-runner` whose pass is not the one under verification falls back to its `canonical_pass` —
+`instcombine-ir` then validates real InstCombine on canonical IR, which is a true proof about LLVM
+and says nothing about a vendor pass. Both are recorded, named in `unattributed_proofs`, and kept
+out of the status, with the headline stating why.
+
+This was demonstrated, not theorised. A vendor pass emitting an FP horizontal reduction with no
+reassoc guard, written in peephole idiom (`replaceInstUsesWith`, `Builder.CreateFAddReduce`),
+classifies `peephole` — so `slp-source`, the only strategy that could mine the reduction, is never
+planned. Its one source-targeted check answered `inconclusive` ("no fold functions mined") while
+three canonical-fallback pass-runners and two canonical checks answered `proved`, and the pass was
+reported **proved**. The agent could not help: `proved` is not residue, so it never ran.
+`headline_attribution_fixture` pins it; the rule lives once, in `o2t/orchestrate/attribution.py`,
+shared with the agent headline so the two cannot drift apart again.
+
+Attribution gates POSITIVE verdicts only. A refutation still counts from any strategy and an
+unknown strategy still counts as attributable — both alternatives lose negative evidence, and
+losing a refutation hides a miscompile.
+
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, 2026-09-03, ALL NINE InstCombine test files at the PINNED tag

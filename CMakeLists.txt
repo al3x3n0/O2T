@@ -677,6 +677,14 @@ if(O2T_BUILD_TESTS)
     # opaque constant expression. Pins the decline, that the guard stays scoped, and its cost.
     # Only the scalar validator has a non-vacuity probe; vec/mem have none. Each validator must
     # DECLARE its coverage and the corpus layer must count the unprobed separately.
+    # A `proved` headline must rest on a check that actually read the pass: canonical strategies and
+    # pass-runners that fell back to their canonical pass prove other code, and used to certify this.
+    add_test(
+        NAME headline_attribution_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && { command -v opt >/dev/null 2>&1 || test -x /opt/homebrew/opt/llvm@18/bin/opt; }; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/headline_attribution_fixture.py; else echo 'headline_attribution_fixture: z3/opt not found, skipped'; fi"
+    )
     add_test(
         NAME vacuity_coverage_fixture
         COMMAND

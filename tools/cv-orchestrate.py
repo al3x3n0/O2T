@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 from o2t.orchestrate.run import resolve_context, orchestrate  # noqa: E402
 from o2t.orchestrate.brain import maybe_llm_classify  # noqa: E402
 from o2t.orchestrate.classify import FAMILIES  # noqa: E402
+from o2t.orchestrate.attribution import split_by_attribution  # noqa: E402
 
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inc"}
 POSITIVE_VERDICTS = {"proved", "sound", "validated"}
@@ -123,22 +124,43 @@ def _headline_for_pass(item: dict) -> dict:
         }
 
     verdicts = [str(check.get("verdict") or "unknown") for check in primary_checks]
+    # A POSITIVE VERDICT MAY ONLY CERTIFY A PASS IT IS ACTUALLY ABOUT. Canonical strategies
+    # discharge fixed contracts, and a pass-runner whose pass is not the one under verification
+    # falls back to its canonical pass -- both are real proofs about other code. Collapsing them
+    # into `proved` certified a vendor pass carrying a planted unsound FP reduction, whose one
+    # source-targeted check had answered `inconclusive`. See o2t/orchestrate/attribution.py.
+    # Refutations are NOT filtered: dropping a negative verdict hides a miscompile, so `refuted`
+    # still dominates from any strategy, and an unknown strategy counts as attributable.
+    about, unattributed = split_by_attribution(primary_checks, item.get("pass_name"))
+    about_positive = [c for c in about if str(c.get("verdict") or "") in POSITIVE_VERDICTS]
     if any(verdict in NEGATIVE_VERDICTS for verdict in verdicts):
         status = "refuted"
     elif any(verdict == "error" for verdict in verdicts):
         status = "error"
-    elif any(verdict in POSITIVE_VERDICTS for verdict in verdicts):
+    elif about_positive:
         status = "proved"
     elif any(verdict == "planned" for verdict in verdicts):
         status = "planned"
     else:
         status = "advisory"
-    return {
+    unattributed_positive = sorted({
+        str(c.get("strategy")) for c in unattributed
+        if str(c.get("verdict") or "") in POSITIVE_VERDICTS})
+    reason = ""
+    if status in {"advisory", "planned"}:
+        reason = ("proved only by checks that are not about this pass "
+                  f"({', '.join(unattributed_positive)})" if unattributed_positive
+                  else "no primary proof/refutation")
+    headline = {
         "status": status,
-        "reason": "" if status not in {"advisory", "planned"} else "no primary proof/refutation",
+        "reason": reason,
         "primary_checks": names,
         "verdicts": dict(sorted((verdict, verdicts.count(verdict)) for verdict in set(verdicts))),
     }
+    if unattributed_positive:
+        # Recorded and named, never silently dropped: the check ran and its verdict is real.
+        headline["unattributed_proofs"] = unattributed_positive
+    return headline
 
 
 def _annotate_headlines(report: dict) -> None:

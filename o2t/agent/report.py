@@ -21,21 +21,17 @@ POSITIVE_VERDICTS = {"proved", "sound", "validated"}
 NEGATIVE_VERDICTS = {"refuted", "miscompile"}
 
 
-def _is_about_this_pass(check: dict) -> bool:
+def _is_about_this_pass(check: dict, pass_name: str | None = None) -> bool:
     """Does this check's verdict say anything about the pass it is attached to?
 
-    A CANONICAL strategy proves FIXED contracts -- `memory-model` runs `cv-validate-memory` with no
-    `--source` at all and discharges the DSE/forwarding theorems, which hold whatever pass you point
-    the agent at. Its verdict is real; its ATTRIBUTION is empty.
-
-    Counting it collapsed a pass-level headline to `proved` for a vendor bookkeeping snippet with no
-    transform in it -- demonstrated, not theorised. That is the agent-layer analogue of a VACUOUS
-    proof: true, and about nothing. Only `source` (the pass's own code) and `pass-runner` (a real
-    `opt` run) verdicts are about the pass; canonical ones are recorded and shown, never collapsed.
-    Unknown strategies are treated as about the pass, so a new one must opt OUT deliberately."""
-    from o2t.orchestrate.plan import STRATEGIES
-    spec = STRATEGIES.get(str(check.get("strategy") or ""))
-    return spec is None or spec.target != "canonical"
+    Delegates to the SHARED rule in `o2t.orchestrate.attribution`, which the deterministic headline
+    uses too -- two copies of this judgement would drift, and they did: this function excluded only
+    CANONICAL strategies, while a `pass-runner` that fell back to its canonical pass is equally
+    unattributable. `instcombine-ir` carries `canonical_pass=instcombine` and stays feasible even
+    when the pass under verification is unknown, so it proves InstCombine sound on canonical IR and
+    says nothing about a vendor pass. See that module for the measured case."""
+    from o2t.orchestrate.attribution import is_about_pass
+    return is_about_pass(check.get("strategy"), pass_name)
 
 
 def agent_headline(entry: dict, record: dict) -> dict:
@@ -45,7 +41,8 @@ def agent_headline(entry: dict, record: dict) -> dict:
     checks = [c for c in (entry.get("checks") or []) if isinstance(c, dict)]
     checks += [c for c in record.get("formal_checks", []) if isinstance(c, dict)]
     # Only checks that are ABOUT THIS PASS can decide its status; see `_is_about_this_pass`.
-    attributable = [c for c in checks if _is_about_this_pass(c)]
+    pass_name = entry.get("pass_name")
+    attributable = [c for c in checks if _is_about_this_pass(c, pass_name)]
     verdicts = [str(c.get("verdict") or "unknown") for c in attributable]
     if not verdicts:
         status = "no-formal-evidence"
@@ -63,7 +60,7 @@ def agent_headline(entry: dict, record: dict) -> dict:
         # Canonical contract checks ran and are listed in `checks`, but prove nothing about THIS
         # pass, so they are named here rather than silently folded into the status above.
         "canonical_only": sorted({str(c.get("strategy")) for c in checks
-                                  if not _is_about_this_pass(c)}),
+                                  if not _is_about_this_pass(c, pass_name)}),
         "checks": [{"strategy": c.get("strategy"), "verdict": c.get("verdict"),
                     "origin": c.get("origin", "deterministic")} for c in checks],
         "verdicts": dict(sorted((v, verdicts.count(v)) for v in set(verdicts))),
