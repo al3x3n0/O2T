@@ -90,6 +90,27 @@ Attribution gates POSITIVE verdicts only. A refutation still counts from any str
 unknown strategy still counts as attributable — both alternatives lose negative evidence, and
 losing a refutation hides a miscompile.
 
+**How exposed each family was, measured.** A family can only speak about a vendor pass through its
+attributable strategies; the rest prove things about other code. Counting them per family:
+
+| family | attributable for a vendor pass | unattributable |
+|---|---|---|
+| `promotion` | **none** | 1 |
+| `peephole` | `symexec-fold-cascade` | 6 |
+| `loop-structural` | `licm-source`, `translation-validation` | 7 |
+| `memory-dse` | `memory-source`, `dse-facts` | 2 |
+| `vectorize-slp` | `slp-source`, `slp-transaction` | 2 |
+| `global` | `globalopt-source`, `globalopt-witness` | 1 |
+| `cfg`, `cleanup-dce` | one source strategy each | 1 |
+| `loop-scev-recurrence` | `scev-intent`, `translation-validation` | 0 |
+
+`promotion` is the structural worst case: its only strategy is `mem2reg-ir`, a pass-runner with
+`canonical_pass=mem2reg`, so **every** vendor pass reaching that family was certified `proved` by a
+proof about LLVM's own Mem2Reg — no coincidence required. `peephole` is where the bug was actually
+found, and needed only its single source-targeted check to answer `inconclusive`.
+`headline_attribution_fixture` asserts the blind-family set is exactly `{promotion}`, so neither a
+new blind family nor a fix to this one can land quietly.
+
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, 2026-09-03, ALL NINE InstCombine test files at the PINNED tag

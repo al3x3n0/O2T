@@ -45,6 +45,7 @@ sys.path.insert(0, str(ROOT))
 from o2t.orchestrate.attribution import is_about_pass  # noqa: E402
 
 SNIPPET = Path(__file__).resolve().parent / "cross_family_unattributed_snippet.cpp"
+PROMO = Path(__file__).resolve().parent / "promotion_vendor_snippet.cpp"
 
 
 def main() -> int:
@@ -85,7 +86,34 @@ def main() -> int:
     assert "not about this pass" in head["reason"], \
         ("the headline must SAY why it withheld the proof, not merely withhold it", head)
 
-    # 3) THE GUARD MUST NOT EAT REAL PROOFS. Verifying a pass a pass-runner actually runs still
+    # 3) THE STRUCTURAL FORM, which is worse than the incidental one above. `promotion` has exactly
+    #    ONE strategy -- `mem2reg-ir`, a pass-runner with `canonical_pass=mem2reg` -- so for any
+    #    pass that is not mem2reg itself the family has NO check that can say anything at all. Case
+    #    2 needed a coincidence (its source check happening to answer `inconclusive`); this needed
+    #    nothing to go wrong, and certified 100% of vendor passes reaching this family.
+    with tempfile.TemporaryDirectory() as td:
+        report2 = Path(td) / "p.json"
+        subprocess.run([sys.executable, str(ROOT / "tools" / "cv-orchestrate.py"),
+                        "--source", str(PROMO), "--opt-bin", opt, "--report", str(report2)],
+                       capture_output=True, text=True, timeout=900)
+        promo = json.loads(report2.read_text())["passes"][0]
+    ph = promo["headline"]
+    assert promo["primary_family"] == "promotion", promo.get("primary_family")
+    assert ph["status"] != "proved", \
+        ("a family with no attributable check must never certify a vendor pass", ph)
+    assert ph["unattributed_proofs"] == ["mem2reg-ir"], ph
+    #    AND THE EXPOSURE IS MEASURED, not just this one case: no family may silently become one
+    #    where a vendor pass cannot be spoken about without that being visible here.
+    from o2t.orchestrate.classify import FAMILIES
+    blind = sorted(f.name for f in FAMILIES
+                   if not any(is_about_pass(s, None) for s in f.strategies))
+    assert blind == ["promotion"], \
+        ("exactly one family has no attributable check for a vendor pass today; if this list grows, "
+         "a new family has been added that can only ever report proofs about other code -- and if "
+         "it shrinks, promotion gained a source-targeted strategy and this fixture should say so",
+         blind)
+
+    # 4) THE GUARD MUST NOT EAT REAL PROOFS. Verifying a pass a pass-runner actually runs still
     #    yields an attributable proof -- otherwise this fix would have silently disabled Track B's
     #    contribution to every real-pass headline.
     assert is_about_pass("reassociate-ir", "reassociate") and is_about_pass("early-cse-ir", "early-cse"), \
@@ -95,7 +123,10 @@ def main() -> int:
           "no longer certified `proved` by five checks that never read it (three canonical-fallback "
           "pass-runners, two canonical) while its only source-targeted check answered inconclusive; "
           "the proofs are still recorded and named as unattributed, the headline says why, and a "
-          "pass-runner verifying its OWN pass still attributes normally")
+          "pass-runner verifying its OWN pass still attributes normally. The structural form is "
+          "pinned too: `promotion` has ONE strategy and it is a canonical-fallback pass-runner, so "
+          "the family could never say anything about a vendor pass yet certified every one -- and "
+          "the set of such families is asserted, so a new blind family cannot be added quietly")
     return 0
 
 
