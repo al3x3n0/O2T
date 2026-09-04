@@ -15,7 +15,7 @@ struct SourceMarkerPattern {
   const char *forbiddenTokens;
 };
 
-inline constexpr std::array<SourceMarkerPattern, 108>
+inline constexpr std::array<SourceMarkerPattern, 111>
     kSourceMarkerPatterns{{
         {"probe.cleanup.unused-alloca", "hasNUsesOrMore(1)", "!	if", ""},
         {"probe.cleanup.unused-alloca", "users().empty", "if", ""},
@@ -24,8 +24,10 @@ inline constexpr std::array<SourceMarkerPattern, 108>
         {"probe.cleanup.unused-alloca", "use_empty", "if", ""},
         {"probe.instcombine.and-allones", "m_c_And(", "m_AllOnes(", ""},
         {"probe.instcombine.and-self", "m_c_And(", "", "m_AllOnes("},
+        {"probe.instcombine.xor-self", "m_c_Xor(", "m_Deferred(", ""},
         {"probe.instcombine.and-allones", "m_And(", "m_AllOnes(", ""},
         {"probe.instcombine.and-self", "m_And(", "", "m_AllOnes("},
+        {"probe.instcombine.xor-self", "m_Xor(", "m_Deferred(", ""},
         {"probe.vector.reduction-add-single-lane", "vector reduce add single lane", "", ""},
         {"probe.dce.dead-instruction", "isInstructionTriviallyDead(", "", ""},
         {"probe.vector.scalable.and-allones", "scalable vector and allones", "", ""},
@@ -105,6 +107,7 @@ inline constexpr std::array<SourceMarkerPattern, 108>
         {"probe.vector.umin", "CreateUMin", "", ""},
         {"probe.vector.umin", "VectorUMin", "", ""},
         {"probe.dse.dead-store", "DeadStore", "", ""},
+        {"probe.instcombine.select-identical-arms", "m_Select(", "", ""},
         {"probe.vector.abs", "CreateAbs", "", ""},
         {"probe.vector.abs", "VectorAbs", "", ""},
         {"probe.dce.dead-loop-instruction", "LoopInfo", "", ""},

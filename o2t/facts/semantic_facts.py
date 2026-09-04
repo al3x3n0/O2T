@@ -16,6 +16,13 @@ DEFAULT_REGISTRY = Path(__file__).resolve().parents[2] / "constraints" / "semant
 ALLOWED_VALUES: dict[str, set[str]] = {
     "shape": {"scalar", "cfg", "memory", "loop", "global", "fixed-vector", "scalable-vector"},
     "operation": {
+        # `select(C, X, X) -> X`: identical arms make the condition irrelevant. Mined by
+        # `probe.instcombine.select-identical-arms`, whose obligations discharge in z3 (both the
+        # plain and the icmp-guarded form). The operation was absent from this vocabulary, which is
+        # the last of four registrations a marker needs -- matcher spec, bind-marker map, semantic
+        # facts, and this allowlist. Missing any one drops the finding SILENTLY: the matcher fires,
+        # `markerForBoundNode` returns "", and the result vanishes with no diagnostic.
+        "select",
         "add",
         "mul",
         "xor",

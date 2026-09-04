@@ -9,7 +9,7 @@ struct AstBindMarkerMetadata {
   const char *marker;
 };
 
-inline constexpr std::array<AstBindMarkerMetadata, 48>
+inline constexpr std::array<AstBindMarkerMetadata, 49>
     kAstBindMarkerMetadata{{
         {"vector-add-zero", "probe.vector.add-zero"},
         {"vector-mul-one", "probe.vector.mul-one"},
@@ -59,6 +59,7 @@ inline constexpr std::array<AstBindMarkerMetadata, 48>
         {"invariant-op", "probe.licm.invariant-op"},
         {"dead-loop-inst", "probe.dce.dead-loop-instruction"},
         {"loop-exit", "probe.simplifycfg.loop-exit"},
+        {"select-identical-arms", "probe.instcombine.select-identical-arms"},
     }};
 
 } // namespace cv

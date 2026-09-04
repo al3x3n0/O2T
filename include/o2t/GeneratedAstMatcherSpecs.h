@@ -23,7 +23,7 @@ struct AstMatcherSpec {
   const char *nestedName;
 };
 
-inline constexpr std::array<AstMatcherSpec, 89>
+inline constexpr std::array<AstMatcherSpec, 90>
     kAstMatcherSpecs{{
         {"vector-add-zero", "probe.vector.add-zero", AstMatcherKind::NestedFunctionCall, "m_SplatOrPoison", "m_Zero"},
         {"vector-mul-one", "probe.vector.mul-one", AstMatcherKind::NestedFunctionCall, "m_SplatOrPoison", "m_One"},
@@ -114,6 +114,7 @@ inline constexpr std::array<AstMatcherSpec, 89>
         {"dead-loop-inst", "probe.dce.dead-loop-instruction", AstMatcherKind::FunctionCall, "isDeadLoopInstruction", ""},
         {"dead-loop-inst", "probe.dce.dead-loop-instruction", AstMatcherKind::FunctionCall, "::llvm::isDeadLoopInstruction", ""},
         {"loop-exit", "probe.simplifycfg.loop-exit", AstMatcherKind::MemberCall, "getExitBlock", ""},
+        {"select-identical-arms", "probe.instcombine.select-identical-arms", AstMatcherKind::FunctionCall, "m_Select", ""},
     }};
 
 } // namespace cv

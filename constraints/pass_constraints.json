@@ -833,5 +833,20 @@
     "constraints": {
       "transaction.kind": "slp-vectorize-reduction"
     }
+  },
+  {
+    "marker": "probe.instcombine.select-identical-arms",
+    "pass": "instcombine",
+    "predicate_kind": "matcher",
+    "source_patterns": [
+      "m_Select("
+    ],
+    "constraints": {
+      "instruction.opcode": "select"
+    },
+    "ast_mining": {
+      "bind": "select-identical-arms",
+      "registration": "ast"
+    }
   }
 ]

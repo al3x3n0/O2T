@@ -559,5 +559,16 @@
       "rewrite": "preserve-reduction-result",
       "shape": "fixed-vector"
     }
+  },
+  {
+    "marker": "probe.instcombine.select-identical-arms",
+    "semantic_facts": {
+      "identity": "same-value",
+      "model": "optimization-semantic-v1",
+      "operation": "select",
+      "result": "scalar",
+      "rewrite": "replace-with-lhs",
+      "shape": "scalar"
+    }
   }
 ]
