@@ -74,6 +74,26 @@ classifier blind spot — see below, and `agent_positive_control_fixture`) and `
 (route around a check that crashed or answered inconclusively to a feasible sibling). Those last two
 still have no positive control.
 
+**Routing signal: what each strategy would RECOVER here, not merely what may run.** The prompt's
+`actions[].strategy_catalog` carries, for every source-targeted strategy, a `would_recover` count —
+how many folds that strategy's miner actually recovers from this pass's source. Mining is regex/AST
+work (the expensive half of these strategies is the Z3 discharge), so asking every wired miner costs
+well under a millisecond and turns 33 opaque ids into a ranked list.
+
+This exists because listing the strategies was not enough. Given only the enum, a live model
+concluded "no formal strategy is applicable without a family match" and wound down with its budget
+unspent. Given the catalog with descriptions and a runnability flag, it still did not route — for a
+typical pass **32 of 33 entries come back `runnable_here: true`**, which is a permissions list, not
+evidence. On `agent_positive_control_snippet.cpp` exactly one strategy is now non-zero
+(`slp-source: 3`), and it is the one that finds the planted bug.
+
+Two properties matter as much as the count. `would_recover` **absent means unmeasured, never zero** —
+a strategy with no wired miner must not read as inapplicable. And a reported **zero is honest**: on
+the deliberately transform-free residue snippet every miner returns 0, which is why the live runs'
+`inconclusive` verdicts were correct rather than a failure. `agent_routing_signal_fixture` pins all
+of it, including that the instruction tells the model how to read it — evidence nobody is told to
+read goes unused, which is what happened to the catalog before this.
+
 **Where the agent can actually add attributable value.** Only where a *miner* can see a fold the
 *classifier's* signal list cannot — and that gap is family-specific, not general. For `cleanup-dce`
 it does not exist: the miner's erase regex requires `eraseFromParent` (classifier weight 3),
