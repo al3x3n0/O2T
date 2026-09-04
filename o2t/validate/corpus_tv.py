@@ -65,7 +65,8 @@ def validate_transform_ex(z3_bin: str, before_ll: str, after_ll: str, func: str,
 
 
 def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int = 15,
-                  cross_check: bool = False, rlimit: int | None = None, jobs: int = 1) -> dict:
+                  cross_check: bool = False, rlimit: int | None = None, jobs: int = 1,
+                  passes: str | None = None, pass_plugin: str | None = None) -> dict:
     """Run `opt -passes=instcombine` on `ll_text` once, then whole-function TV every function. Returns
     {"functions": [...per-function {name, status, ...}], "counts": {status: n}, "opt_ok": bool,
     "vacuous": n, "solver_disagreements": [...]}. Each function's z3 call is bounded by the
@@ -77,7 +78,13 @@ def validate_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", timeout: int 
     `vacuous` counts proofs that hold only because the SOURCE is UB/poison on every input: valid
     refinements that say nothing about the transform, and the tell-tale of an over-approximated UB
     model. It is reported alongside `proved` so the reach number is never quietly inflated by them."""
-    opt_text = si.run_instcombine(ll_text, opt_bin)
+    # `passes`/`pass_plugin` aim this apparatus -- and the external oracles above it -- at a pass
+    # O2T did not build. Without them the oracle stack could only ever be pointed at InstCombine, so
+    # a third-party pass verified through `--pass-plugin` got z3 alone: one solver, one encoding,
+    # and none of the independent confirmation that makes the corpus figure worth quoting. A
+    # third-party pass is exactly where you want the MOST oracles, not the fewest.
+    opt_text = (si.run_passes(ll_text, passes, opt_bin, pass_plugin) if passes
+                else si.run_instcombine(ll_text, opt_bin))
     if opt_text is None:
         return {"functions": [], "counts": {}, "opt_ok": False, "vacuous": 0,
                 "solver_disagreements": []}
@@ -144,7 +151,8 @@ def _extract_define(ll_text: str, fn: str):
 
 
 def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: str | None = None,
-                     alive_bin: str | None = None, timeout: int = 15) -> dict:
+                     alive_bin: str | None = None, timeout: int = 15,
+                     passes: str | None = None, pass_plugin: str | None = None) -> dict:
     """Run whole-function TV, then confirm every function O2T PROVED against the INDEPENDENT oracles
     (lli value execution and/or reference Alive2) that do NOT share O2T's SMT encoding. Returns
     {base, cross_checked, disagreements}. A non-empty `disagreements` is a FALSE PROOF on real code --
@@ -152,9 +160,23 @@ def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: s
     actual verdicts, not just demo fixtures."""
     from o2t.validate.concrete_tv import concrete_tv
     from o2t.validate.alive_diff import alive_refines
-    base = validate_file(z3_bin, ll_text, opt_bin, timeout, cross_check=True)
-    opt_text = si.run_instcombine(ll_text, opt_bin)
-    disagreements, checked = [], 0
+    base = validate_file(z3_bin, ll_text, opt_bin, timeout, cross_check=True,
+                         passes=passes, pass_plugin=pass_plugin)
+    # `passes`/`pass_plugin` aim this apparatus -- and the external oracles above it -- at a pass
+    # O2T did not build. Without them the oracle stack could only ever be pointed at InstCombine, so
+    # a third-party pass verified through `--pass-plugin` got z3 alone: one solver, one encoding,
+    # and none of the independent confirmation that makes the corpus figure worth quoting. A
+    # third-party pass is exactly where you want the MOST oracles, not the fewest.
+    opt_text = (si.run_passes(ll_text, passes, opt_bin, pass_plugin) if passes
+                else si.run_instcombine(ll_text, opt_bin))
+    # WHICH ORACLES ACTUALLY ANSWERED, per proof. `cross_checked` counted proofs CONSIDERED, so a
+    # run with no `lli` and no `alive-tv` reported the same "N cross-checked, 0 disagreements" as a
+    # fully confirmed one -- absence of evidence rendered as evidence, in the number a reader is
+    # most likely to quote as independent confirmation. `confirmed_by` names the oracles that
+    # actually ran, and `independently_confirmed` counts only proofs at least one EXTERNAL oracle
+    # (lli or Alive2 -- not O2T's own solver) examined.
+    disagreements, checked, independently_confirmed = [], 0, 0
+    confirmed_by: set[str] = set()
     if opt_text is None:
         return {"base": base["counts"], "cross_checked": 0, "disagreements": [],
                 "vacuous": base.get("vacuous", 0),
@@ -176,14 +198,22 @@ def cross_check_file(z3_bin: str, ll_text: str, opt_bin: str = "opt", lli_bin: s
             # oracles that do not share the encoding" must mean they actually answered.
             solver_no_answer.append({"function": fn,
                                      "solvers": r["cross_check"].get("no_answer", [])})
+        saw_external = False
         if lli_bin:                                   # value oracle (real execution)
+            confirmed_by.add("lli")
+            saw_external = True
             cc = concrete_tv(lli_bin, ll_text, opt_text, fn)
             if cc["status"] == "disagree":
                 disagreements.append({"function": fn, "oracle": "lli", "witness": cc.get("witness")})
         if alive_bin:                                 # poison/ground-truth oracle, per function
+            confirmed_by.add("alive2")
+            saw_external = True
             bfn, afn = _extract_define(ll_text, fn), _extract_define(opt_text, fn)
             if bfn and afn and alive_refines(bfn, afn, alive_bin).get("status") == "refuted":
                 disagreements.append({"function": fn, "oracle": "alive2"})
+        independently_confirmed += 1 if saw_external else 0
     return {"base": base["counts"], "cross_checked": checked, "disagreements": disagreements,
+            "independently_confirmed": independently_confirmed,
+            "confirmed_by": sorted(confirmed_by),
             "solver_no_answer": solver_no_answer, "vacuous": base.get("vacuous", 0),
             "vacuity_unprobed": base.get("vacuity_unprobed", 0)}

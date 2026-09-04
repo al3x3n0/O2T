@@ -89,6 +89,14 @@ the vector lane model — so a memory- or vector-heavy pass is verified rather t
 not true when this first shipped: it called the scalar translator directly, and on `<4 x i32>` code
 it reported `unsupported` for every function and missed a planted miscompile entirely.
 
+Every proof it produces is confirmed against oracles that do **not** share O2T's SMT encoding —
+`lli` actually executing the before/after, reference Alive2, and a second SMT solver replaying each
+query — and the report says how many proofs those oracles **actually examined**
+(`independently_confirmed`), because `disagreements: 0` alone cannot tell confirmation from an
+oracle that never ran. An oracle contradicting a proof **outranks** it: the verdict becomes
+`refuted`, named as a possible false proof, since that is the failure direction this project is
+organised against.
+
 **Two limits, both load-bearing.** The plugin must be built against the same LLVM as `--opt-bin`, or
 it will not load. And verification is only as good as the IR you supply: **a pass that transforms
 nothing has not been verified.** Every "proof" is then a function it left untouched refining itself,

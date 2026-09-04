@@ -35,6 +35,12 @@ def main() -> int:
     ap.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     ap.add_argument("--z3-bin", default="z3")
     ap.add_argument("--opt-bin", default="opt")
+    ap.add_argument("--cross-check", action="store_true",
+                    help="confirm every PROVED function against oracles that do not share O2T's "
+                         "SMT encoding: lli execution, reference Alive2, and a second solver. A "
+                         "disagreement is a possible FALSE PROOF.")
+    ap.add_argument("--lli-bin")
+    ap.add_argument("--alive-tv")
     ap.add_argument("--pass-plugin", help="built pass plugin (-load-pass-plugin): validates a pass "
                                           "O2T did not build")
     ap.add_argument("--report", type=Path)
@@ -59,9 +65,25 @@ def main() -> int:
     # precisely the kind of pass someone reaches for `--pass-plugin` to verify. The fallbacks are
     # each sound within their scope and decline out of it, so this widens reach without widening
     # what is claimed.
-    from o2t.validate.corpus_tv import validate_transform_ex
+    from o2t.validate.corpus_tv import cross_check_file, validate_transform_ex
     results = [validate_transform_ex(z3, src, opt_text, fn)
                for fn in scalar_ir.function_names(src)]
+    # INDEPENDENT CONFIRMATION, when asked for. Every verdict above rests on ONE solver and ONE
+    # hand-written encoding; the oracles here share neither. This matters most for a pass O2T did
+    # not build, where there is no corpus history to lean on -- and the same run that verifies the
+    # pass can say whether anything outside O2T's own encoding contradicts it.
+    disagreements, cross_checked, confirmed_by = [], None, []
+    if args.cross_check:
+        xc = cross_check_file(z3, src, opt, lli_bin=args.lli_bin, alive_bin=args.alive_tv,
+                              passes=args.passes, pass_plugin=args.pass_plugin)
+        disagreements = xc.get("disagreements", [])
+        # HOW MANY PROOFS THE ORACLES ACTUALLY EXAMINED. `disagreements: 0` on its own says the same
+        # thing whether every proof was confirmed or NO ORACLE RAN -- lli absent, alive-tv missing,
+        # the plugin failing to load. That is the absence-of-evidence-as-evidence conflation this
+        # project keeps finding elsewhere, and it would be worst here, where the number is read as
+        # independent confirmation of a pass nobody has verified before.
+        cross_checked = xc.get("independently_confirmed", 0)
+        confirmed_by = xc.get("confirmed_by", [])
     proved = [r for r in results if r["status"] == "proved"]
     refuted = [r for r in results if r["status"] == "refuted"]
     unsupported = [r for r in results if r["status"] == "unsupported"]
@@ -75,12 +97,20 @@ def main() -> int:
     changed = sum(1 for fn in scalar_ir.function_names(src)
                   if _extract_define(src, fn) != _extract_define(opt_text, fn))
     report = {"passes": args.passes, "changed": changed,
+              # SAME KEYS AS STDOUT. `_run_json` appends `--report` and parses the FILE, so a name
+              # that differs between the two output paths reads back as None in the orchestrator --
+              # which is exactly how `independently_confirmed` arrived empty while the tool was
+              # printing it correctly on stdout.
+              "disagreements": disagreements,
+              "independently_confirmed": cross_checked,
+              "confirmed_by": confirmed_by,
               "results": results, "proved": len(proved),
               "refuted": len(refuted), "unsupported": len(unsupported), "ok": ok}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"passes": args.passes, "changed": changed,
+                      "disagreements": len(disagreements), "independently_confirmed": cross_checked,
                       "proved": len(proved), "refuted": len(refuted),
                       "unsupported": len(unsupported), "ok": ok}, sort_keys=True))
     for r in results:

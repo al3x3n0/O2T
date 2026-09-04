@@ -41,6 +41,12 @@ def resolve_context(z3_bin="z3", opt_bin="opt", clang_bin="clang",
         "opt": toolchain.resolve_opt(opt_bin),
         "clang": toolchain.resolve_clang(clang_bin),
         "ast-miner": str(miner) if miner.exists() else None,
+        # The EXTERNAL oracles. Resolved here so `plugin-tv` can confirm a third-party pass's
+        # verdicts against tools that do not share O2T's SMT encoding -- lli actually executes the
+        # before/after, Alive2 is an independent refinement checker. Absent, the check still runs;
+        # it just reports that nothing outside O2T examined it.
+        "lli": toolchain.resolve_lli(),
+        "alive-tv": shutil.which("alive-tv"),
         "klee": _klee_available(),
         "model-checker": _model_checker_available(model_checker_bin),
         "force_pass_runner": force_pass_runner,
@@ -258,6 +264,15 @@ def execute_check(check, source: Path, pass_name: str | None, ctx: dict) -> dict
                     "--opt-bin", ctx["opt"], "--z3-bin", ctx["z3"]]
             if ctx.get("pass_corpus"):
                 argv += ["--source", str(ctx["pass_corpus"])]
+            # Confirm every proof against oracles that do NOT share O2T's encoding, whenever they
+            # are available. A pass O2T did not build has no corpus history to lean on, so it is
+            # exactly where independent confirmation is worth the most.
+            if ctx.get("lli") or ctx.get("alive-tv"):
+                argv.append("--cross-check")
+                if ctx.get("lli"):
+                    argv += ["--lli-bin", ctx["lli"]]
+                if ctx.get("alive-tv"):
+                    argv += ["--alive-tv", ctx["alive-tv"]]
             r = _run_json(argv)
             n, changed = r.get("proved", 0), r.get("changed", 0)
             # A PASS THAT CHANGED NOTHING HAS NOT BEEN VERIFIED. Every "proof" is then a function
@@ -272,7 +287,15 @@ def execute_check(check, source: Path, pass_name: str | None, ctx: dict) -> dict
                                  "(--pass-corpus)"}
             else:
                 out = {"verdict": ("refuted" if r.get("refuted") else ("proved" if n else "inconclusive")),
-                       "proved": n, "refuted": r.get("refuted", 0), "changed": changed}
+                       "proved": n, "refuted": r.get("refuted", 0), "changed": changed,
+                       "independently_confirmed": r.get("independently_confirmed"),
+                       "oracle_disagreements": len(r.get("disagreements") or [])}
+                # AN ORACLE CONTRADICTING A PROOF IS A POSSIBLE FALSE PROOF -- the one direction
+                # this project is organised against. It outranks the proof it contradicts.
+                if r.get("disagreements"):
+                    out["verdict"] = "refuted"
+                    out["reason"] = (f"{len(r['disagreements'])} proof(s) contradicted by an independent "
+                                     "oracle (lli / Alive2) -- possible FALSE PROOF")
         elif check.strategy in ("reassociate-ir", "early-cse-ir"):
             # Closed-loop TV of a value-preserving scalar pass via the generic scalar translator.
             r = _run_json([py, tool, "--passes", STRATEGIES[check.strategy].canonical_pass,

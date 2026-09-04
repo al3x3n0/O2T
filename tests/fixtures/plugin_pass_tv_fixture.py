@@ -120,6 +120,28 @@ define <4 x i32> @vec_planted_add_self(<4 x i32> %x) {
              "`unsupported` here and saw nothing", check_v)
         assert check_v["proved"] == 1, ("and the sound vector fold must still prove", check_v)
 
+        # 1c) INDEPENDENT CONFIRMATION, and the count that makes it meaningful. Every verdict above
+        #     rests on ONE solver and ONE hand-written encoding; a pass O2T did not build has no
+        #     corpus history to lean on, so it is where oracles that share neither matter most.
+        #     `independently_confirmed` counts proofs an EXTERNAL oracle (lli execution, reference
+        #     Alive2) actually examined.
+        #
+        #     It exists because `disagreements: 0` says the same thing whether every proof was
+        #     confirmed or NO ORACLE RAN -- lli absent, alive-tv missing, plugin failed to load.
+        #     That conflation was reintroduced within minutes of being fixed: the tool emitted this
+        #     field on stdout under one name and in the --report file (which `_run_json` actually
+        #     parses) under another, so the orchestrator read None and a run with zero oracle
+        #     participation looked clean. A tool with two output paths has two contracts.
+        if shutil.which("lli") or Path(LLVM / "bin" / "lli").exists():
+            assert check["independently_confirmed"] is not None, \
+                ("with an oracle available the count must be reported, not None -- None is how a "
+                 "naming mismatch between stdout and the report file hid zero participation", check)
+            assert check["independently_confirmed"] >= 1, \
+                ("...and at least the one proved function must have been examined", check)
+        assert check["oracle_disagreements"] == 0, \
+            ("no external oracle may contradict a proof here; a disagreement is a possible FALSE "
+             "PROOF and outranks the proof it contradicts", check)
+
         # 2) THE VACUITY GUARD. With no corpus the pass runs on a default benchmark it does not
         #    touch, so every proof is a function it left alone. This reported `proved` when first
         #    built -- a true statement about the wrong thing.
@@ -135,7 +157,10 @@ define <4 x i32> @vec_planted_add_self(<4 x i32> %x) {
           "user's plugin, refutes a planted `add x,x -> x` with the sound `sub x,0 -> x` still "
           "proving beside it -- on SCALAR and on VECTOR IR, the latter invisible to the scalar "
           "translator that this first shipped with -- and REFUSES to certify when the pass "
-          "transformed nothing (which it wrongly reported as `proved` the first time this ran)")
+          "transformed nothing (which it wrongly reported as `proved` the first time this ran). "
+          "Proofs are confirmed by oracles that do not share O2T's encoding, and the count of "
+          "proofs they actually EXAMINED is asserted -- `disagreements: 0` alone cannot tell "
+          "confirmation from an oracle that never ran")
     return 0
 
 
