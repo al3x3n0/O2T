@@ -309,7 +309,48 @@ def build_registry(enable_synthesis: bool = False) -> dict[str, ActionSpec]:
     return reg
 
 
-def _strategy_catalog(ctx: dict) -> list[dict]:
+# Which cheap SOURCE miner backs each source-targeted strategy. Mining is regex/AST work -- the
+# expensive half of these strategies is the Z3 discharge -- so asking every miner what it WOULD
+# recover costs well under a millisecond and turns the catalog from a permissions list into
+# evidence. Measured on `agent_positive_control_snippet.cpp`: the SLP miner recovers 3, every other
+# miner 0, in 0.3ms total.
+_SOURCE_MINERS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "slp-source": ("o2t.intent.extract_slp_model", ("recognize_reduction_fold", "recognize_pack_fold")),
+    "slp-transaction": ("o2t.intent.extract_slp_model", ("recognize_pack_fold",)),
+    "dce-source": ("o2t.intent.extract_dce_model", ("recognize_dead_erase",)),
+    "cfg-source": ("o2t.intent.extract_cfg_model", ("recognize_ifconversion_fold",)),
+    "licm-source": ("o2t.intent.extract_loop_structural_model", ("recognize_hoist_fold",)),
+    "globalopt-source": ("o2t.intent.extract_globalopt_model", ("recognize_initializer_default",)),
+    "globalopt-witness": ("o2t.intent.extract_globalopt_model", ("recognize_initializer_default",)),
+    # `memory-source` / `dse-facts` are deliberately absent: `recognize_memory_fold` takes
+    # (func_name, signature, body), not a body, so the generic caller cannot drive it. Wiring it
+    # needs a splitter that returns signatures separately. Left UNMEASURED rather than wired
+    # wrongly -- a miner that raises and is caught reports None, and None must not be read as 0.
+}
+
+
+def _would_recover(sid: str, source_text: str) -> int | None:
+    """How many folds this strategy's miner would recover from `source_text` (None if unknown).
+
+    None is NOT zero: a strategy with no wired miner is unmeasured, not inapplicable. Reporting it
+    as 0 would steer a model away from a strategy that might well apply -- the same
+    absence-of-evidence-as-evidence error this project keeps finding elsewhere."""
+    entry = _SOURCE_MINERS.get(sid)
+    if not entry or not source_text:
+        return None
+    module_name, recognizers = entry
+    try:
+        import importlib
+        from o2t.intent.extract_dce_model import split_function_texts
+        module = importlib.import_module(module_name)
+        bodies = split_function_texts(source_text).values()
+        return sum(1 for b in bodies
+                   if any(getattr(module, r)(b) for r in recognizers if hasattr(module, r)))
+    except Exception:
+        return None            # a miner crash must never break the prompt
+
+
+def _strategy_catalog(ctx: dict, source_text: str = "") -> list[dict]:
     """What each verification strategy DOES and whether it can run here.
 
     The enum alone is 33 opaque ids. Measured against a live model, that is not enough to route
@@ -337,6 +378,17 @@ def _strategy_catalog(ctx: dict) -> list[dict]:
             "runnable_here": not missing,
             "blocked_by": ("missing: " + ", ".join(missing)) if missing else "",
         })
+        # RUNNABLE IS NOT RELEVANT, and the catalog only ever said runnable: 32 of 33 entries come
+        # back `runnable_here: true` for a typical pass, which is no routing signal at all. A live
+        # model given that list mined, classified, and concluded `inconclusive` -- reasonably, since
+        # nothing told it which strategy had anything to work with. Where a cheap miner exists, say
+        # what it would actually find here.
+        found = _would_recover(sid, source_text)
+        if found is not None:
+            cat[-1]["would_recover"] = found
+            if found == 0:
+                cat[-1]["applies_when"] = ("the pass SOURCE is available, but this strategy's miner "
+                                           "recovers NOTHING from this source")
     return cat
 
 
@@ -354,6 +406,6 @@ def advertise(registry: dict, state, ctx: dict) -> list[dict]:
                  "args_schema": spec.args_schema, "available": available,
                  "unavailable_reason": reason}
         if spec.name == "run-strategy":
-            entry["strategy_catalog"] = _strategy_catalog(ctx)
+            entry["strategy_catalog"] = _strategy_catalog(ctx, getattr(state, "source_text", "") or "")
         out.append(entry)
     return out

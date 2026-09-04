@@ -707,6 +707,12 @@ if(O2T_BUILD_TESTS)
         NAME trackb_corpus_manifest_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/trackb_corpus_manifest_fixture.py
     )
+    # The prompt must rank strategies by what their miners actually recover from THIS source --
+    # a runnability flag is a permissions list, not a routing signal. No LLM, no network.
+    add_test(
+        NAME agent_routing_signal_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_routing_signal_fixture.py
+    )
     add_test(
         NAME agent_positive_control_fixture
         COMMAND

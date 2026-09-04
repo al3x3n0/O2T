@@ -83,12 +83,28 @@ def _state_for(entry: dict) -> AgentState:
 
 
 def build_request(state: AgentState, registry: dict, ctx: dict, client, max_steps: int) -> dict:
+    # THE INSTRUCTION HAS TO POINT AT THE EVIDENCE, or the evidence goes unused. Adding the
+    # strategy catalog stopped the model claiming "no formal strategy is applicable"; it still did
+    # not ROUTE, because 32 of 33 entries say `runnable_here: true` and nothing said which had
+    # anything to work on. `would_recover` now answers that, and these three sentences say how to
+    # read it, that a strategy outside the classified family is a legitimate choice -- the one move
+    # the deterministic planner structurally cannot make -- and that declining is a real outcome.
+    # That last clause is deliberate: an instruction that only rewards finding things buys its
+    # activity with false positives, and on this project a false refutation is as costly as a false
+    # proof.
     instruction = (
         "You are triaging an LLVM optimization pass that O2T's deterministic pipeline could not "
         "settle. Choose exactly ONE next action from `actions` to make progress "
         + ("diagnosing the refutation" if state.mode == "diagnose" else "verifying the pass")
-        + ". Formal verifiers decide soundness; your conclusions are advisory. Reply with JSON "
-          "only, matching `answer_schema`.")
+        + ". In `actions[].strategy_catalog`, `would_recover` is how many folds that strategy's "
+          "miner ACTUALLY finds in this source: prefer a strategy with would_recover > 0 over one "
+          "that is merely runnable, and note that `would_recover` absent means unmeasured, not "
+          "zero. A strategy belonging to a family the classifier did NOT pick is a legitimate "
+          "choice -- the deterministic pipeline only ran the matched family's strategies, so that "
+          "is where you can add something it could not. If nothing has anything to work on, "
+          "conclude `inconclusive`: that is a real answer, not a failure. Formal verifiers decide "
+          "soundness; your conclusions are advisory. Reply with JSON only, matching "
+          "`answer_schema`.")
     return {
         "task": "agent-verify-llvm-pass",
         "instruction": instruction,

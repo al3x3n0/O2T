@@ -66,8 +66,18 @@ def main() -> int:
     assert ed.recognize_dead_erase("void f(){ Value *V = I; }") is None
     m = ed.recognize_dead_erase("void f(){ if (isInstructionTriviallyDead(I,nullptr)) I->eraseFromParent(); }")
     assert m and m["trivially_dead"], m
-    m = ed.recognize_dead_erase("void f(){ I->eraseFromParent(); }")
-    assert m and not m["trivially_dead"], m
+    # A BARE ERASE ON AN UNTYPED RECEIVER IS NOT MINED, and this assertion used to say the opposite.
+    # Nothing here establishes that `I` is an Instruction, and on real code it often is not: VeGen's
+    # VectorPackSet.cpp ends with `for (auto *BB : OldBlocks) BB->eraseFromParent();` -- ordinary
+    # CFG teardown after dropAllReferences() -- which this recognizer mined as a dead-INSTRUCTION
+    # erasure and refuted. A category error, and the corpus could never have shown it, because
+    # fixture folds always declare their types. Refusing to guess is the sound direction: the
+    # typed form below still mines and still refutes.
+    assert ed.recognize_dead_erase("void f(){ I->eraseFromParent(); }") is None
+    assert ed.recognize_dead_erase("void f(){ for (auto *BB : Old) BB->eraseFromParent(); }") is None
+    m = ed.recognize_dead_erase("void f(Instruction *I){ I->eraseFromParent(); }")
+    assert m and not m["trivially_dead"], ("the TYPED bare erase must still be mined and refutable "
+                                           "-- the teeth live here", m)
     m = ed.recognize_dead_erase("void f(AllocaInst *AI){ if (AI->use_empty()) AI->eraseFromParent(); }")
     assert m and m["unused_alloca"] and m["marker"] == "probe.cleanup.unused-alloca", m
     m = ed.recognize_dead_erase("void f(AllocaInst *AI){ if (AI->users().empty()) AI->eraseFromParent(); }")
