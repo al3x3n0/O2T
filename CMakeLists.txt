@@ -681,6 +681,12 @@ if(O2T_BUILD_TESTS)
     # pass-runners that fell back to their canonical pass prove other code, and used to certify this.
     # Verify a pass O2T did NOT build: load the user's plugin, run their real pass, prove or refute
     # its output -- and refuse to certify a pass the corpus never exercised. Needs LLVM headers.
+    # A pass that emits IR LLVM rejects cannot be verified at all. This finds that defect in the
+    # SOURCE via the clang AST (types, not regex). Skips unless -DO2T_BUILD_CLANG_TOOLS=ON.
+    add_test(
+        NAME ir_validity_ast_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ir_validity_ast_fixture.py
+    )
     add_test(
         NAME plugin_pass_tv_fixture
         COMMAND

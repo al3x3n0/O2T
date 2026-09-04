@@ -4048,6 +4048,7 @@ public:
     if (const auto *Function =
             Result.Nodes.getNodeAs<FunctionDecl>("slp-function")) {
       collectSlpFunction(Function, Result);
+      collectInvalidIrRisk(Function, Result);
       return;
     }
     const auto *If = Result.Nodes.getNodeAs<IfStmt>("if");
@@ -4496,6 +4497,140 @@ private:
                              return UseKey(LHS) == UseKey(RHS);
                            }),
                Uses.end());
+  }
+
+  // A PASS THAT EMITS INVALID IR CANNOT BE VERIFIED AT ALL: there is no well-formed output to ask
+  // a refinement question about. `plugin-tv` reports that as `pass-defect` when it happens, but
+  // only for the inputs supplied; this finds the defect in the SOURCE, so it does not depend on a
+  // corpus reaching the bad path.
+  //
+  // The rule: `bitcast` requires source and destination to have the SAME bit width. A pass that
+  // casts an INPUT-DERIVED value to a width it hardcoded is wrong for every other width, and LLVM
+  // aborts the module. Found on real third-party code -- llvm-tutor's ConvertFCmpEq builds
+  // `IntegerType::get(Ctx, 64)` and bitcasts the fcmp operands' difference to it, so on
+  // `fcmp oeq float` it emits `bitcast float to i64`. Its header claims it converts "all
+  // equality-based floating point comparison instructions"; the double-only restriction is stated
+  // nowhere.
+  //
+  // DECLINE BY DEFAULT: a finding needs BOTH a hardcoded-width destination AND no width check
+  // anywhere in the function. A pass that tests `isDoubleTy()` or `getScalarSizeInBits()` has
+  // considered the question, and this does not second-guess how.
+  //
+  // This lives in the AST tool rather than a regex because the judgement is about TYPES. A regex
+  // reads variable spelling; the AST knows `I64Ty` is an `IntegerType` of width 64 and that the
+  // cast's operand type comes from the pass's input. The first attempt at this WAS a regex, and it
+  // could not even see the function -- `convertFCmpEqInstruction` is declared `noexcept`, which the
+  // Python splitter's pattern silently dropped.
+  static bool isWidthGuardName(llvm::StringRef Name) {
+    return Name == "isDoubleTy" || Name == "isFloatTy" || Name == "isHalfTy" ||
+           Name == "isFP128Ty" || Name == "getScalarSizeInBits" ||
+           Name == "getPrimitiveSizeInBits" || Name == "getIntegerBitWidth" ||
+           Name == "getTypeSizeInBits" || Name == "getBitWidth" ||
+           Name == "hasBitWidth" || Name == "canLosslesslyBitCastTo" ||
+           Name == "isIntegerTy";
+  }
+
+  // The fixed width a destination-type expression is pinned to, if any ("64", "Double", ...).
+  static std::string pinnedWidthOf(const Expr *E, ASTContext &Ctx) {
+    if (!E) {
+      return "";
+    }
+    const Expr *Stripped = E->IgnoreParenImpCasts();
+    // A local bound to a fixed-width type: `IntegerType *I64Ty = IntegerType::get(Ctx, 64);`
+    if (const auto *Ref = llvm::dyn_cast<DeclRefExpr>(Stripped)) {
+      if (const auto *Var = llvm::dyn_cast<VarDecl>(Ref->getDecl())) {
+        if (const Expr *Init = Var->getInit()) {
+          return pinnedWidthOf(Init, Ctx);
+        }
+      }
+      return "";
+    }
+    if (const auto *Call = llvm::dyn_cast<CallExpr>(Stripped)) {
+      const FunctionDecl *Callee = Call->getDirectCallee();
+      if (!Callee) {
+        return "";
+      }
+      llvm::StringRef Name = Callee->getName();
+      if (Name == "get" && Call->getNumArgs() >= 2) {   // IntegerType::get(Ctx, N)
+        if (std::optional<llvm::APSInt> Width =
+                Call->getArg(1)->getIntegerConstantExpr(Ctx)) {
+          return llvm::toString(*Width, 10);
+        }
+        return "";
+      }
+      // Type::getInt64Ty / getDoubleTy / getFloatTy / Builder.getInt32Ty ...
+      if (Name.consume_front("getInt") && Name.consume_back("Ty") && !Name.empty()) {
+        return Name.str();
+      }
+      llvm::StringRef Fixed = Callee->getName();
+      for (const char *T : {"Double", "Float", "Half", "FP128", "X86_FP80", "BFloat"}) {
+        if (Fixed == (llvm::Twine("get") + T + "Ty").str()) {
+          return T;
+        }
+      }
+    }
+    return "";
+  }
+
+  void collectInvalidIrRisk(const FunctionDecl *Function,
+                            const MatchFinder::MatchResult &Result) {
+    if (!Function || !Function->hasBody() || !Result.SourceManager ||
+        !Result.Context) {
+      return;
+    }
+    SourceManager &SM = *Result.SourceManager;
+    if (Function->getBeginLoc().isInvalid() ||
+        !SM.isWrittenInMainFile(Function->getBeginLoc())) {
+      return;
+    }
+    // Does this function check a width anywhere? If so, leave it alone.
+    bool HasWidthGuard = false;
+    llvm::SmallVector<const Stmt *, 64> Work{Function->getBody()};
+    llvm::SmallVector<const CallExpr *, 8> BitCasts;
+    while (!Work.empty()) {
+      const Stmt *S = Work.pop_back_val();
+      if (!S) {
+        continue;
+      }
+      if (const auto *Call = llvm::dyn_cast<CallExpr>(S)) {
+        if (const FunctionDecl *Callee = Call->getDirectCallee()) {
+          llvm::StringRef Name = Callee->getName();
+          if (isWidthGuardName(Name)) {
+            HasWidthGuard = true;
+          }
+          if ((Name == "CreateBitCast" || Name == "CreateBitOrPointerCast") &&
+              Call->getNumArgs() >= 2) {
+            BitCasts.push_back(Call);
+          }
+        }
+      }
+      for (const Stmt *Child : S->children()) {
+        Work.push_back(Child);
+      }
+    }
+    if (HasWidthGuard || BitCasts.empty()) {
+      return;
+    }
+    for (const CallExpr *Call : BitCasts) {
+      std::string Pinned = pinnedWidthOf(Call->getArg(1), *Result.Context);
+      if (Pinned.empty()) {
+        continue;                       // destination width is not hardcoded here; nothing to say
+      }
+      unsigned Line = SM.getSpellingLineNumber(Call->getBeginLoc());
+      Output.push_back(llvm::json::Object{
+          {"finding_source", "ast"},
+          {"defect", "bitcast-to-hardcoded-width"},
+          {"function", Function->getNameAsString()},
+          {"file", SM.getFilename(Function->getBeginLoc()).str()},
+          {"line", static_cast<int64_t>(Line)},
+          {"pinned_to", Pinned},
+          {"marker", "probe.ir-validity.bitcast-width"},
+          {"reason",
+           "bitcast to a type pinned at " + Pinned +
+               " in this function, with no width check on the operand -- invalid IR "
+               "for any other width, which LLVM's verifier rejects"},
+      });
+    }
   }
 
   void collectSlpFunction(const FunctionDecl *Function,
