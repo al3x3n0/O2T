@@ -172,11 +172,48 @@ def run_passes(src_text, passes, opt_bin="opt", pass_plugin=None):
 
     The plugin must be built against the same LLVM this `opt` comes from, or it will not load."""
     argv = [opt_bin]
-    if pass_plugin:
-        argv.append(f"-load-pass-plugin={pass_plugin}")
+    # A LIST, because real passes are routinely split across plugins. `opt` accepts
+    # `-load-pass-plugin` repeatedly and only ONE `llvmGetPassPluginInfo` may be exported per
+    # library, so a transform that queries an analysis ships as two: llvm-tutor's ConvertFCmpEq
+    # needs FindFCmpEq loaded beside it. With one plugin the analysis is never registered, the pass
+    # aborts, and O2T reported "opt -passes=... failed" -- blaming the user's pass for O2T's own
+    # inability to load its dependency.
+    plugins = (pass_plugin if isinstance(pass_plugin, (list, tuple))
+               else ([pass_plugin] if pass_plugin else []))
+    for plug in plugins:
+        argv.append(f"-load-pass-plugin={plug}")
     argv += [f"-passes={passes}", "-S", "-o", "-"]
     proc = subprocess.run(argv, input=src_text, capture_output=True, text=True)
-    return proc.stdout if proc.returncode == 0 else None
+    if proc.returncode == 0:
+        return proc.stdout
+    run_passes.last_error = proc.stderr or ""       # kept for `pass_failure_kind` below
+    return None
+
+
+# A PASS THAT EMITS INVALID IR IS BROKEN, and that is a finding -- not a tool error. `run_passes`
+# threw stderr away, so O2T reported "opt -passes=X failed" whether the pass produced a broken
+# module, the binary was missing, or the pass name was wrong. Those are entirely different things to
+# tell a user, and only one of them is about their code.
+#
+# Found on real third-party code: llvm-tutor's ConvertFCmpEq hardcodes `IntegerType::get(Ctx, 64)`
+# and `DoubleTy`, so on a `float` comparison it emits `bitcast float to i64` and LLVM's verifier
+# aborts the module. Its own header claims it converts "all equality-based floating point
+# comparison instructions", with no double-only limitation stated. LLVM's verifier caught that;
+# O2T had the same evidence in hand and discarded it.
+_BROKEN_MODULE_RE = re.compile(r"Broken module|Invalid bitcast|Instruction does not dominate|"
+                               r"invalid operand type|Invalid operand types", re.I)
+
+
+def pass_failure_kind(stderr: str | None = None) -> tuple[str, str]:
+    """Classify why `opt` failed: ("invalid-ir", verifier text) or ("tool-error", text).
+
+    `invalid-ir` is a DEFECT IN THE PASS -- it produced a module LLVM rejects, which no refinement
+    question can even be asked about. `tool-error` is everything else (missing binary, unknown pass
+    name, a plugin that would not load), which is about the setup rather than the code."""
+    text = (stderr if stderr is not None else getattr(run_passes, "last_error", "")) or ""
+    head = "\n".join(ln for ln in text.splitlines()
+                      if ln.strip() and not ln.startswith(("PLEASE", "Stack dump", " #", "0.")))[:400]
+    return ("invalid-ir" if _BROKEN_MODULE_RE.search(text) else "tool-error"), head
 
 
 def run_instcombine(src_text, opt_bin="opt"):

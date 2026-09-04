@@ -47,7 +47,17 @@ SCEV_CALLS = ["getMulExpr", "getAddRecExpr", "getAddExpr", "getUDivExpr", "getCo
               "getSMaxExpr", "getSMinExpr", "getZeroExtendExpr", "getTruncateExpr",
               "getNegativeSCEV"]
 
-FUNC_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(([^;{}]*)\)\s*\{", re.S)
+# TRAILING SPECIFIERS BETWEEN `)` AND `{`. Requiring the brace to follow the parameter list
+# directly makes every function declared `noexcept`, `const`, `override`, `final`, ref-qualified, or
+# with a trailing return type INVISIBLE to every source miner. Real C++ uses those constantly:
+# llvm-tutor's `static FCmpInst *convertFCmpEqInstruction(FCmpInst *FCmp) noexcept {` -- the one
+# function in that file containing the bug that emits invalid IR -- was never handed to any checker,
+# so no amount of improving the checkers could have found it.
+FUNC_RE = re.compile(
+    r"\b([A-Za-z_]\w*)\s*\(([^;{}]*)\)"
+    r"(?:\s*(?:const|noexcept|override|final|mutable|&&?|\bLLVM_[A-Z_]+\b))*"
+    r"(?:\s*->\s*[\w:<>,*&\s]+?)?"
+    r"\s*\{", re.S)
 
 
 def strip_comments(src):

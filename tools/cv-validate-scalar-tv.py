@@ -41,8 +41,10 @@ def main() -> int:
                          "disagreement is a possible FALSE PROOF.")
     ap.add_argument("--lli-bin")
     ap.add_argument("--alive-tv")
-    ap.add_argument("--pass-plugin", help="built pass plugin (-load-pass-plugin): validates a pass "
-                                          "O2T did not build")
+    ap.add_argument("--pass-plugin", action="append", default=[],
+                    help="built pass plugin (-load-pass-plugin): validates a pass O2T did not "
+                         "build. Repeatable -- a transform that queries an analysis ships as two "
+                         "plugins, and both must be loaded.")
     ap.add_argument("--report", type=Path)
     args = ap.parse_args()
 
@@ -55,7 +57,17 @@ def main() -> int:
     src = args.source.read_text()
     opt_text = scalar_ir.run_passes(src, args.passes, opt, args.pass_plugin)
     if opt_text is None:
-        print(json.dumps({"status": "error", "reason": f"opt -passes={args.passes} failed"}))
+        # Distinguish a BROKEN PASS from a broken setup: emitting IR that LLVM's own verifier
+        # rejects is a defect in the pass, and the strongest thing this tool can say about it.
+        kind, detail = scalar_ir.pass_failure_kind()
+        if kind == "invalid-ir":
+            print(json.dumps({"status": "pass-defect", "defect": "invalid-ir",
+                              "passes": args.passes,
+                              "reason": "the pass emitted IR that LLVM's verifier rejects",
+                              "verifier": detail}, sort_keys=True))
+            return 1
+        print(json.dumps({"status": "error", "reason": f"opt -passes={args.passes} failed",
+                          "detail": detail}))
         return 1
 
     # THE FULL TRACK B DISPATCHER, not the scalar translator alone. `validate_transform_ex` tries
