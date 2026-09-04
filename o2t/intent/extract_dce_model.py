@@ -96,6 +96,24 @@ _INSTRUCTION_EVIDENCE_RE = re.compile(
     r"\bRecursivelyDeleteTriviallyDeadInstructions\s*\("
 )
 _UNMODELED_ERASE_GUARD_RE = re.compile(r"\bm_Intrinsic\s*<|\bgetIntrinsicID\s*\(")
+# `X->replaceAllUsesWith(Y); X->eraseFromParent();` is the canonical LLVM erase idiom and almost
+# certainly the most common one in real passes -- after RAUW the instruction provably has no uses.
+# The fixture corpus does not contain it (fixture folds reach for `isInstructionTriviallyDead`), so
+# every real pass using it was REFUTED: VeGen's GSLP.cpp balanceReductionTree, Scalarizer.cpp visit.
+#
+# It is a PARTIAL guard, and that is what decides the verdict. RAUW establishes NO LIVE USE and says
+# nothing about SIDE EFFECTS -- erasing a store or a call after RAUW is still wrong. One premise
+# established and one unestablished is not a proof, and it is not a refutation either: it is a
+# decline, the same shape as `guard-unmodeled`.
+# The same partial-guard shape, reached two other ways in real code:
+#   `if (Done && I->getType()->isVoidTy()) I->eraseFromParent();`   (VeGen Scalarizer.cpp visit)
+# A VOID instruction provably has no uses, so no-live-use is established by the type alone -- but
+# side-effect freedom still is not (a store is void). Every member of this family establishes half
+# the obligation, which is a decline, never a refutation and never a proof.
+_PARTIAL_ERASE_GUARD_RE = re.compile(
+    r"\breplaceAllUsesWith\s*\(|\bisVoidTy\s*\(|\breplaceUsesOfWith\s*\(|"
+    r"\breplaceAllUsesInside\s*\("
+)
 
 
 def recognize_dead_erase(body: str):
@@ -110,7 +128,17 @@ def recognize_dead_erase(body: str):
         # how a CFG teardown loop came back `refuted`.
         return None
     if _DEAD_LOOP_GUARD_RE.search(body) or _LOOP_RE.search(body):
-        guarded = bool(_DEAD_LOOP_GUARD_RE.search(body))
+        # `_LOOP_RE` is `\bloop\b`, case-insensitive: it routes here on the mere MENTION of a loop,
+        # which in a loop pass is every function. Accepting only `isDeadLoopInstruction` then
+        # refuted erases guarded perfectly well by the general API -- VeGen's
+        # LoopUnrolling.cpp simplifyLoopAfterUnroll2 does
+        #     Inst->replaceAllUsesWith(V);
+        #     if (isInstructionTriviallyDead(Inst)) BB->getInstList().erase(Inst);
+        # and also calls RecursivelyDeleteTriviallyDeadInstructions. Both are guards this file
+        # already recognises everywhere else; only the loop branch refused them. A trivially-dead
+        # instruction is dead whether or not a loop is nearby, so the general guards count here too.
+        guarded = bool(_DEAD_LOOP_GUARD_RE.search(body) or _GUARD_RE.search(body)
+                       or _TRUSTED_DEAD_DELETE_RE.search(body))
         return {
             "erases": True,
             "kind": "dead-loop-instruction",
@@ -136,6 +164,8 @@ def recognize_dead_erase(body: str):
         # An erase gated on the intrinsic KIND is legitimate for a reason this model has no way to
         # state. Unmodeled premise => the discharge must decline, never refute.
         "guard_unmodeled": (not guarded) and bool(_UNMODELED_ERASE_GUARD_RE.search(body)),
+        # RAUW: no-live-use established, side-effect freedom NOT. Partial premise => decline.
+        "guard_partial": (not guarded) and bool(_PARTIAL_ERASE_GUARD_RE.search(body)),
     }
 
 
@@ -151,6 +181,15 @@ def verify_source(z3_bin: str, source_text: str):
             results.append({"function": name, "status": "not-a-transform"})
             continue
         entry = {"function": name, "kind": model["kind"], "marker": model["marker"]}
+        if model.get("guard_partial") and not model.get("guard_unmodeled"):
+            entry.update({
+                "status": "declined",
+                "guard": "erase-guard-partial",
+                "reason": "no-live-use is established (replaceAllUsesWith, or a void result type) "
+                          "but side-effect freedom is not -- a partial premise may not refute",
+            })
+            results.append(entry)
+            continue
         if model.get("guard_unmodeled"):
             # Applies whichever shape the body fell into. `emitLoop` in VeGen's VectorPackSet.cpp is
             # a 100-line code-generation routine that merely MENTIONS allocas, so it took the
