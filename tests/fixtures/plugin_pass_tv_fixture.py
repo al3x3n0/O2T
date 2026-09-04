@@ -142,6 +142,31 @@ define <4 x i32> @vec_planted_add_self(<4 x i32> %x) {
             ("no external oracle may contradict a proof here; a disagreement is a possible FALSE "
              "PROOF and outranks the proof it contradicts", check)
 
+        # 1d) THE CHANGE COUNT MUST IGNORE COMMENTS -- or the vacuity guard is theatre on exactly the
+        #     inputs it exists to protect. `opt` strips `; CHECK-...` lines, and every real LLVM test
+        #     file carries them, so comparing raw text counted comment removal as transformation:
+        #     measured 207 of 207 functions "changed" on and.ll by sroa, gvn AND early-cse alike,
+        #     none of which touched an instruction. A pass that does nothing would then be certified.
+        #     With instructions compared instead: sroa 17, early-cse 34, instcombine 171.
+        #
+        #     THE FIXTURE PASSED THROUGHOUT, because the toy corpus above has no comments. A test
+        #     written alongside the code inherits the code's blind spot; this case exists because
+        #     real IR, not a fixture, exposed it.
+        commented = tmp / "commented.ll"
+        commented.write_text("""define i32 @untouched(i32 %x) {
+; CHECK-LABEL: @untouched(
+; CHECK-NEXT:    ret i32 [[X:%.*]]
+;
+  ret i32 %x
+}
+""")
+        _, check_c = run("--pass-corpus", str(commented))
+        assert check_c.get("changed") == 0, \
+            ("stripping CHECK comments is not a transformation -- counting it as one makes the "
+             "vacuity guard unable to fire on any real LLVM test file", check_c)
+        assert check_c["verdict"] == "inconclusive", \
+            ("...and a pass that touched nothing must decline to certify", check_c)
+
         # 2) THE VACUITY GUARD. With no corpus the pass runs on a default benchmark it does not
         #    touch, so every proof is a function it left alone. This reported `proved` when first
         #    built -- a true statement about the wrong thing.

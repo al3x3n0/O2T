@@ -94,8 +94,21 @@ def main() -> int:
     # `proved` because O2T's default corpus contains no `add x,x` for it to break. Pass-level
     # vacuity, and the same shape as the per-proof vacuity Track B already guards.
     from o2t.validate.corpus_tv import _extract_define
+
+    def _instructions(text):
+        """A function's INSTRUCTIONS, with comments and blank lines dropped.
+
+        Comparing the raw text counts `opt` stripping `; CHECK-...` lines as a transformation. Every
+        real LLVM test file carries those, so on real IR this reported `changed: 207` of 207 for
+        sroa, gvn AND early-cse alike -- none of which touched a single instruction. The vacuity
+        guard would then never fire on the inputs it exists to protect, and a pass that does nothing
+        would be certified. It only appeared to work because the toy corpus had no comments."""
+        return [ln.split(";")[0].rstrip() for ln in (text or "").splitlines()
+                if ln.split(";")[0].strip()]
+
     changed = sum(1 for fn in scalar_ir.function_names(src)
-                  if _extract_define(src, fn) != _extract_define(opt_text, fn))
+                  if _instructions(_extract_define(src, fn))
+                  != _instructions(_extract_define(opt_text, fn)))
     report = {"passes": args.passes, "changed": changed,
               # SAME KEYS AS STDOUT. `_run_json` appends `--report` and parses the FILE, so a name
               # that differs between the two output paths reads back as None in the orchestrator --
