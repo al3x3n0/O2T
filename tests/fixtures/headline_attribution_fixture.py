@@ -119,6 +119,45 @@ def main() -> int:
     assert is_about_pass("reassociate-ir", "reassociate") and is_about_pass("early-cse-ir", "early-cse"), \
         "the canonical-fallback rule must key on the PASS, not disable pass-runners wholesale"
 
+    # 4b) THE INVERSE ERROR: a proof ABOUT THIS PASS must not be discarded for belonging to a
+    #     retained SECONDARY family. The classifier picks one primary family; when that family has
+    #     no attributable check, the pass reads as uncertified while a sibling family has actually
+    #     proved something about it.
+    #
+    #     Found by fixing the classifier rather than by looking: once the reduction builders became
+    #     an SLP signal, `vectorize-slp` was retained on VeGen's VectorPackSet.cpp and `slp-source`
+    #     proved getReifiedBackEdgeCond's CreateOrReduce sound -- and the headline went on saying
+    #     "proved only by checks that are not about this pass", holding a real attributable proof it
+    #     had thrown away. The two bugs masked each other: a pass certified by canonical fallbacks
+    #     never needed a secondary proof to be noticed.
+    #
+    #     The fallback is deliberately narrow. The primary family still decides whenever it has an
+    #     attributable verdict, and attribution still gates the fallback -- a secondary canonical or
+    #     canonical-fallback pass-runner proof is no more about the pass than a primary one.
+    entry_sec = {
+        "primary_family": "promotion", "pass_name": None,
+        "checks": [{"strategy": "mem2reg-ir", "verdict": "proved"},        # primary, unattributable
+                   {"strategy": "slp-source", "verdict": "proved"}],       # secondary, ABOUT this pass
+    }
+    from importlib import import_module
+    cv = import_module("importlib.util")
+    spec = cv.spec_from_file_location("cvorch", ROOT / "tools" / "cv-orchestrate.py")
+    mod = cv.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    h_sec = mod._headline_for_pass(entry_sec)
+    assert h_sec["status"] == "proved", \
+        ("an attributable proof from a retained secondary family must certify the pass -- "
+         "discarding it is the mirror of certifying with proofs that read nothing", h_sec)
+    assert "secondary family" in h_sec["reason"] and "slp-source" in h_sec["reason"], h_sec
+    #     ...and a secondary proof that is NOT about the pass must still not certify it.
+    h_sec_bad = mod._headline_for_pass({
+        "primary_family": "promotion", "pass_name": None,
+        "checks": [{"strategy": "mem2reg-ir", "verdict": "proved"},
+                   {"strategy": "symexec-real-pass", "verdict": "proved"}]})   # secondary CANONICAL
+    assert h_sec_bad["status"] != "proved", \
+        ("attribution must gate the secondary fallback too, or this reopens the same hole from the "
+         "other side", h_sec_bad)
+
     # 5) ALL THREE HEADLINE IMPLEMENTATIONS MUST AGREE. There are three: `cv-orchestrate`'s
     #    `_headline_for_pass` (the tool's report), `o2t.agent.report.agent_headline`, and
     #    `o2t.orchestrate.sweep.headline` (the coverage sweep). Two of them had already drifted --

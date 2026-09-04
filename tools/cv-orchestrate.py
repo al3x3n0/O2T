@@ -133,11 +133,29 @@ def _headline_for_pass(item: dict) -> dict:
     # still dominates from any strategy, and an unknown strategy counts as attributable.
     about, unattributed = split_by_attribution(primary_checks, item.get("pass_name"))
     about_positive = [c for c in about if str(c.get("verdict") or "") in POSITIVE_VERDICTS]
+    # A PROOF ABOUT THIS PASS COUNTS EVEN FROM A RETAINED SECONDARY FAMILY -- the exact inverse of
+    # the over-attribution this function was just fixed for. The classifier picks ONE primary
+    # family, and when that family has no attributable check the pass reads as uncertified while a
+    # sibling family has actually proved something about it. Measured on VeGen's VectorPackSet.cpp:
+    # primary `promotion` (whose only strategy is a canonical-fallback pass-runner), retained
+    # secondary `vectorize-slp`, where slp-source proves getReifiedBackEdgeCond's CreateOrReduce
+    # sound. The headline said "proved only by checks that are not about this pass" while holding a
+    # real attributable proof it had discarded for belonging to the wrong family.
+    #
+    # Only as a FALLBACK: the primary family still decides whenever it has an attributable verdict,
+    # so this cannot dilute a family that did its job. And attribution still gates it -- a secondary
+    # canonical or fallback pass-runner proof is no more about the pass than a primary one.
+    secondary = [c for c in checks if c not in primary_checks]
+    secondary_about, _ = split_by_attribution(secondary, item.get("pass_name"))
+    secondary_positive = [c for c in secondary_about
+                          if str(c.get("verdict") or "") in POSITIVE_VERDICTS]
     if any(verdict in NEGATIVE_VERDICTS for verdict in verdicts):
         status = "refuted"
     elif any(verdict == "error" for verdict in verdicts):
         status = "error"
     elif about_positive:
+        status = "proved"
+    elif secondary_positive:
         status = "proved"
     elif any(verdict == "planned" for verdict in verdicts):
         status = "planned"
@@ -147,6 +165,9 @@ def _headline_for_pass(item: dict) -> dict:
         str(c.get("strategy")) for c in unattributed
         if str(c.get("verdict") or "") in POSITIVE_VERDICTS})
     reason = ""
+    if status == "proved" and not about_positive and secondary_positive:
+        reason = ("proved by a check about this pass from a retained secondary family: "
+                  + ", ".join(sorted({str(c.get("strategy")) for c in secondary_positive})))
     if status in {"advisory", "planned"}:
         reason = ("proved only by checks that are not about this pass "
                   f"({', '.join(unattributed_positive)})" if unattributed_positive
