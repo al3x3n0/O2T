@@ -151,13 +151,20 @@ def main() -> int:
         #    unrelated reason -- which is how a false refutation would masquerade as a catch.
         ablated = tmp / "ablated.cpp"
         text = SNIPPET.read_text()
-        needle = "Value *foldFloatAccumulate(Value *Packed) {\n  return CreateFAddReduce(Packed, Packed);"
-        assert needle in text, "ablation needle drifted from the snippet"
-        ablated.write_text(text.replace(
-            needle,
-            "Value *foldFloatAccumulate(Value *Packed, Value *Root) {\n"
-            "  if (!getFastMathFlags(Root).allowReassoc()) return nullptr;\n"
-            "  return CreateFAddReduce(Packed, Packed);"))
+        #    Undo the planted LANE SWAP -- read lane 0 into scalar 0 and lane 1 into scalar 1, as
+        #    the operands were packed. The extract pair `(1, 0)` appears TWICE in the snippet: once
+        #    in `foldMulPackReversed`, where it is CORRECT because that fold inserts at lanes 1,0,
+        #    and once in the planted fold, where it is not. A blind text replace edits both, breaks
+        #    the sound one, and leaves the refutation count unchanged at 1 -- which looks exactly
+        #    like an ablation that failed to bite. Anchor on the function.
+        marker = "void foldAddPackSwappedExtract("
+        head, sep, tail = text.partition(marker)
+        assert sep, "ablation anchor drifted from the snippet"
+        ablated.write_text(head + sep + tail.replace(
+            "  S0->replaceAllUsesWith(CreateExtractElement(VR, 1));\n"
+            "  S1->replaceAllUsesWith(CreateExtractElement(VR, 0));",
+            "  S0->replaceAllUsesWith(CreateExtractElement(VR, 0));\n"
+            "  S1->replaceAllUsesWith(CreateExtractElement(VR, 1));", 1))
         report_a, _, _, record_a = _run(tmp, "pc-ablate.json", DISPATCH, ablated)
         check_a = record_a["formal_checks"][0]
         assert check_a["verdict"] == "proved", \
@@ -210,9 +217,9 @@ def main() -> int:
     del os.environ["AGENT_STUB_SCENARIO"]
     print("agent_positive_control_fixture OK: on a pass the deterministic layer cannot classify "
           "(zero checks planned), the agent routes to slp-source and REFUTES a real planted "
-          "unguarded FP reduction -- attributed to this pass (canonical_only empty), 2 sibling "
+          "lane-swapped vector pack -- attributed to this pass (canonical_only empty), 2 sibling "
           "folds still proving, tripping --fail-on-agent-refuted where an advisory 'refuted' does "
-          "not; restoring the reassoc guard turns the same check green (3/3, headline upgraded). "
+          "not; unswapping the extracts turns the same check green (3/3, headline upgraded). "
           "AND on a pass the classifier places CONFIDENTLY AND WRONGLY (peephole idiom, SLP fold): "
           "the headline is `planned` with its unattributed proofs named, that IS residue, and the "
           "agent recovers the same refutation by dispatching outside the classified family -- the "

@@ -121,6 +121,21 @@ FAMILIES: tuple[Family, ...] = (
             (r"\bTreeEntry\b", 4), (r"\bvectorizeTree\b", 5), (r"\bisValidElementType\b", 3),
             (r"\bShuffleVectorInst\b", 2), (r"\bgetVectorElementType\b", 2),
             (r"\bm_SplatOrPoison\b", 3),
+            # The HORIZONTAL REDUCTION BUILDERS. Everything above is vocabulary from LLVM's OWN
+            # SLPVectorizer -- its internal type names -- so a vectorizer written by anyone else
+            # scores zero. Measured: all 24 files of VeGen's GSLP, a *generalized SLP vectorizer*,
+            # and this family matched none of them. The cost was concrete rather than theoretical:
+            # VectorPackSet.cpp scored 2 against a threshold of 3, so `slp-source` was never
+            # planned for it -- and that is the one file where the SLP miner finds a real,
+            # provable reduction (`getReifiedBackEdgeCond` emitting CreateOrReduce, proved sound
+            # because integer `or` is associative). A provable finding in real code went unverified
+            # because the classifier missed the file by one point.
+            #
+            # These are IRBuilder APIs, not one project's internals: any pass emitting a horizontal
+            # reduction calls them, which is what makes them a fair signal rather than overfitting
+            # to VeGen. Weight 4 -- as strong as `TreeEntry`, since emitting a reduction is less
+            # ambiguous than mentioning a type.
+            (r"\bCreate(?:Add|Mul|And|Or|Xor|FAdd|FMul|IntMax|IntMin|FPMax|FPMin)Reduce\s*\(", 4),
         ),
         strategies=("slp-source", "slp-model", "slp-ir", "slp-transaction"),
         pass_names=("slp-vectorizer", "loop-vectorize"),
