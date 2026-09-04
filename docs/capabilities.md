@@ -105,6 +105,13 @@ reported `proved` for a plugin carrying a planted `add x,x -> x`, because the de
 no `add x,x` for it to break. A zero-change run is now `inconclusive` and says why
 (`plugin_pass_tv_fixture` pins both the catch and the guard).
 
+  The change count compares **instructions, not text**. `opt` strips `; CHECK-...` lines and every
+  real LLVM test file carries them, so a textual comparison read comment removal as transformation:
+  `sroa`, `gvn` and `early-cse` each reported 207 of 207 functions "changed" on `and.ll` without
+  touching an instruction, and the guard could never fire on real input. Comparing instructions
+  gives `sroa` 17, `early-cse` 34, `instcombine` 171. Measured on the same run: three real LLVM
+  passes over 207 real functions each, **200–201 proved, 0 refuted, 0 oracle disagreements**.
+
 ### What a `proved` headline means (and what it refused to mean)
 
 A positive verdict may only certify a pass some check actually **read**. Two kinds cannot:
