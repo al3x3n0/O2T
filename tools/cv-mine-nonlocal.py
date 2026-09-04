@@ -51,12 +51,35 @@ def extract_matcher(predicate: str) -> str | None:
     return None
 
 
+class MinerUnavailable(RuntimeError):
+    """The AST miner could not run. NOT the same as "the miner found nothing"."""
+
+
 def run_miner(miner: Path, source: Path) -> list[dict]:
-    proc = subprocess.run([str(miner), str(source)], capture_output=True, text=True, cwd=str(ROOT))
+    """Findings from the AST miner, or MinerUnavailable if it could not run at all.
+
+    Swallowing a failed run as `[]` makes "no folds here" indistinguishable from "the miner never
+    executed", and this tool's whole verdict is a count of findings. Two ways that bites, both
+    observed:
+
+    * `-- <flags>` are not passed, so LLVM 18's `CommonOptionsParser` demands a compilation database
+      and exits before parsing anything. Older clang tooling proceeded with defaults, which is why
+      this went unnoticed.
+    * The miner resolves `constraints/*.json` relative to the WORKING DIRECTORY. Run elsewhere it
+      exits non-zero with an empty stdout and a stderr that says "failed to read ...", which
+      contains no "error:" and so slips past a naive check.
+
+    Either way the honest answer is "could not run", never "nothing found"."""
+    proc = subprocess.run([str(miner), str(source), "--", "-std=c++17"],
+                          capture_output=True, text=True, cwd=str(ROOT))
+    if proc.returncode != 0 or not proc.stdout.strip():
+        detail = " ".join((proc.stderr or "").split())[:200]
+        raise MinerUnavailable(
+            f"{miner.name} exited {proc.returncode} with no findings output: {detail}")
     try:
         data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as exc:
+        raise MinerUnavailable(f"{miner.name} produced unparseable output: {exc}") from exc
     return data if isinstance(data, list) else data.get("findings", [])
 
 
@@ -83,7 +106,15 @@ def main() -> int:
         print(json.dumps({"status": "skipped", "reason": "z3 not found"}))
         return 0
 
-    findings = run_miner(args.miner, args.source)
+    try:
+        findings = run_miner(args.miner, args.source)
+    except MinerUnavailable as exc:
+        # A tool that cannot run has not found "no folds" -- say which, so a rebuild or a missing
+        # binary is not read as a clean corpus.
+        print(json.dumps({"status": "miner-unavailable", "reason": str(exc),
+                          "findings": None, "nonlocal_mined": None, "ok": False},
+                         sort_keys=True))
+        return 1
     results = []
     for f in findings:
         matcher = extract_matcher(str(f.get("predicate_source") or ""))
