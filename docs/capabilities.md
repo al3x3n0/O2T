@@ -111,6 +111,33 @@ found, and needed only its single source-targeted check to answer `inconclusive`
 `headline_attribution_fixture` asserts the blind-family set is exactly `{promotion}`, so neither a
 new blind family nor a fix to this one can land quietly.
 
+### The remaining declines, attributed (2026-09-04) — and why none is worth opening
+
+Of the 111 non-proved functions in the pinned corpus: **32 timeouts** (budget exhaustion, a
+different population from vocabulary), **8 named guards** (`uninterpreted-fp` 3, `new-deref` 2,
+`target-poison` 2, `opaque-const-expr` 1 — deliberate soundness declines, not gaps; opening them
+means weakening a guard, which is the false-proof direction), and **71 vocabulary declines**.
+
+Those 71 fall into **45 distinct wall combinations, the largest covering 7 functions.** The census
+must be built from each function's `declines` dict — every validator's own wall — and NOT from
+`reason`, which is the scalar validator's, always the first to look. Read the wrong field and
+"vectors" appears to be one 23-function bucket; read the right one and it is several unrelated
+pieces of work. The top combinations:
+
+| n | what would have to be built |
+|---|---|
+| 7 | vector values in the theory-of-arrays model (or `ptr` parameters in the lane model) |
+| 5 | stores through an escaped pointer, width/target out of scope in `mem_state` |
+| 4 | `alloca` of a non-integer type; the lane models stop on an unmodeled instruction |
+| 3 | loads from an escaped/uninitialised pointer |
+| 3 | cyclic CFG (loops) in the whole-function models |
+
+**The conclusion is that there is no cheap win left in Track B's reach.** The boundary is ragged
+rather than blocked on one missing feature, which is what a 94.3% figure over real code should look
+like. Each remaining piece is per-shape work with a single-digit yield, and the project's history
+(a bitcast bucket estimated at 18 that delivered 4) says those estimates run optimistic. Recorded
+here so the measurement is not repeated.
+
 ## Measured reach (on LLVM's own tests — treat as indicative, not a guarantee)
 
 - **Track B whole-function TV, 2026-09-03, ALL NINE InstCombine test files at the PINNED tag
