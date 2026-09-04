@@ -83,11 +83,43 @@ def main() -> int:
         ("and the loop branch must keep ITS teeth -- accepting the general guards must not accept "
          "the absence of one", bad_loop)
 
+    # 6) THE FOLD-SHAPE CONTRACT, which is the real defect the idiom cases above were symptoms of.
+    #    Swept across 126 real LLVM Transforms passes, this miner produced 44 REFUTATIONS -- GVN,
+    #    SROA, LoopRotation, ADCE, CodeGenPrepare -- and, worse, 32 PROOFS. Both directions were
+    #    unfounded, because it mined ANY function containing an erase. Measured, the populations are
+    #    disjoint: O2T's own fixture folds are 1-2 statements, while the real functions it was
+    #    mining run 9-79. A mineable fold is BOUNDED (the whole argument fits in one small
+    #    function), STRAIGHT-LINE (no worklist, so the deadness premise is local), and
+    #    REMOVAL-ONLY (it deletes rather than constructing, so correctness does not rest on emitted
+    #    code the model never reads). Each criterion was forced by a specific real false verdict.
+    big = ("void f(Instruction *I){ " + "int x0 = 0; " * 8 + "I->eraseFromParent(); }")
+    assert ed.recognize_dead_erase(big) is None, \
+        ("a large function is not a fold -- its erase is one step of an algorithm, and GVN, SROA "
+         "and CodeGenPrepare were all accused on exactly this shape")
+    worklist = ("void f(){ while (!DeadInsts.empty()) { Instruction *I = DeadInsts.pop_back_val(); "
+                "I->eraseFromParent(); } }")
+    assert ed.recognize_dead_erase(worklist) is None, \
+        ("an iterating function is not a fold -- SROA::DeleteDeadInstructions pops a worklist whose "
+         "deadness was established by its CALLERS, so the premise is not local and refuting it "
+         "accuses SROA of a bug that exists only in O2T's field of view")
+    rewrite = ("void f(Instruction *I){ IRB.CreateCall3(MemsetFn, A, B, C); I->eraseFromParent(); }")
+    assert ed.recognize_dead_erase(rewrite) is None, \
+        ("a function that BUILDS then erases is a rewrite, not dead-code elimination -- "
+         "ThreadSanitizer::instrumentMemIntrinsic is correct BECAUSE of the call it just emitted, "
+         "which this model does not analyse")
+    #    ...and the contract must not have swallowed the folds it exists to judge.
+    still = {r["function"]: r for r in ed.verify_source(
+        z3, "void f(Instruction *I){ I->eraseFromParent(); }")}["f"]
+    assert still["status"] == "refuted", ("the fold-shaped unguarded erase must still refute", still)
+
     print("dce_real_pass_idioms_fixture OK: a BasicBlock erase is not mined as an instruction "
           "erase; RAUW-then-erase and a void result DECLINE as partial guards rather than accusing "
           "the commonest erase idiom in LLVM; the loop branch accepts the general deadness guards "
           "(a correctly-guarded erase near a loop now PROVES where it was refuted); and both "
-          "unguarded shapes still refute, so none of it was bought by pulling the teeth")
+          "unguarded shapes still refute, so none of it was bought by pulling the teeth. The "
+          "fold-shape contract is pinned too -- bounded, straight-line, removal-only -- which took "
+          "44 false refutations AND 32 false proofs against real LLVM passes down to 0 and 2, the "
+          "two survivors being genuine guarded erasures in LoopIdiomRecognize and SimplifyCFG")
     return 0
 
 

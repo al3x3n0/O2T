@@ -116,9 +116,54 @@ _PARTIAL_ERASE_GUARD_RE = re.compile(
 )
 
 
+# A DCE FOLD IS A FUNCTION WHOSE BODY *IS* THE ERASURE. That is the contract this model was built
+# for, and it was never checked -- any function containing an erase anywhere was mined as a fold.
+#
+# The two populations are disjoint, measured over 126 real LLVM Transforms passes against O2T's own
+# fixtures:
+#
+#     fixture folds        1-2 statements   (median 1, max 2)
+#     real LLVM functions  9-79 statements  (median ~30)
+#
+# Real passes simply do not contain 2-statement erasure folds; their erases are one step inside an
+# algorithm. Mining those produced 44 REFUTATIONS against GVN, SROA, LoopRotation, ADCE and
+# CodeGenPrepare -- and, worse, 32 PROOFS, because `guarded` is "does isInstructionTriviallyDead
+# appear anywhere in the body" and in a 74-statement function an unrelated call elsewhere makes the
+# erase look guarded. Confident verdicts in both directions about functions the model cannot read.
+#
+# The threshold is not tuned to make those 44 disappear: it sits in the empty gap between 2 and 9,
+# and either population would have to change shape entirely to reach it. Larger bodies are declined
+# as `not-a-transform`, which is the honest answer -- O2T's source-mining contract is fold-shaped
+# code, and declining to speak about `SROA::run` is correct where accusing it is not.
+_MAX_FOLD_STATEMENTS = 6
+# ...AND STRAIGHT-LINE. A fold tests a guard and erases ONE instruction; a loop means the function
+# is walking a data structure, and then the deadness premise lives in whatever filled that
+# structure -- a worklist, or the caller -- which this model never reads. `SROA::DeleteDeadInstructions`
+# is the clean example: it pops from `DeadInsts` and erases, and everything on that worklist was
+# established dead ELSEWHERE in SROA. From this function's text the erase is unguarded, so it was
+# refuted; the premise is simply not local. Measured: every one of O2T's 16 fixture folds is
+# loop-free and 61-127 chars, while the three real-pass functions that survived the statement
+# threshold are 445-753 chars and all iterate.
+_FOLD_LOOP_RE = re.compile(r"\b(?:for|while)\s*\(")
+# ...AND IT REMOVES RATHER THAN CONSTRUCTS. A dead-instruction erasure deletes; it does not build
+# replacement IR. When a body emits code and then erases, the erase is part of a REWRITE whose
+# correctness rests on the emitted code being equivalent -- an argument this model never reads.
+# ThreadSanitizer's `instrumentMemIntrinsic` is the case: it emits `IRB.CreateCall3(MemsetFn, ...)`
+# and erases the original memset, which is correct precisely BECAUSE of the call it just built.
+# Refuting it for lacking `isInstructionTriviallyDead` misreads an instrumentation rewrite as
+# failed dead-code elimination.
+_FOLD_BUILDS_IR_RE = re.compile(
+    r"\b(?:IRB|IRBuilder|Builder|B)\w*\s*(?:\.|->)\s*Create\w+|\bnew\s+\w*Inst\b|"
+    r"\bCreateCall\d?\s*\("
+)
+
+
 def recognize_dead_erase(body: str):
     """Recover {erases, trivially_dead} for a dead-instruction erasure fold, or None."""
     if not _ERASE_RE.search(body):
+        return None
+    if (body.count(";") > _MAX_FOLD_STATEMENTS or _FOLD_LOOP_RE.search(body)
+            or _FOLD_BUILDS_IR_RE.search(body)):
         return None
     if _MEMORY_DSE_RE.search(body):
         return None
