@@ -96,6 +96,30 @@ def main() -> int:
         assert check["changed"] == 2, check
         assert entry["headline"]["status"] == "refuted", entry["headline"]
 
+        # 1b) VECTOR IR, which the scalar translator cannot read at all. `plugin-tv` first shipped
+        #     calling `scalar_ir.validate_transform` directly instead of Track B's dispatcher, so a
+        #     vector or memory pass -- exactly what someone reaches for `--pass-plugin` to check --
+        #     came back `unsupported` on every function and the planted bug was MISSED. Measured on
+        #     this very corpus: scalar-only said "non-integer type <4 x i32>" twice; the dispatcher
+        #     proves the sound fold and refutes the planted one. The fallbacks (theory-of-arrays
+        #     memory, vector lane model) are each sound in scope and decline out of it, so this
+        #     widens reach without widening what is claimed.
+        vec = tmp / "vec.ll"
+        vec.write_text("""define <4 x i32> @vec_sound_sub_zero(<4 x i32> %x) {
+  %r = sub <4 x i32> %x, zeroinitializer
+  ret <4 x i32> %r
+}
+define <4 x i32> @vec_planted_add_self(<4 x i32> %x) {
+  %r = add <4 x i32> %x, %x
+  ret <4 x i32> %r
+}
+""")
+        entry_v, check_v = run("--pass-corpus", str(vec))
+        assert check_v["verdict"] == "refuted" and check_v["refuted"] == 1, \
+            ("the planted bug must be caught on VECTOR IR too -- scalar-only reported "
+             "`unsupported` here and saw nothing", check_v)
+        assert check_v["proved"] == 1, ("and the sound vector fold must still prove", check_v)
+
         # 2) THE VACUITY GUARD. With no corpus the pass runs on a default benchmark it does not
         #    touch, so every proof is a function it left alone. This reported `proved` when first
         #    built -- a true statement about the wrong thing.
@@ -109,8 +133,9 @@ def main() -> int:
 
     print("plugin_pass_tv_fixture OK: O2T verifies a pass it did not build -- `plugin-tv` loads the "
           "user's plugin, refutes a planted `add x,x -> x` with the sound `sub x,0 -> x` still "
-          "proving beside it, and REFUSES to certify when the pass transformed nothing (which it "
-          "wrongly reported as `proved` the first time this ran)")
+          "proving beside it -- on SCALAR and on VECTOR IR, the latter invisible to the scalar "
+          "translator that this first shipped with -- and REFUSES to certify when the pass "
+          "transformed nothing (which it wrongly reported as `proved` the first time this ran)")
     return 0
 
 

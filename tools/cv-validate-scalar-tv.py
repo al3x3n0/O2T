@@ -52,7 +52,15 @@ def main() -> int:
         print(json.dumps({"status": "error", "reason": f"opt -passes={args.passes} failed"}))
         return 1
 
-    results = [scalar_ir.validate_transform(z3, src, opt_text, fn)
+    # THE FULL TRACK B DISPATCHER, not the scalar translator alone. `validate_transform_ex` tries
+    # scalar first and falls through to the theory-of-arrays memory model and the vector lane model
+    # when the scalar one declines the SHAPE. Calling `scalar_ir.validate_transform` directly meant
+    # a memory- or vector-heavy pass came back `unsupported` on most of its functions -- which is
+    # precisely the kind of pass someone reaches for `--pass-plugin` to verify. The fallbacks are
+    # each sound within their scope and decline out of it, so this widens reach without widening
+    # what is claimed.
+    from o2t.validate.corpus_tv import validate_transform_ex
+    results = [validate_transform_ex(z3, src, opt_text, fn)
                for fn in scalar_ir.function_names(src)]
     proved = [r for r in results if r["status"] == "proved"]
     refuted = [r for r in results if r["status"] == "refuted"]

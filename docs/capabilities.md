@@ -84,6 +84,11 @@ own InstCombine instead.
 verifies the pass under test or it does not run, so its verdict is about your pass and nothing else.
 O2T builds nothing — anyone using their pass has already built it.
 
+It routes through Track B's full dispatcher — scalar, then the theory-of-arrays memory model, then
+the vector lane model — so a memory- or vector-heavy pass is verified rather than declined. That was
+not true when this first shipped: it called the scalar translator directly, and on `<4 x i32>` code
+it reported `unsupported` for every function and missed a planted miscompile entirely.
+
 **Two limits, both load-bearing.** The plugin must be built against the same LLVM as `--opt-bin`, or
 it will not load. And verification is only as good as the IR you supply: **a pass that transforms
 nothing has not been verified.** Every "proof" is then a function it left untouched refining itself,
