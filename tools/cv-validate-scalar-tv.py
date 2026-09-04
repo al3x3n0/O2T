@@ -35,6 +35,8 @@ def main() -> int:
     ap.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     ap.add_argument("--z3-bin", default="z3")
     ap.add_argument("--opt-bin", default="opt")
+    ap.add_argument("--pass-plugin", help="built pass plugin (-load-pass-plugin): validates a pass "
+                                          "O2T did not build")
     ap.add_argument("--report", type=Path)
     args = ap.parse_args()
 
@@ -45,7 +47,7 @@ def main() -> int:
         return 0
 
     src = args.source.read_text()
-    opt_text = scalar_ir.run_passes(src, args.passes, opt)
+    opt_text = scalar_ir.run_passes(src, args.passes, opt, args.pass_plugin)
     if opt_text is None:
         print(json.dumps({"status": "error", "reason": f"opt -passes={args.passes} failed"}))
         return 1
@@ -56,12 +58,22 @@ def main() -> int:
     refuted = [r for r in results if r["status"] == "refuted"]
     unsupported = [r for r in results if r["status"] == "unsupported"]
     ok = not refuted and bool(proved)
-    report = {"passes": args.passes, "results": results, "proved": len(proved),
+    # HOW MANY FUNCTIONS THE PASS ACTUALLY CHANGED. A refinement proof over a function the pass left
+    # untouched is trivially true -- identity refines identity -- and says nothing whatever about
+    # the pass. Measured the hard way: a plugin pass with a planted `add x,x -> x` was reported
+    # `proved` because O2T's default corpus contains no `add x,x` for it to break. Pass-level
+    # vacuity, and the same shape as the per-proof vacuity Track B already guards.
+    from o2t.validate.corpus_tv import _extract_define
+    changed = sum(1 for fn in scalar_ir.function_names(src)
+                  if _extract_define(src, fn) != _extract_define(opt_text, fn))
+    report = {"passes": args.passes, "changed": changed,
+              "results": results, "proved": len(proved),
               "refuted": len(refuted), "unsupported": len(unsupported), "ok": ok}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"passes": args.passes, "proved": len(proved), "refuted": len(refuted),
+    print(json.dumps({"passes": args.passes, "changed": changed,
+                      "proved": len(proved), "refuted": len(refuted),
                       "unsupported": len(unsupported), "ok": ok}, sort_keys=True))
     for r in results:
         print(f"  [{r['status']:11}] {r['function']} {r.get('reason', '')}", file=sys.stderr)

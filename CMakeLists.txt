@@ -679,6 +679,14 @@ if(O2T_BUILD_TESTS)
     # DECLARE its coverage and the corpus layer must count the unprobed separately.
     # A `proved` headline must rest on a check that actually read the pass: canonical strategies and
     # pass-runners that fell back to their canonical pass prove other code, and used to certify this.
+    # Verify a pass O2T did NOT build: load the user's plugin, run their real pass, prove or refute
+    # its output -- and refuse to certify a pass the corpus never exercised. Needs LLVM headers.
+    add_test(
+        NAME plugin_pass_tv_fixture
+        COMMAND
+            /bin/sh -c
+            "if command -v z3 >/dev/null 2>&1 && test -x /opt/homebrew/opt/llvm@18/bin/clang++; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugin_pass_tv_fixture.py; else echo 'plugin_pass_tv_fixture: z3/clang++ not found, skipped'; fi"
+    )
     add_test(
         NAME headline_attribution_fixture
         COMMAND

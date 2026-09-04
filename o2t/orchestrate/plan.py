@@ -34,6 +34,15 @@ class Strategy:
 # RUNNABLE here only if its tool + prerequisites are wired; otherwise it is planned and
 # reported as "no-runner" so coverage gaps are explicit, never silent.
 STRATEGIES: dict[str, Strategy] = {
+    # THE ONLY STRATEGY THAT CAN VERIFY A PASS O2T DID NOT BUILD. Track B proves the after-IR a
+    # refinement of the before-IR and never cared whose pass produced it -- but every pass-runner
+    # strategy carried a `canonical_pass`, so pointed at a third-party pass they fell back to
+    # validating LLVM's own. This one has no canonical fallback: it runs the pass under
+    # verification, through `-load-pass-plugin`, or it does not run at all. Feasible exactly when
+    # `--pass-plugin` is supplied (see `_runnable_pass`).
+    "plugin-tv": Strategy(
+        "plugin-tv", "Whole-function TV of a THIRD-PARTY pass, run from its built plugin",
+        "cv-validate-scalar-tv.py", ("z3", "opt"), "pass-runner"),
     "scev-intent": Strategy(
         "scev-intent", "SCEV intent recovery (source → recurrence → Z3 proof)",
         "cv-mine-pass-scev.py", ("z3",), "source"),
@@ -243,4 +252,8 @@ def _runnable_pass(classification, ctx: dict) -> bool:
     from o2t.orchestrate.classify import FAMILIES
     name = (classification.pass_name or "").strip().lower()
     known = {n for f in FAMILIES for n in f.pass_names}
-    return bool(name and name in known) or bool(ctx.get("force_pass_runner"))
+    # A SUPPLIED PLUGIN IS THE ANSWER TO "is this pass runnable?". The user built it; `opt` either
+    # loads it or the check errors honestly. This is what turns a third-party pass from unreachable
+    # into ordinary Track B work.
+    return (bool(name and name in known) or bool(ctx.get("force_pass_runner"))
+            or bool(ctx.get("pass_plugin")))

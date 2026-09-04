@@ -208,7 +208,12 @@ def main() -> int:
         summary = cli_report["summary"]
         assert summary["passes"] == 4, summary
         assert summary["classified"] == 4 and summary["unclassified"] == 0, summary
-        assert summary["planned_or_skipped"] == 21, summary
+        # 25, not 21: `plugin-tv` is planned for every family (one per pass, four passes). It is
+        # the only strategy that can verify a pass O2T did not build -- it runs the pass under
+        # verification through `-load-pass-plugin` with no canonical fallback -- so it belongs to
+        # every family rather than to a transform shape. Without `--pass-plugin` it is planned and
+        # infeasible, which is exactly what these four sources show.
+        assert summary["planned_or_skipped"] == 25, summary
         assert summary["by_headline"] == {"planned": 4}, summary
         assert summary["attention"] == {}, summary
         assert summary["by_family"] == {
@@ -217,13 +222,16 @@ def main() -> int:
             "peephole": 1,
             "promotion": 1,
         }, summary
+        # Each family gains exactly one planned check: `plugin-tv`, which belongs to every
+        # family because it verifies the PASS rather than a transform shape (see the
+        # planned_or_skipped note above).
         matrix = summary["readiness_matrix"]["families"]
-        assert matrix["global"]["planned_checks"] == 5, matrix
+        assert matrix["global"]["planned_checks"] == 6, matrix
         assert matrix["memory-dse"]["sources"] == 1, matrix
-        assert matrix["memory-dse"]["planned_checks"] == 6, matrix
+        assert matrix["memory-dse"]["planned_checks"] == 7, matrix
         assert matrix["memory-dse"]["headlines"] == {"planned": 1}, matrix
-        assert matrix["peephole"]["planned_checks"] == 7, matrix
-        assert matrix["promotion"]["planned_checks"] == 3, matrix
+        assert matrix["peephole"]["planned_checks"] == 8, matrix
+        assert matrix["promotion"]["planned_checks"] == 4, matrix
         assert summary["next_actions"] == [], summary
         assert ":planned]" in cli.stderr and "third_party_dse_like_pass.cpp" in cli.stderr
         summary_text = summary_path.read_text(encoding="utf-8")

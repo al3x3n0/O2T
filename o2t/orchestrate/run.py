@@ -31,7 +31,8 @@ DEFAULT_AST_MINER = ROOT / "build-clang-tools" / "cv-mine-pass-source-ast"
 
 def resolve_context(z3_bin="z3", opt_bin="opt", clang_bin="clang",
                     ast_miner: Path | None = None, model_checker_bin: str | None = None,
-                    force_pass_runner=False) -> dict:
+                    force_pass_runner=False, pass_plugin: str | None = None,
+                    pass_corpus: str | None = None) -> dict:
     """Resolve the binaries the strategies need into a run context (absent -> None)."""
     miner = Path(ast_miner) if ast_miner else DEFAULT_AST_MINER
     from o2t import toolchain          # env -> PATH(versioned) -> homebrew; see o2t/toolchain.py
@@ -43,6 +44,10 @@ def resolve_context(z3_bin="z3", opt_bin="opt", clang_bin="clang",
         "klee": _klee_available(),
         "model-checker": _model_checker_available(model_checker_bin),
         "force_pass_runner": force_pass_runner,
+        # A built pass plugin (-load-pass-plugin). Its presence is what makes a third-party pass
+        # runnable, and so what makes `plugin-tv` feasible.
+        "pass_plugin": pass_plugin,
+        "pass_corpus": pass_corpus,
     }
 
 
@@ -242,6 +247,32 @@ def execute_check(check, source: Path, pass_name: str | None, ctx: dict) -> dict
             n = r.get("proved", 0)
             out = {"verdict": ("refuted" if r.get("refuted") else ("proved" if n else "inconclusive")),
                    "proved": n, "refuted": r.get("refuted", 0)}
+        elif check.strategy == "plugin-tv":
+            # Run the pass under verification itself, from its plugin, and prove each function's
+            # output a refinement of its input. The pass NAME is the user's; there is no canonical
+            # fallback, so a verdict here is about their pass and nothing else.
+            if not pass_name:
+                return {"strategy": check.strategy, "verdict": "planned",
+                        "reason": "no pass name given (--pass-name) for the plugin"}
+            argv = [py, tool, "--passes", pass_name, "--pass-plugin", ctx["pass_plugin"],
+                    "--opt-bin", ctx["opt"], "--z3-bin", ctx["z3"]]
+            if ctx.get("pass_corpus"):
+                argv += ["--source", str(ctx["pass_corpus"])]
+            r = _run_json(argv)
+            n, changed = r.get("proved", 0), r.get("changed", 0)
+            # A PASS THAT CHANGED NOTHING HAS NOT BEEN VERIFIED. Every "proof" is then a function
+            # the pass left alone refining itself -- true, and about nothing. Demonstrated: a plugin
+            # carrying a planted `add x,x -> x` came back `proved` on the default corpus, which
+            # contains no `add x,x` for it to break. Pass-level vacuity, and the one direction this
+            # project cannot afford, so a zero-change run is INCONCLUSIVE and says why.
+            if not r.get("refuted") and not changed:
+                out = {"verdict": "inconclusive", "proved": n, "refuted": 0, "changed": 0,
+                       "reason": "the pass changed nothing on this corpus -- every proof is a "
+                                 "function it left untouched; supply IR it transforms "
+                                 "(--pass-corpus)"}
+            else:
+                out = {"verdict": ("refuted" if r.get("refuted") else ("proved" if n else "inconclusive")),
+                       "proved": n, "refuted": r.get("refuted", 0), "changed": changed}
         elif check.strategy in ("reassociate-ir", "early-cse-ir"):
             # Closed-loop TV of a value-preserving scalar pass via the generic scalar translator.
             r = _run_json([py, tool, "--passes", STRATEGIES[check.strategy].canonical_pass,

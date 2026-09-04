@@ -40,7 +40,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\bScalarEvolution\b", 2), (r"\bgetBackedgeTakenCount\b", 4),
             (r"\bcreateAddRecFromPHI\b", 4), (r"\bgetInductionVariable\b", 3),
         ),
-        strategies=("scev-intent", "translation-validation"),
+        strategies=("plugin-tv","scev-intent", "translation-validation"),
         pass_names=("indvars", "loop-reduce", "lsr"),
     ),
     Family(
@@ -52,7 +52,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\bsink\w*\b", 2), (r"\bLoopInfo\b", 2), (r"\bgetLoopFor\b", 2),
             (r"\bgetExitBlock\b", 2), (r"\bunswitch\w*\b", 4), (r"\brotateLoop\b", 4),
         ),
-        strategies=("licm-source", "licm-model", "loop-cfg-ir", "loop-induction",
+        strategies=("plugin-tv","licm-source", "licm-model", "loop-cfg-ir", "loop-induction",
                     "loop-simulation", "loop-rotate-ir", "loop-multiexit", "loop-nested",
                     "translation-validation"),
         pass_names=("licm", "loop-rotate", "simple-loop-unswitch", "loop-instsimplify",
@@ -66,7 +66,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\breplaceInstUsesWith\b", 4), (r"\bm_[A-Z]\w+\s*\(", 2), (r"\bmatch\s*\(", 2),
             (r"\bBuilder\.\s*Create\w+", 2), (r"\bSimplify\w+Inst\b", 3),
         ),
-        strategies=("symexec-fold-cascade", "instcombine-ir", "reassociate-ir", "early-cse-ir",
+        strategies=("plugin-tv","symexec-fold-cascade", "instcombine-ir", "reassociate-ir", "early-cse-ir",
                     "symexec-real-pass", "modelcheck-real-pass", "klee-symexec"),
         pass_names=("instcombine", "instsimplify", "aggressive-instcombine", "reassociate",
                     "early-cse", "gvn"),
@@ -79,7 +79,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\bisOverwrite\b", 5), (r"\bisRemovable\b", 4), (r"\bMemorySSA\b", 3),
             (r"\bMemoryLocation\b", 2), (r"\bgetClobbering\w*\b", 3), (r"\bMemoryDef\b", 2),
         ),
-        strategies=("memory-source", "memory-model", "dse-ir", "dse-facts"),
+        strategies=("plugin-tv","memory-source", "memory-model", "dse-ir", "dse-facts"),
         pass_names=("dse",),
     ),
     Family(
@@ -91,7 +91,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\bGlobalVariable\b", 3), (r"\bhasLocalLinkage\b", 3),
             (r"\bremoveDeadConstantUsers\b", 3),
         ),
-        strategies=("globalopt-source", "globalopt-model", "globalopt-witness"),
+        strategies=("plugin-tv","globalopt-source", "globalopt-model", "globalopt-witness"),
         pass_names=("globalopt",),
     ),
     Family(
@@ -111,7 +111,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"!\s*(?:\(\s*)?(?:[A-Za-z_]\w*\s*(?:->|\.)\s*)?hasNUsesOrMore\s*\(\s*1\s*\)", 2),
             (r"\beraseFromParent\s*\(", 3),
         ),
-        strategies=("dce-source", "dce-model"),
+        strategies=("plugin-tv","dce-source", "dce-model"),
         pass_names=("dce", "adce", "bdce"),
     ),
     Family(
@@ -137,7 +137,7 @@ FAMILIES: tuple[Family, ...] = (
             # ambiguous than mentioning a type.
             (r"\bCreate(?:Add|Mul|And|Or|Xor|FAdd|FMul|IntMax|IntMin|FPMax|FPMin)Reduce\s*\(", 4),
         ),
-        strategies=("slp-source", "slp-model", "slp-ir", "slp-transaction"),
+        strategies=("plugin-tv","slp-source", "slp-model", "slp-ir", "slp-transaction"),
         pass_names=("slp-vectorizer", "loop-vectorize"),
     ),
     Family(
@@ -149,7 +149,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\brewriteSingleStoreAlloca\b", 4), (r"\bIDFCalculator\b", 4),
             (r"\bAllocaInst\b", 2), (r"\bDenseMap<.*PHINode\b", 3),
         ),
-        strategies=("mem2reg-ir",),
+        strategies=("plugin-tv","mem2reg-ir",),
         pass_names=("mem2reg", "sroa"),
     ),
     Family(
@@ -163,7 +163,7 @@ FAMILIES: tuple[Family, ...] = (
             (r"\bgetIncomingValueForBlock\b", 4), (r"\bgetCondition\b", 2),
             (r"\bCreateSelect\b", 2),
         ),
-        strategies=("cfg-source", "cfg-shape"),
+        strategies=("plugin-tv","cfg-source", "cfg-shape"),
         pass_names=("simplifycfg",),
     ),
 )

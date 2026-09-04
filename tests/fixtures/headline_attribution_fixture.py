@@ -107,11 +107,18 @@ def main() -> int:
     from o2t.orchestrate.classify import FAMILIES
     blind = sorted(f.name for f in FAMILIES
                    if not any(is_about_pass(s, None) for s in f.strategies))
-    assert blind == ["promotion"], \
-        ("exactly one family has no attributable check for a vendor pass today; if this list grows, "
-         "a new family has been added that can only ever report proofs about other code -- and if "
-         "it shrinks, promotion gained a source-targeted strategy and this fixture should say so",
-         blind)
+    #     THIS LIST WAS `["promotion"]` AND IS NOW EMPTY, which is the `plugin-tv` strategy landing.
+    #     Every family carries it, and it is attributable by construction -- a pass-runner with NO
+    #     canonical fallback, so it runs the pass under verification or it does not run. No family
+    #     is now structurally incapable of saying something about a vendor pass.
+    #
+    #     The caveat that keeps this honest: `plugin-tv` is only FEASIBLE when the user supplies a
+    #     built plugin. Without one, `promotion` still has nothing attributable to offer in
+    #     practice -- which is why assertion 2 below, on a real snippet and with no plugin, still
+    #     shows it declining to certify.
+    assert blind == [], \
+        ("no family should be structurally blind now that plugin-tv is universal; if this grows, a "
+         "family has been added that can only ever report proofs about other code", blind)
 
     # 4) THE GUARD MUST NOT EAT REAL PROOFS. Verifying a pass a pass-runner actually runs still
     #    yields an attributable proof -- otherwise this fix would have silently disabled Track B's

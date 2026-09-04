@@ -160,10 +160,22 @@ def poison_risk(ll_text, func):
     return False
 
 
-def run_passes(src_text, passes, opt_bin="opt"):
-    """Run any `opt -passes=<passes>` pipeline and return the textual IR (or None on failure)."""
-    proc = subprocess.run([opt_bin, f"-passes={passes}", "-S", "-o", "-"],
-                          input=src_text, capture_output=True, text=True)
+def run_passes(src_text, passes, opt_bin="opt", pass_plugin=None):
+    """Run any `opt -passes=<passes>` pipeline and return the textual IR (or None on failure).
+
+    `pass_plugin` is a built pass plugin (`-load-pass-plugin`), which is what lets this validate a
+    pass O2T did not build. Track B's machinery never cared whose pass produced the output -- it
+    proves the after-IR a refinement of the before-IR -- but it was unreachable for third-party
+    code because the orchestrator had no way to RUN such a pass (`plan._runnable_pass`: "a
+    custom/unbuilt pass would need a build (out of scope)"). Supplying the .so removes the only
+    blocker; O2T still builds nothing, since anyone using their pass has already built it.
+
+    The plugin must be built against the same LLVM this `opt` comes from, or it will not load."""
+    argv = [opt_bin]
+    if pass_plugin:
+        argv.append(f"-load-pass-plugin={pass_plugin}")
+    argv += [f"-passes={passes}", "-S", "-o", "-"]
+    proc = subprocess.run(argv, input=src_text, capture_output=True, text=True)
     return proc.stdout if proc.returncode == 0 else None
 
 

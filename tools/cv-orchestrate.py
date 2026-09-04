@@ -48,7 +48,9 @@ def _selftest(args) -> dict:
         {"source": str(fx / "third_party_dse_like_pass.cpp"), "pass_name": "dse"},
         {"source": None, "pass_name": "indvars"},
     ]
-    ctx = resolve_context(args.z3_bin, args.opt_bin, args.clang_bin, ast_miner=args.ast_miner)
+    ctx = resolve_context(args.z3_bin, args.opt_bin, args.clang_bin, ast_miner=args.ast_miner,
+                          pass_plugin=getattr(args, "pass_plugin", None),
+                              pass_corpus=getattr(args, "pass_corpus", None))
     return orchestrate(inputs, ctx)
 
 
@@ -766,6 +768,15 @@ def main() -> int:
                     help="deep audit marker filter, forwarded to cv-run-external-pass-audit.py")
     ap.add_argument("--marker-prefix", action="append", default=[],
                     help="deep audit marker-prefix filter, forwarded to cv-run-external-pass-audit.py")
+    ap.add_argument("--pass-corpus", type=Path,
+                    help="IR for the plugin pass to transform. Without it the pass runs on a "
+                         "default benchmark it may not touch at all, and every proof is then a "
+                         "function it left alone.")
+    ap.add_argument("--pass-plugin",
+                    help="a BUILT pass plugin (.so/.dylib). Supplying it makes the pass under "
+                         "verification runnable, so `plugin-tv` validates YOUR pass's real output "
+                         "instead of a canonical stand-in. Must be built against the same LLVM as "
+                         "--opt-bin. Pair with --pass <name>.")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--no-execute", action="store_true", help="classify + plan only, do not run checks")
     ap.add_argument("--llm-command", help="optional provider-agnostic LLM command for ambiguous classification")
@@ -834,7 +845,9 @@ def main() -> int:
             ap.error("no source files selected after expansion/filtering")
         selected_sources = sources
         inputs = _pair_inputs(sources, args.passes)
-        ctx = resolve_context(args.z3_bin, args.opt_bin, args.clang_bin, ast_miner=args.ast_miner)
+        ctx = resolve_context(args.z3_bin, args.opt_bin, args.clang_bin, ast_miner=args.ast_miner,
+                              pass_plugin=getattr(args, "pass_plugin", None),
+                              pass_corpus=getattr(args, "pass_corpus", None))
         report = orchestrate(inputs, ctx, execute=not args.no_execute)
         if args.llm_command:
             maybe_llm_classify(report, args.llm_command)

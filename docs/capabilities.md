@@ -68,6 +68,30 @@ Two consequences worth knowing when reading verdicts:
   `zeroinitializer`, LLVM 18's `splat (iW C)` spelling, and **named or packed struct types** in a
   `getelementptr` were all valid IR the old readers could not match.
 
+### Verifying a pass O2T did not build (`--pass-plugin`)
+
+O2T's strongest machinery is Track B: run the real pass and prove its whole-function output a
+refinement of its input, cross-checked by `lli`, reference Alive2 and Bitwuzla. It never cared whose
+pass produced the output — but it was **unreachable for third-party code**, because every
+pass-runner strategy carried a `canonical_pass` and the planner said outright that "a custom/unbuilt
+pass would need a build (out of scope)". Pointed at a vendor pass, those strategies validated LLVM's
+own InstCombine instead.
+
+    o2t run orchestrate --source MyPass.cpp --pass mypass \
+        --pass-plugin ./libMyPass.so --pass-corpus my-tests.ll
+
+`plugin-tv` runs *your* pass through `-load-pass-plugin` and has **no canonical fallback**: it
+verifies the pass under test or it does not run, so its verdict is about your pass and nothing else.
+O2T builds nothing — anyone using their pass has already built it.
+
+**Two limits, both load-bearing.** The plugin must be built against the same LLVM as `--opt-bin`, or
+it will not load. And verification is only as good as the IR you supply: **a pass that transforms
+nothing has not been verified.** Every "proof" is then a function it left untouched refining itself,
+which is true and says nothing. That is not hypothetical — the first end-to-end run of this feature
+reported `proved` for a plugin carrying a planted `add x,x -> x`, because the default corpus contains
+no `add x,x` for it to break. A zero-change run is now `inconclusive` and says why
+(`plugin_pass_tv_fixture` pins both the catch and the guard).
+
 ### What a `proved` headline means (and what it refused to mean)
 
 A positive verdict may only certify a pass some check actually **read**. Two kinds cannot:
