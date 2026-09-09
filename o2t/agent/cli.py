@@ -33,6 +33,8 @@ from o2t.orchestrate.run import resolve_context                   # noqa: E402
 
 def _parse_args(argv=None):
     ap = argparse.ArgumentParser(description="LLM-driven batch triage over the O2T toolchain")
+    ap.add_argument("--campaign", type=Path,
+                    help="operator-supplied compiled-target campaign manifest (bypasses source triage)")
     ap.add_argument("--source", nargs="*", type=Path, default=[],
                     help="pass source file(s) or director(y/ies)")
     ap.add_argument("--pass", dest="passes", action="append", default=[],
@@ -49,7 +51,8 @@ def _parse_args(argv=None):
     ap.add_argument("--out-dir", type=Path, help="staging + artifacts directory")
     ap.add_argument("--enable-synthesis", action="store_true",
                     help="allow the synthesize-tool action (staged, advisory, human-promoted)")
-    ap.add_argument("--resume", type=Path, help="prior agent report; concluded passes skipped")
+    ap.add_argument("--resume", type=Path,
+                    help="prior agent report or campaign checkpoint; completed work is reused")
     ap.add_argument("--report", type=Path)
     ap.add_argument("--summary-text", type=Path)
     ap.add_argument("--z3-bin", default="z3")
@@ -88,6 +91,9 @@ def _run_orchestrator(args) -> dict:
 
 
 def run_agent(args) -> tuple[dict, int]:
+    if getattr(args, "campaign", None):
+        from o2t.agent.campaign import run_campaign
+        return run_campaign(args)
     report = _run_orchestrator(args)
     if not report:
         print("cv-agent: orchestrator produced no report", file=sys.stderr)
@@ -190,13 +196,22 @@ def main(argv=None) -> int:
     if not args.llm_command:
         print("cv-agent: --llm-command is required (or use --selftest)", file=sys.stderr)
         return 2
-    report, exit_code = run_agent(args)
+    try:
+        report, exit_code = run_agent(args)
+    except (ValueError, OSError) as exc:
+        print(f"cv-agent: {exc}", file=sys.stderr)
+        return 2
+    if args.campaign:
+        from o2t.agent.campaign import render_summary
+        summary = render_summary(report)
+    else:
+        summary = render_summary_text(report)
     if args.report:
         args.report.write_text(json.dumps(report, indent=2) + "\n")
     if args.summary_text:
-        args.summary_text.write_text(render_summary_text(report))
+        args.summary_text.write_text(summary)
     else:
-        print(render_summary_text(report))
+        print(summary)
     return exit_code
 
 

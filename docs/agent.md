@@ -1,5 +1,14 @@
 # The verification agent — LLM-driven batch triage over the O2T toolchain
 
+For a built third-party target with configured build and checking commands, use
+[`--campaign`](agent-campaign.md). This mode has dependency-aware actions,
+completion gates, fingerprinted checkpoints and a packaged DeepSeek transport;
+it bypasses the source-residue workflow described below.
+
+The [campaign designer](agent-campaign-design.md) adds source inspection and
+agent-selected verification scope before execution. Its initial RV adapter turns
+selected cases and added input coverage into a validated campaign manifest.
+
 `tools/cv-agent.py` (package: [`o2t/agent/`](../o2t/agent/)) is the "low on HR" front door: point
 it at a vendor pass tree and it (1) runs the **deterministic orchestrator** over everything, then
 (2) spends a bounded LLM budget investigating the **residue** — the passes deterministic

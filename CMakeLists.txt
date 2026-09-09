@@ -742,6 +742,18 @@ if(O2T_BUILD_TESTS)
             "if command -v z3 >/dev/null 2>&1; then ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_positive_control_fixture.py; else echo 'agent_positive_control_fixture: z3 not found, skipped'; fi"
     )
     add_test(
+        NAME agent_gap_checks_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_gap_checks_fixture.py
+    )
+    add_test(
+        NAME agent_campaign_design_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_campaign_design_fixture.py
+    )
+    add_test(
+        NAME agent_campaign_fixture
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_campaign_fixture.py
+    )
+    add_test(
         NAME agent_synthesis_fixture
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/agent_synthesis_fixture.py
     )

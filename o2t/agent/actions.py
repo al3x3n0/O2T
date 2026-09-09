@@ -19,6 +19,7 @@ Action kinds:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,8 @@ def _validate_args(spec: ActionSpec, args: dict) -> str | None:
                 return f"arg {name!r} exceeds {rule.get('max_len', _MAX_STRING)} chars"
             if "enum" in rule and val not in rule["enum"]:
                 return f"arg {name!r} must be one of {sorted(rule['enum'])}"
+            if 'pattern' in rule and not re.fullmatch(rule['pattern'], val):
+                return f"arg {name!r} must match {rule['pattern']}"
         elif want == "list":
             if not isinstance(val, list) or len(val) > _MAX_LIST:
                 return f"arg {name!r} must be a list of at most {_MAX_LIST} items"

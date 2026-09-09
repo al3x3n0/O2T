@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "llvm-instcombine-smoke",
+  "goal": "Check the installed LLVM instcombine pass on O2T's bundled scalar corpus. This is a smoke campaign for instcombine, not verification of an external vendor pass. Report the actual limited scope and unsupported cases.",
+  "inputs": ["../tools/cv-validate-scalar-tv.py"],
+  "jobs": [
+    {
+      "id": "verify-instcombine",
+      "description": "Run O2T translation validation of actual instcombine output on the bundled scalar corpus.",
+      "argv": ["{python}", "{manifest_dir}/../tools/cv-validate-scalar-tv.py", "--passes", "instcombine", "--report", "{out_dir}/scalar-tv.json"],
+      "outputs": ["scalar-tv.json"],
+      "result": "scalar-tv.json",
+      "evidence_kind": "formal",
+      "success_exit_codes": [0, 1],
+      "timeout": 120
+    }
+  ]
+}
