@@ -77,7 +77,9 @@ def main():
     provider_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(provider_module)
     response = {'choices':[{'message':{'content':'{"action":"conclude","args":{"proposal":"inconclusive"}}'},'finish_reason':'stop'}], 'model':'fixture', 'usage':{'total_tokens':3}}
+    requests = []
     def fake_open(request, timeout):
+        requests.append(json.loads(request.data))
         assert request.full_url == 'https://api.deepseek.com/chat/completions'
         assert request.headers['Authorization'] == 'Bearer fixture-secret'
         assert json.loads(request.data)['messages'][1]['content'] == '{"task": "fixture"}'
@@ -90,6 +92,16 @@ def main():
         assert provider_module.main(['--model','fixture']) == 0
     assert json.loads(stdout.getvalue())['action'] == 'conclude'
     assert 'fixture-secret' not in stdout.getvalue() + stderr.getvalue()
+    assert 'reasoning_effort' not in requests[-1]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with patch.dict(os.environ, {'DEEPSEEK_API_KEY':'fixture-secret'}), \
+            patch.object(provider_module, 'urlopen', fake_open), \
+            patch('sys.stdin', io.StringIO('{"task":"fixture"}')), \
+            redirect_stdout(stdout), redirect_stderr(stderr):
+        assert provider_module.main(['--model','fixture','--thinking','enabled','--reasoning-effort','low']) == 0
+    assert requests[-1]['thinking']=={'type':'enabled'} and requests[-1]['reasoning_effort']=='low'
+    assert json.loads(stderr.getvalue())['reasoning_effort']=='low'
+    assert 'fixture-secret' not in stdout.getvalue()+stderr.getvalue()
     response['choices'][0]['finish_reason'] = 'length'
     stdout, stderr = io.StringIO(), io.StringIO()
     with patch.dict(os.environ, {'DEEPSEEK_API_KEY':'fixture-secret'}), \

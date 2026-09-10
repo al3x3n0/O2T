@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configured compiled-target campaigns. Commands are operator data, never model output.
+"""Compiled-target campaigns from operators or reviewed, staged agent plans.
 
 Job success means execution completed, not that the target is correct. Even JSON
 labelled `formal` remains observed evidence and cannot enter the agent proof gate.

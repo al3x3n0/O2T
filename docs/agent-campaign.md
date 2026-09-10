@@ -1,8 +1,8 @@
 # Compiled-target campaigns
 
-For agent-selected cases and source-grounded risk planning before execution, use
-the [automatic campaign designer](agent-campaign-design.md). Its initial RV
-adapter compiles model choices into this manifest format.
+For agent-authored jobs, commands and harnesses, use the
+[repository-driven campaign planner](autonomous-campaign-planning.md). It emits
+this manifest format without a target-specific recipe.
 
 `cv-agent.py --campaign manifest.json` runs a configured campaign through the
 existing O2T agent loop. It bypasses source-residue triage and exposes only ready

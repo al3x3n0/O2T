@@ -138,7 +138,7 @@ else:
 print(json.dumps(a))
 '''.replace('PLAN',repr(plan)))
         out=h/'designed'
-        cmd=[sys.executable,str(ROOT/'tools/cv-agent-design-campaign.py'),'--target',str(target),
+        cmd=[sys.executable,str(ROOT/'tools/cv-agent-design-campaign.py'),'--adapter','rv','--target',str(target),
              '--toolchain-config',str(config),'--out-dir',str(out),'--goal','Verify zero-divisor behavior',
              '--llm-command',shlex.join([sys.executable,str(provider)]),'--budget','4']
         run=subprocess.run(cmd,capture_output=True,text=True)

@@ -1,6 +1,10 @@
-# Automatic campaign design
+# Legacy RV campaign selection and review
 
-`tools/cv-agent-design-campaign.py` lets the model inspect source and select a
+The default CLI now uses [repository-driven campaign authoring](autonomous-campaign-planning.md).
+This document records the earlier handwritten-adapter workflow, available with
+`--adapter rv`; it does not autonomously author the job graph or harnesses.
+
+`tools/cv-agent-design-campaign.py --adapter rv` lets the model inspect source and select a
 verification scope before the execution agent runs. The first adapter supports
 the pinned RV workflow on macOS AArch64 with the configured LLVM 16/18 toolchains,
 Z3 and Alive2. It selects from the existing twelve-case corpus; arbitrary GitHub
@@ -13,7 +17,7 @@ Supply a clean pinned checkout and the same toolchain configuration used by the
 [RV recipe](rv-full-agent-campaign.md):
 
 ```sh
-python3 tools/cv-agent-design-campaign.py \
+python3 tools/cv-agent-design-campaign.py --adapter rv \
   --target build/third-party-rv \
   --toolchain-config /absolute/path/to/config.json \
   --out-dir build/my-designed-campaign \

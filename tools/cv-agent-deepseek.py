@@ -17,8 +17,11 @@ def main(argv=None):
     ap.add_argument('--model', required=True, help='DeepSeek model identifier')
     ap.add_argument('--timeout', type=int, default=180)
     ap.add_argument('--thinking', choices=('enabled', 'disabled'), default='disabled')
+    ap.add_argument('--reasoning-effort', choices=('low', 'high', 'max'), help='explicit effort when thinking is enabled; omitted by default')
     ap.add_argument('--max-tokens', type=int, default=6000)
     args = ap.parse_args(argv)
+    if args.reasoning_effort and args.thinking!='enabled':
+        ap.error('--reasoning-effort requires --thinking enabled')
     key = os.environ.get('DEEPSEEK_API_KEY')
     if not key:
         print('DEEPSEEK_API_KEY is unavailable', file=sys.stderr)
@@ -32,13 +35,15 @@ def main(argv=None):
             {'role': 'user', 'content': json.dumps(request)}],
             'response_format': {'type': 'json_object'}, 'thinking': {'type': args.thinking},
             'max_tokens': args.max_tokens, 'stream': False}
+        if args.reasoning_effort:
+            payload['reasoning_effort']=args.reasoning_effort
         req = Request('https://api.deepseek.com/chat/completions',
                       data=json.dumps(payload).encode(), headers={
                           'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
         with urlopen(req, timeout=args.timeout) as response:
             result = json.load(response)
         choice = result['choices'][0]
-        print(json.dumps({'model': result.get('model'), 'thinking': args.thinking, 'usage': result.get('usage'),
+        print(json.dumps({'model': result.get('model'), 'thinking': args.thinking, 'reasoning_effort': args.reasoning_effort, 'usage': result.get('usage'),
                           'finish_reason': choice.get('finish_reason')}), file=sys.stderr)
         if choice.get('finish_reason') == 'length':
             # Even a parseable prefix is not a completed model action.

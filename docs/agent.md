@@ -5,9 +5,9 @@ For a built third-party target with configured build and checking commands, use
 completion gates, fingerprinted checkpoints and a packaged DeepSeek transport;
 it bypasses the source-residue workflow described below.
 
-The [campaign designer](agent-campaign-design.md) adds source inspection and
-agent-selected verification scope before execution. Its initial RV adapter turns
-selected cases and added input coverage into a validated campaign manifest.
+The [campaign planner](autonomous-campaign-planning.md) lets the agent author job
+graphs, commands, harnesses and checks from repository evidence. The earlier
+[RV selector](agent-campaign-design.md) remains an explicit legacy mode.
 
 `tools/cv-agent.py` (package: [`o2t/agent/`](../o2t/agent/)) is the "low on HR" front door: point
 it at a vendor pass tree and it (1) runs the **deterministic orchestrator** over everything, then
